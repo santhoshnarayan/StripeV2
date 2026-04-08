@@ -207,6 +207,9 @@ importers:
       '@repo/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@types/node':
+        specifier: ^22
+        version: 22.19.17
       dotenv-cli:
         specifier: ^8
         version: 8.0.0

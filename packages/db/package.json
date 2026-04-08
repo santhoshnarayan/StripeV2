@@ -13,12 +13,13 @@
     "db:push": "dotenv -e ../../.env -- drizzle-kit push"
   },
   "dependencies": {
-    "drizzle-orm": "^0.41",
     "@neondatabase/serverless": "^0.10",
+    "drizzle-orm": "^0.41",
     "postgres": "^3.4"
   },
   "devDependencies": {
     "@repo/tsconfig": "workspace:*",
+    "@types/node": "^22",
     "dotenv-cli": "^8",
     "drizzle-kit": "^0.30",
     "typescript": "^5.7"
