@@ -1,0 +1,43 @@
+# Cron Jobs
+
+## Overview
+
+Cron jobs run in-process on the server using node-cron.
+
+## Adding a Cron Job
+
+1. Create a job in `apps/server/src/cron/jobs/`:
+
+```ts
+export async function cleanupJob() {
+  console.log("[cron:cleanup] Running cleanup...");
+}
+```
+
+2. Register it in `apps/server/src/cron/index.ts`:
+
+```ts
+import { cleanupJob } from "./jobs/cleanup.js";
+
+cron.schedule("0 3 * * *", () => {
+  cleanupJob();
+});
+```
+
+## Cron Schedule Syntax
+
+```
+┌──── minute (0-59)
+│ ┌── hour (0-23)
+│ │ ┌ day of month (1-31)
+│ │ │ ┌ month (1-12)
+│ │ │ │ ┌ day of week (0-7)
+│ │ │ │ │
+* * * * *
+```
+
+Examples:
+- `0 * * * *` — every hour
+- `*/5 * * * *` — every 5 minutes
+- `0 3 * * *` — daily at 3 AM
+- `0 0 * * 1` — every Monday at midnight

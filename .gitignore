@@ -2,3 +2,21 @@
 .projects/vault
 .env
 .env.local
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+.next/
+.turbo/
+out/
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,41 @@
+# Getting Started
+
+## Prerequisites
+
+- Node.js 22+
+- pnpm 10+
+- Access to PlanetScale, Railway, and Vercel via Stripe Projects CLI
+
+## Quick Start
+
+```bash
+# Install dependencies
+pnpm install
+
+# Pull environment variables
+stripe projects env --pull
+
+# Push database schema
+pnpm db:push
+
+# Start development
+pnpm dev
+```
+
+This starts:
+- **Web** (Next.js) at `http://localhost:3000`
+- **Server** (Hono) at `http://localhost:4000`
+- **Docs** at `http://localhost:3001`
+
+## Project Structure
+
+```
+├── apps/
+│   ├── web/        # Next.js frontend (Vercel)
+│   ├── server/     # Hono backend (Railway)
+│   └── docs/       # Documentation
+├── packages/
+│   ├── db/         # Drizzle ORM + schema
+│   ├── validators/ # Shared Zod schemas
+│   └── tsconfig/   # Shared TypeScript configs
+```

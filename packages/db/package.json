@@ -1,0 +1,26 @@
+{
+  "name": "@repo/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "db:generate": "dotenv -e ../../.env -- drizzle-kit generate",
+    "db:push": "dotenv -e ../../.env -- drizzle-kit push"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.41",
+    "@neondatabase/serverless": "^0.10",
+    "postgres": "^3.4"
+  },
+  "devDependencies": {
+    "@repo/tsconfig": "workspace:*",
+    "dotenv-cli": "^8",
+    "drizzle-kit": "^0.30",
+    "typescript": "^5.7"
+  }
+}

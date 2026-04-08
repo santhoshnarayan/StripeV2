@@ -1,0 +1,36 @@
+# Architecture
+
+## Overview
+
+StripeV2 is a TypeScript monorepo managed by Turborepo and pnpm workspaces.
+
+## Services
+
+### Frontend (`apps/web`)
+- **Framework**: Next.js 15 (App Router)
+- **Deployment**: Vercel
+- **Auth**: Better Auth client
+
+### Backend (`apps/server`)
+- **Framework**: Hono
+- **API**: GraphQL via Yoga + Pothos
+- **Auth**: Better Auth server
+- **Cron**: node-cron for scheduled tasks
+- **Background Tasks**: BullMQ + Redis
+- **Deployment**: Railway
+
+### Database
+- **ORM**: Drizzle ORM
+- **Provider**: PlanetScale (PostgreSQL)
+
+### Cache / Queue
+- **Provider**: Railway Redis
+- **Used by**: BullMQ for background task processing
+
+## Data Flow
+
+1. User interacts with Next.js frontend
+2. Auth requests go to server's `/api/auth/*` endpoints
+3. GraphQL queries/mutations go to server's `/graphql` endpoint
+4. Server reads/writes to PlanetScale via Drizzle ORM
+5. Background tasks are enqueued to Redis via BullMQ

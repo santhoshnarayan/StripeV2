@@ -1,0 +1,31 @@
+{
+  "name": "@repo/docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev --port ${DOCS_PORT:-3001}",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@mdx-js/loader": "^3",
+    "@mdx-js/react": "^3",
+    "@next/mdx": "^15",
+    "@tailwindcss/postcss": "^4.2.2",
+    "@tailwindcss/typography": "^0.5.19",
+    "@types/mdx": "^2",
+    "next": "^15",
+    "postcss": "^8.5.9",
+    "react": "^19",
+    "react-dom": "^19",
+    "tailwindcss": "^4.2.2"
+  },
+  "devDependencies": {
+    "@repo/tsconfig": "workspace:*",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5.7"
+  }
+}

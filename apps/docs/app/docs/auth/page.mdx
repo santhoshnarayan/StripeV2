@@ -1,0 +1,52 @@
+# Authentication
+
+## Overview
+
+Authentication is handled by [Better Auth](https://www.better-auth.com/) with email/password sign-in.
+
+## Server Configuration
+
+The auth server is configured in `apps/server/src/auth.ts` using Drizzle as the database adapter.
+
+```ts
+import { betterAuth } from "better-auth";
+import { drizzleAdapter } from "better-auth/adapters/drizzle";
+
+export const auth = betterAuth({
+  database: drizzleAdapter(db, { provider: "pg", schema }),
+  emailAndPassword: { enabled: true },
+});
+```
+
+## Client Usage
+
+The auth client is in `apps/web/lib/auth-client.ts`:
+
+```ts
+import { createAuthClient } from "better-auth/react";
+
+export const { signIn, signUp, signOut, useSession } = createAuthClient({
+  baseURL: process.env.NEXT_PUBLIC_API_URL,
+});
+```
+
+## Database Tables
+
+Better Auth uses four tables managed in `packages/db/src/schema/auth.ts`:
+- `user` — user profiles
+- `session` — active sessions
+- `account` — linked auth providers
+- `verification` — email verification tokens
+
+## Adding OAuth Providers
+
+```ts
+export const auth = betterAuth({
+  socialProviders: {
+    github: {
+      clientId: process.env.GITHUB_CLIENT_ID!,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+    },
+  },
+});
+```

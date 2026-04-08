@@ -1,0 +1,47 @@
+# GraphQL API
+
+## Overview
+
+The GraphQL API uses GraphQL Yoga as the server and Pothos as the schema builder.
+
+## Schema Builder
+
+```ts
+import SchemaBuilder from "@pothos/core";
+
+const builder = new SchemaBuilder<{
+  Context: { userId?: string };
+}>({});
+```
+
+## Adding Types
+
+Create a new file in `apps/server/src/graphql/types/`:
+
+```ts
+import { builder } from "../builder.js";
+
+const MyType = builder.objectRef<{ id: string; name: string }>("MyType");
+
+MyType.implement({
+  fields: (t) => ({
+    id: t.exposeString("id"),
+    name: t.exposeString("name"),
+  }),
+});
+
+builder.queryField("myItems", (t) =>
+  t.field({
+    type: [MyType],
+    resolve: async () => {
+      // fetch from database
+    },
+  })
+);
+```
+
+Then import it in `apps/server/src/graphql/schema.ts`.
+
+## GraphQL Playground
+
+In development, visit `http://localhost:4000/graphql` for the GraphiQL playground.

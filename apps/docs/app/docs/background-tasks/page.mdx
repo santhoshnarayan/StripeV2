@@ -1,0 +1,42 @@
+# Background Tasks
+
+## Overview
+
+Background tasks use BullMQ backed by Railway Redis for reliable async job processing.
+
+## Enqueueing a Task
+
+```ts
+import { enqueueTask } from "./tasks/queue.js";
+
+await enqueueTask("example", { userId: "123", action: "process" });
+```
+
+## Adding a Task Handler
+
+1. Create a handler in `apps/server/src/tasks/handlers/`:
+
+```ts
+export async function handleSendEmail(data: { to: string; subject: string }) {
+  // send email logic
+}
+```
+
+2. Register it in `apps/server/src/tasks/queue.ts`:
+
+```ts
+case "send-email":
+  await handleSendEmail(job.data);
+  break;
+```
+
+## Features
+
+- **Retries**: BullMQ retries failed jobs automatically
+- **Concurrency**: Configure worker concurrency via options
+- **Delayed jobs**: `taskQueue.add("name", data, { delay: 5000 })`
+- **Repeatable**: `taskQueue.add("name", data, { repeat: { every: 60000 } })`
+
+## Local Development
+
+Redis is required for background tasks. Without `REDIS_URL`, the server starts without the task worker and logs a warning.

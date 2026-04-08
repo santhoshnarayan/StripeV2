@@ -1,0 +1,19 @@
+{
+  "name": "stripev2",
+  "private": true,
+  "scripts": {
+    "setup": "./scripts/setup.sh",
+    "dev": "./scripts/dev.sh",
+    "dev:fe": "./scripts/dev.sh --filter=@repo/web",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "db:generate": "dotenv -e .env -- pnpm --filter @repo/db db:generate",
+    "db:push": "dotenv -e .env -- pnpm --filter @repo/db db:push",
+    "deploy": "./scripts/deploy.sh"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^8",
+    "turbo": "^2"
+  },
+  "packageManager": "pnpm@10.5.1"
+}
