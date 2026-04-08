@@ -13,6 +13,7 @@ RUN pnpm --filter @repo/db build
 FROM base AS runtime
 WORKDIR /app
 COPY --from=build /app /app
+RUN pnpm add -g tsx
 WORKDIR /app/apps/server
 EXPOSE 4000
-CMD ["node", "dist/index.js"]
+CMD ["tsx", "src/index.ts"]
