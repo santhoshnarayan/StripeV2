@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "project": {
+    "initializedAt": "2026-04-08T19:15:26.777Z",
+    "merchantDisplayName": null,
+    "merchantId": "acct_1TJjG2C4XGoFOiR3",
+    "projectId": "project_61UTPWodRXwU03Za216UT7DQKhSQVv3jfYQnOCM4WCoS",
+    "projectName": "StripeV2"
+  },
+  "providers": {
+    "vercel": {
+      "accountRequestId": "fprvcnn_61UT7LTkkG7ncKDBy16UT7DQKhSQVv3jfYQnOCM4W35c",
+      "linkedAt": "2026-04-07T23:50:31.326Z",
+      "providerId": "prvdr_61ULUAr4zlQgZkvXY5LsG",
+      "providerName": "Vercel",
+      "redirectUrl": null,
+      "requestedAt": "2026-04-07T23:50:31.326Z",
+      "status": "complete"
+    }
+  },
+  "resources": {
+    "vercel-project": {
+      "configuration": {
+        "name": "StripeV2"
+      },
+      "createdAt": "2026-04-08T19:17:13.087Z",
+      "lastRevealedAt": "2026-04-08T19:17:13.261Z",
+      "lastStatus": "complete",
+      "name": "vercel-project",
+      "providerId": "prvdr_61ULUAr4zlQgZkvXY5LsG",
+      "providerName": "Vercel",
+      "resourceId": "fres_61UTPYWgkDIOKFuaY16UT7DQKhSQVv3jfYQnOCM4WVSq",
+      "serviceId": "project"
+    }
+  }
+}
