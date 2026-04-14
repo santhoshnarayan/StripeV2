@@ -69,6 +69,9 @@ export default function SignInPage() {
               />
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
+            <Link href="/auth/forgot-password" className="text-sm text-primary underline">
+              Forgot password?
+            </Link>
           </CardContent>
           <CardFooter className="flex flex-col gap-4">
             <Button type="submit" className="w-full" disabled={loading}>
