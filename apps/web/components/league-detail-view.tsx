@@ -1053,8 +1053,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         return updated;
       });
 
+      // No shared id: each save gets its own toast so rapid successive
+      // edits visibly stack, with the older one sliding behind the new one.
       toast.success("Bids saved", {
-        id: "bids-saved",
         duration: 5000,
         action: {
           label: "Undo",
