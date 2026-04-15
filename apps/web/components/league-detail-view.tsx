@@ -450,37 +450,33 @@ function bidInputStyle(bid: number | null, suggestedValue: number): React.CSSPro
   const mix = (low: string, high: string, t: number) =>
     `color-mix(in oklch, ${low}, ${high} ${Math.round(t * 100)}%)`;
 
+  let backgroundColor: string;
+  let color: string;
+
   if (ratio <= 0) {
-    return {
-      backgroundColor: "var(--bid-red-bg)",
-      color: "var(--bid-red-fg)",
-    };
-  }
-  if (ratio <= 0.75) {
+    backgroundColor = "var(--bid-red-bg)";
+    color = "var(--bid-red-fg)";
+  } else if (ratio <= 0.75) {
     const t = ratio / 0.75;
-    return {
-      backgroundColor: mix("var(--bid-red-bg)", "var(--bid-yellow-bg)", t),
-      color: mix("var(--bid-red-fg)", "var(--bid-yellow-fg)", t),
-    };
-  }
-  if (ratio <= 1.0) {
+    backgroundColor = mix("var(--bid-red-bg)", "var(--bid-yellow-bg)", t);
+    color = mix("var(--bid-red-fg)", "var(--bid-yellow-fg)", t);
+  } else if (ratio <= 1.0) {
     const t = (ratio - 0.75) / 0.25;
-    return {
-      backgroundColor: mix("var(--bid-yellow-bg)", "var(--bid-white-bg)", t),
-      color: mix("var(--bid-yellow-fg)", "var(--bid-white-fg)", t),
-    };
-  }
-  if (ratio <= 1.25) {
+    backgroundColor = mix("var(--bid-yellow-bg)", "var(--bid-white-bg)", t);
+    color = mix("var(--bid-yellow-fg)", "var(--bid-white-fg)", t);
+  } else if (ratio <= 1.25) {
     const t = (ratio - 1.0) / 0.25;
-    return {
-      backgroundColor: mix("var(--bid-white-bg)", "var(--bid-green-bg)", t),
-      color: mix("var(--bid-white-fg)", "var(--bid-green-fg)", t),
-    };
+    backgroundColor = mix("var(--bid-white-bg)", "var(--bid-green-bg)", t);
+    color = mix("var(--bid-white-fg)", "var(--bid-green-fg)", t);
+  } else {
+    backgroundColor = "var(--bid-green-bg)";
+    color = "var(--bid-green-fg)";
   }
-  return {
-    backgroundColor: "var(--bid-green-bg)",
-    color: "var(--bid-green-fg)",
-  };
+
+  // The shared Input component renders with `border border-input`, which in
+  // light mode is a solid gray that pops against the tinted background. Match
+  // the border to the bg so the tint fills edge-to-edge in both themes.
+  return { backgroundColor, color, borderColor: backgroundColor };
 }
 
 export function LeagueDetailView({ leagueId }: { leagueId: string }) {
