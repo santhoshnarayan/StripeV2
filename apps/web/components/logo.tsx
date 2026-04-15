@@ -4,10 +4,12 @@ export function Logo() {
   return (
     <Link
       href="/"
-      className="hidden md:flex flex-col items-start shrink-0 mr-2 leading-none"
+      className="flex shrink-0 flex-col items-start leading-none mr-2"
     >
-      <span className="text-base font-bold tracking-tight">Player Pool</span>
-      <span className="text-[10px] font-semibold text-orange-500 uppercase tracking-widest">
+      <span className="text-sm font-bold tracking-tight md:text-base">
+        Player Pool
+      </span>
+      <span className="text-[9px] font-semibold uppercase tracking-widest text-orange-500 md:text-[10px]">
         NBA Playoffs
       </span>
     </Link>

@@ -1895,7 +1895,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                             >
                               $0
                             </Button>
-                            <div className="relative flex-1">
+                            <div className="relative ml-auto w-28">
                               <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-muted-foreground">
                                 $
                               </span>
