@@ -11,13 +11,19 @@ import { startWorker } from "./tasks/queue.js";
 
 const app = new Hono();
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const trustedOrigins = [
   process.env.FRONTEND_URL,
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "http://localhost:3002",
-  "http://localhost:3003",
   "https://nba-player-pool.vercel.app",
+  ...(isProduction
+    ? []
+    : [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+      ]),
 ].filter((origin): origin is string => typeof origin === "string" && origin.length > 0);
 
 app.use("*", logger());
