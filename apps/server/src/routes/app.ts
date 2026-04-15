@@ -90,16 +90,26 @@ function normalizeEmail(email: string) {
 }
 
 appRouter.get("/players", async (c) => {
-  // Public players page — values assume the default 8-manager / 9-pick / $200 league.
-  const players = await getPlayerPoolForAuction();
+  // Public players page — the caller can override the league assumption via
+  // query params so the same page can model different league shapes.
+  const parseIntParam = (raw: string | undefined, fallback: number, lo: number, hi: number) => {
+    if (!raw) return fallback;
+    const value = Number.parseInt(raw, 10);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(hi, Math.max(lo, value));
+  };
+
+  const config: AuctionConfig = {
+    managers: parseIntParam(c.req.query("managers"), 8, 2, 20),
+    rosterSize: parseIntParam(c.req.query("rosterSize"), 9, 1, 20),
+    budgetPerTeam: parseIntParam(c.req.query("budget"), 200, 10, 10_000),
+    minBid: parseIntParam(c.req.query("minBid"), 1, 0, 100),
+  };
+
+  const players = await getPlayerPoolForAuction(config);
 
   return c.json({
-    assumption: {
-      managers: 8,
-      rosterSize: 9,
-      budgetPerTeam: 200,
-      minBid: 1,
-    },
+    assumption: config,
     players: players.map((player) => ({
       ...player,
       defaultBid: getDefaultBidFromSuggestedValue(player.suggestedValue),

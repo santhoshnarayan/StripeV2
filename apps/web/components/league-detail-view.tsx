@@ -165,7 +165,7 @@ const PHASE_LABELS: Record<string, string> = {
   scoring: "Scoring",
 };
 
-type LeagueTab = "overview" | "managers" | "draft" | "results" | "standings";
+type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings";
 type DraftSortOption =
   | "suggested_desc"
   | "projected_desc"
@@ -191,6 +191,7 @@ type DraftPlayerRow = {
 const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> = {
   overview: { label: "Overview", shortLabel: "Home" },
   managers: { label: "Managers", shortLabel: "Teams" },
+  players: { label: "Players", shortLabel: "Pool" },
   draft: { label: "Draft Room", shortLabel: "Draft" },
   results: { label: "Reveal", shortLabel: "Reveal" },
   standings: { label: "Standings", shortLabel: "Rank" },
@@ -198,9 +199,9 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
 
 function getLeagueTabOrder(phase: string): LeagueTab[] {
   if (phase === "draft" || phase === "invite") {
-    return ["draft", "overview", "managers", "results", "standings"];
+    return ["draft", "overview", "managers", "players", "results", "standings"];
   }
-  return ["standings", "overview", "managers", "draft", "results"];
+  return ["standings", "overview", "managers", "players", "draft", "results"];
 }
 
 function formatNullableNumber(value: number | null, digits = 1) {
@@ -1149,6 +1150,76 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
             </CardContent>
           </Card>
         </section>
+      ) : null}
+
+      {activeTab === "players" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>League Player Pool</CardTitle>
+            <CardDescription>
+              Remaining undrafted players with dollar values tuned for this league&apos;s
+              shape ({data.members.length} managers × {data.league.rosterSize} picks, $
+              {data.league.budgetPerTeam} budget, min bid ${data.league.minBid}).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="overflow-auto rounded-xl border border-border/80">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
+                  <tr>
+                    <th className="px-3 py-3 font-medium">Player</th>
+                    <th className="px-3 py-3 font-medium">Team</th>
+                    <th className="px-3 py-3 font-medium">Conf</th>
+                    <th className="px-3 py-3 font-medium">Seed</th>
+                    <th className="px-3 py-3 font-medium">GP</th>
+                    <th className="px-3 py-3 font-medium">MPG</th>
+                    <th className="px-3 py-3 font-medium">PPG</th>
+                    <th className="px-3 py-3 font-medium">Value</th>
+                    <th className="px-3 py-3 font-medium">Proj. Pts</th>
+                    <th className="px-3 py-3 font-medium">Proj. GP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortDraftPlayers(data.availablePlayers, "suggested_desc").map(
+                    (player) => (
+                      <tr key={player.id} className="border-t border-border/70">
+                        <td className="px-3 py-3 font-medium text-foreground">{player.name}</td>
+                        <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
+                        <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {player.seed ?? "-"}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {formatNullableNumber(player.gamesPlayed, 0)}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {formatNullableNumber(player.minutesPerGame)}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {formatNullableNumber(player.pointsPerGame)}
+                        </td>
+                        <td className="px-3 py-3 font-medium text-foreground">
+                          ${player.suggestedValue}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {formatNullableNumber(player.totalPoints)}
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">
+                          {formatNullableNumber(player.totalGames)}
+                        </td>
+                      </tr>
+                    ),
+                  )}
+                </tbody>
+              </table>
+              {!data.availablePlayers.length ? (
+                <div className="border-t border-border/70 px-4 py-6 text-sm text-muted-foreground">
+                  No remaining undrafted players.
+                </div>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
       ) : null}
 
       {activeTab === "draft" ? (

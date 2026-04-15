@@ -3,6 +3,7 @@
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { appApiFetch } from "@/lib/app-api";
 
 type PlayerRow = {
@@ -48,23 +49,51 @@ function formatNullableNumber(value: number | null, digits = 1) {
   return Number.isInteger(value) ? String(value) : value.toFixed(digits);
 }
 
+const MIN_MANAGERS = 2;
+const MAX_MANAGERS = 20;
+const MIN_ROSTER = 1;
+const MAX_ROSTER = 20;
+
 export function PlayersView() {
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [assumption, setAssumption] = useState<AuctionAssumption>(DEFAULT_ASSUMPTION);
+  const [managersInput, setManagersInput] = useState<string>(
+    String(DEFAULT_ASSUMPTION.managers),
+  );
+  const [rosterSizeInput, setRosterSizeInput] = useState<string>(
+    String(DEFAULT_ASSUMPTION.rosterSize),
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
 
+  const managersValue = useMemo(() => {
+    const parsed = Number.parseInt(managersInput, 10);
+    if (!Number.isFinite(parsed)) return DEFAULT_ASSUMPTION.managers;
+    return Math.min(MAX_MANAGERS, Math.max(MIN_MANAGERS, parsed));
+  }, [managersInput]);
+
+  const rosterSizeValue = useMemo(() => {
+    const parsed = Number.parseInt(rosterSizeInput, 10);
+    if (!Number.isFinite(parsed)) return DEFAULT_ASSUMPTION.rosterSize;
+    return Math.min(MAX_ROSTER, Math.max(MIN_ROSTER, parsed));
+  }, [rosterSizeInput]);
+
   useEffect(() => {
     let active = true;
-
-    async function loadPlayers() {
+    const handle = window.setTimeout(async () => {
       setLoading(true);
       setError("");
 
       try {
-        const payload = await appApiFetch<PlayersPayload>("/players");
+        const search = new URLSearchParams({
+          managers: String(managersValue),
+          rosterSize: String(rosterSizeValue),
+        });
+        const payload = await appApiFetch<PlayersPayload>(
+          `/players?${search.toString()}`,
+        );
 
         if (active) {
           setPlayers(payload.players);
@@ -81,14 +110,13 @@ export function PlayersView() {
           setLoading(false);
         }
       }
-    }
-
-    void loadPlayers();
+    }, 250);
 
     return () => {
       active = false;
+      window.clearTimeout(handle);
     };
-  }, []);
+  }, [managersValue, rosterSizeValue]);
 
   const filteredPlayers = useMemo(() => {
     const normalizedQuery = deferredQuery.trim().toLowerCase();
@@ -107,22 +135,66 @@ export function PlayersView() {
 
   return (
     <main className="mx-auto flex w-full max-w-[96rem] flex-col gap-6 px-4 py-10 sm:px-6 lg:px-8">
-      <section className="space-y-2">
-        <p className="text-xs font-semibold tracking-[0.25em] text-muted-foreground uppercase">
-          Player Pool
-        </p>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Players</h1>
-        <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
-          Full playoff pool with regular-season stats, suggested values, default bids,
-          and projected playoff scoring totals from the current CSV.
-        </p>
-        <p className="max-w-3xl rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          Dollar values below assume a {assumption.managers}-manager league where each
-          team drafts {assumption.rosterSize} players from a ${assumption.budgetPerTeam}{" "}
-          budget (min bid ${assumption.minBid}). Values are calculated as Value Over
-          Replacement Player — your own league&apos;s page will show values tuned to its
-          settings.
-        </p>
+      <section className="space-y-4">
+        <div className="space-y-2">
+          <p className="text-xs font-semibold tracking-[0.25em] text-muted-foreground uppercase">
+            Player Pool
+          </p>
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">Players</h1>
+          <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
+            Full playoff pool with regular-season stats, projected playoff totals, and
+            auction values tuned to the league shape you pick below.
+          </p>
+        </div>
+
+        <Card className="max-w-3xl">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-foreground">
+              League Shape
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pb-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="players-managers" className="text-xs text-muted-foreground">
+                  Managers
+                </Label>
+                <Input
+                  id="players-managers"
+                  type="number"
+                  inputMode="numeric"
+                  min={MIN_MANAGERS}
+                  max={MAX_MANAGERS}
+                  value={managersInput}
+                  onChange={(event) => setManagersInput(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="players-roster" className="text-xs text-muted-foreground">
+                  Roster size
+                </Label>
+                <Input
+                  id="players-roster"
+                  type="number"
+                  inputMode="numeric"
+                  min={MIN_ROSTER}
+                  max={MAX_ROSTER}
+                  value={rosterSizeInput}
+                  onChange={(event) => setRosterSizeInput(event.target.value)}
+                />
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Values below are Value Over Replacement Player for{" "}
+              <strong className="text-foreground">{assumption.managers}</strong> managers
+              ×{" "}
+              <strong className="text-foreground">{assumption.rosterSize}</strong> picks,
+              ${assumption.budgetPerTeam} budget / ${assumption.minBid} min bid. Budget
+              and min bid aren&apos;t configurable here yet — the defaults match the
+              in-app league settings.
+            </p>
+          </CardContent>
+        </Card>
       </section>
 
       <section className="grid gap-4 sm:grid-cols-3">
