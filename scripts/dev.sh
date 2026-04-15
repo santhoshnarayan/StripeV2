@@ -31,6 +31,8 @@ fi
 
 # Update derived URLs
 export BETTER_AUTH_URL="http://localhost:${PORT}"
+export API_URL="http://localhost:${PORT}"
+# Keep NEXT_PUBLIC_API_URL exported for any leftover client-side usage.
 export NEXT_PUBLIC_API_URL="http://localhost:${PORT}"
 export FRONTEND_URL="http://localhost:${WEB_PORT}"
 
