@@ -284,6 +284,17 @@ function parseTeamsInput(value: string) {
     .filter(Boolean);
 }
 
+// "East (2)" / "West (3)" / "East" / "—"
+function formatConferenceSeed(
+  conference: string | null | undefined,
+  seed: number | null | undefined,
+) {
+  const confLabel =
+    conference === "E" ? "East" : conference === "W" ? "West" : conference ?? "";
+  if (!confLabel) return seed != null ? `Seed ${seed}` : "—";
+  return seed != null ? `${confLabel} (${seed})` : confLabel;
+}
+
 function sanitizeBidInput(raw: string) {
   return raw.replace(/[^\d]/g, "").replace(/^0+(?=\d)/, "");
 }
@@ -517,6 +528,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [bidSeedFilter, setBidSeedFilter] = useState("all");
   const [undoStack, setUndoStack] = useState<Array<Record<string, string>>>([]);
   const [redoStack, setRedoStack] = useState<Array<Record<string, string>>>([]);
+  // Mirror the stacks into refs so callbacks captured in async contexts
+  // (e.g. the Sonner toast Undo button) can always read the latest state.
+  const undoStackRef = useRef<Array<Record<string, string>>>([]);
+  const redoStackRef = useRef<Array<Record<string, string>>>([]);
+  const undoHandlerRef = useRef<() => void>(() => {});
   const [expandedHistoryRows, setExpandedHistoryRows] = useState<Set<string>>(
     () => new Set(),
   );
@@ -614,9 +630,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   // A round change means the old undo/redo snapshots reference a different
   // set of player IDs and shouldn't be restorable.
   useEffect(() => {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    lastContinuousBidField.current = null;
     setUndoStack([]);
     setRedoStack([]);
-    lastContinuousBidField.current = null;
   }, [data?.currentRound?.id]);
 
   useEffect(() => {
@@ -1040,7 +1058,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         duration: 5000,
         action: {
           label: "Undo",
-          onClick: () => undoLastBidChange(),
+          onClick: () => undoHandlerRef.current(),
         },
       });
     } catch (submitBidsError) {
@@ -1104,8 +1122,17 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   // Push the current bidValues onto the undo stack. This is for *user-driven*
   // mutations (typing, reset, $0, bulk) — it also clears the redo stack,
   // since the user has branched away from whatever redo timeline existed.
+  // Push the current bidValues onto the undo stack. For user-driven
+  // mutations only — also clears the redo stack since the user has
+  // branched away from whatever redo timeline existed. Writes to both the
+  // ref and state so stale-captured callbacks (e.g. a toast Undo button
+  // fired from an older render) can still read the latest stack.
   function pushUndoSnapshot() {
-    setUndoStack((current) => [...current, { ...bidValuesRef.current }]);
+    const snapshot = { ...bidValuesRef.current };
+    const nextUndo = [...undoStackRef.current, snapshot];
+    undoStackRef.current = nextUndo;
+    redoStackRef.current = [];
+    setUndoStack(nextUndo);
     setRedoStack([]);
   }
 
@@ -1175,37 +1202,46 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   }
 
   function undoLastBidChange() {
-    setUndoStack((currentStack) => {
-      if (!currentStack.length) return currentStack;
-      const restored = currentStack[currentStack.length - 1];
-      const currentSnapshot = { ...bidValuesRef.current };
-      setBidValues(restored);
-      bidValuesRef.current = restored;
-      lastContinuousBidField.current = null;
-      // Preserve the redo timeline by stacking the pre-undo state onto
-      // redoStack instead of clearing it.
-      setRedoStack((redo) => [...redo, currentSnapshot]);
-      scheduleAutoSaveBids();
-      return currentStack.slice(0, -1);
-    });
+    const stack = undoStackRef.current;
+    if (!stack.length) return;
+    const restored = stack[stack.length - 1];
+    const currentSnapshot = { ...bidValuesRef.current };
+
+    const nextUndo = stack.slice(0, -1);
+    const nextRedo = [...redoStackRef.current, currentSnapshot];
+    undoStackRef.current = nextUndo;
+    redoStackRef.current = nextRedo;
+    bidValuesRef.current = restored;
+    lastContinuousBidField.current = null;
+
+    setBidValues(restored);
+    setUndoStack(nextUndo);
+    setRedoStack(nextRedo);
+    scheduleAutoSaveBids();
   }
 
   function redoLastBidChange() {
-    setRedoStack((currentStack) => {
-      if (!currentStack.length) return currentStack;
-      const restored = currentStack[currentStack.length - 1];
-      const currentSnapshot = { ...bidValuesRef.current };
-      setBidValues(restored);
-      bidValuesRef.current = restored;
-      lastContinuousBidField.current = null;
-      // Re-push to undo so the user can immediately undo back out of the
-      // redo. Don't clear redoStack on this path — that's only user
-      // mutations.
-      setUndoStack((undo) => [...undo, currentSnapshot]);
-      scheduleAutoSaveBids();
-      return currentStack.slice(0, -1);
-    });
+    const stack = redoStackRef.current;
+    if (!stack.length) return;
+    const restored = stack[stack.length - 1];
+    const currentSnapshot = { ...bidValuesRef.current };
+
+    const nextRedo = stack.slice(0, -1);
+    const nextUndo = [...undoStackRef.current, currentSnapshot];
+    redoStackRef.current = nextRedo;
+    undoStackRef.current = nextUndo;
+    bidValuesRef.current = restored;
+    lastContinuousBidField.current = null;
+
+    setBidValues(restored);
+    setRedoStack(nextRedo);
+    setUndoStack(nextUndo);
+    scheduleAutoSaveBids();
   }
+
+  // Keep undoHandlerRef pointed at the latest undo function so a toast
+  // button fired from an older render closure still runs current logic.
+  undoHandlerRef.current = undoLastBidChange;
 
   function toggleSelectedPlayer(playerId: string, checked: boolean) {
     setSelectedPlayerIds((current) =>
@@ -1858,28 +1894,30 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                           key={player.id}
                           className="overflow-hidden rounded-2xl border border-border/80 bg-card shadow-sm"
                         >
-                          <div className="flex items-start justify-between gap-3 px-4 pt-4">
-                            <div className="min-w-0">
-                              <p className="truncate text-base font-semibold text-foreground">
+                          <div className="px-4 pt-4">
+                            <div className="flex items-baseline justify-between gap-3">
+                              <p className="min-w-0 truncate text-base font-semibold text-foreground">
                                 {player.name}
                               </p>
-                              <p className="mt-0.5 text-xs text-muted-foreground">
-                                {player.team} · {player.conference} · Seed {player.seed ?? "-"}
-                              </p>
-                            </div>
-                            <div className="shrink-0 text-right">
-                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                                Suggested
-                              </p>
-                              <p className="text-lg font-bold tabular-nums text-foreground">
+                              <p className="shrink-0 text-base font-bold tabular-nums text-foreground">
                                 ${player.suggestedValue}
                               </p>
                             </div>
+                            <div className="mt-0.5 flex items-baseline justify-between gap-3">
+                              <p className="min-w-0 truncate text-xs text-muted-foreground">
+                                {player.team} ·{" "}
+                                {formatConferenceSeed(player.conference, player.seed)} ·
+                                Proj{" "}
+                                {player.totalPoints !== null
+                                  ? Math.round(player.totalPoints)
+                                  : "—"}{" "}
+                                pts
+                              </p>
+                              <p className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+                                Suggested
+                              </p>
+                            </div>
                           </div>
-                          <p className="mt-1 px-4 text-xs text-muted-foreground">
-                            Projected {formatNullableNumber(player.totalPoints)} pts · Default $
-                            {player.defaultBid}
-                          </p>
                           <div className="mt-3 flex items-center gap-1 border-t border-border/60 bg-muted/30 px-3 py-3">
                             <Button
                               type="button"
@@ -2036,11 +2074,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     {submitError || invalidBidMessage ? (
                       <p className="text-sm text-destructive">{submitError || invalidBidMessage}</p>
                     ) : null}
-                    <div className="sticky bottom-2 z-10 flex flex-wrap gap-3 rounded-xl border border-border/80 bg-background/95 p-3 shadow-sm backdrop-blur md:static md:justify-end md:border-0 md:bg-transparent md:p-0 md:shadow-none md:backdrop-blur-none">
+                    <div className="flex flex-col gap-3 md:flex-row md:justify-end md:gap-3">
                       <Button
                         onClick={() => void submitBids()}
                         disabled={submitPending}
-                        className="flex-1 md:flex-none"
+                        className="h-12 w-full text-base md:h-9 md:w-auto md:text-sm"
                       >
                         {submitPending ? "Saving..." : "Submit Bids"}
                       </Button>
@@ -2049,6 +2087,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                           variant="outline"
                           onClick={() => setShowCloseConfirm(true)}
                           disabled={closePending}
+                          className="h-12 w-full text-base md:h-9 md:w-auto md:text-sm"
                         >
                           {closePending ? "Closing..." : "Close Round and Reveal"}
                         </Button>
