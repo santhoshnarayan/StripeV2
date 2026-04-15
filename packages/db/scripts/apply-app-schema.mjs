@@ -105,6 +105,7 @@ async function main() {
       "acquisition_order" integer NOT NULL,
       "acquisition_bid" integer NOT NULL,
       "won_by_tiebreak" boolean DEFAULT false NOT NULL,
+      "is_auto_assigned" boolean DEFAULT false NOT NULL,
       "created_at" timestamp DEFAULT now() NOT NULL,
       "updated_at" timestamp DEFAULT now() NOT NULL
     );
@@ -113,6 +114,7 @@ async function main() {
     ALTER TABLE "league_member" ADD COLUMN IF NOT EXISTS "draft_priority" integer;
     ALTER TABLE "draft_round" ADD COLUMN IF NOT EXISTS "deadline_at" timestamp;
     ALTER TABLE "roster_entry" ADD COLUMN IF NOT EXISTS "won_by_tiebreak" boolean DEFAULT false NOT NULL;
+    ALTER TABLE "roster_entry" ADD COLUMN IF NOT EXISTS "is_auto_assigned" boolean DEFAULT false NOT NULL;
 
     CREATE UNIQUE INDEX IF NOT EXISTS "league_member_league_user_unique"
       ON "league_member" ("league_id", "user_id");

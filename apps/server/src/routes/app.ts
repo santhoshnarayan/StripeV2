@@ -55,7 +55,7 @@ const openRoundSchema = z.object({
 });
 
 const submitBidsSchema = z.object({
-  bids: z.record(z.string(), z.number().int().min(1)).default({}),
+  bids: z.record(z.string(), z.number().int().min(0)).default({}),
 });
 
 const updateLeagueSettingsSchema = z
@@ -417,9 +417,16 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         .map((roundPlayer) => playerMap.get(roundPlayer.playerId))
         .filter((player): player is NonNullable<typeof player> => Boolean(player))
         .map((player) => {
-          const defaultBid = myMaxBid
-            ? Math.min(getDefaultBidFromSuggestedValue(player.suggestedValue), myMaxBid)
-            : 0;
+          const isAllRemainingRound = openRound.eligiblePlayerMode === "all_remaining";
+          const defaultBid = (() => {
+            if (isAllRemainingRound && player.suggestedValue < 2) {
+              return 0;
+            }
+
+            return myMaxBid
+              ? Math.min(getDefaultBidFromSuggestedValue(player.suggestedValue), myMaxBid)
+              : 0;
+          })();
           const myExplicitBid = explicitBidMap.get(player.id) ?? null;
 
           return {
@@ -691,6 +698,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
               winnerName: historyUserMap.get(entry.userId) ?? "Unknown",
               winningBid: entry.acquisitionBid,
               wonByTiebreak: entry.wonByTiebreak,
+              isAutoAssigned: entry.isAutoAssigned,
             })),
         }
       : null,
@@ -707,6 +715,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
             acquisitionBid: entry.acquisitionBid,
             acquisitionOrder: entry.acquisitionOrder,
             acquiredInRoundId: entry.acquisitionRoundId,
+            isAutoAssigned: entry.isAutoAssigned,
             totalPoints: playerMap.get(entry.playerId)?.totalPoints ?? 0,
           }));
 
@@ -1422,6 +1431,11 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
       return c.json({ error: "You can only bid on players in the active round" }, 400);
     }
 
+    // A bid of 0 indicates the user does not want the player and is always allowed.
+    if (amount === 0) {
+      continue;
+    }
+
     if (amount < access.league.minBid) {
       return c.json({ error: "Bids must be at least the league minimum" }, 400);
     }
@@ -1581,6 +1595,8 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
   const autoBidsToInsert: Array<typeof draftBid.$inferInsert> = [];
   const effectiveBidMapByUser = new Map<string, Map<string, number>>();
 
+  const isAllRemainingRound = round.eligiblePlayerMode === "all_remaining";
+
   for (const member of membersWithPriority) {
     const state = mutableStates.get(member.userId)!;
     const maxAllowed = computeMaxBid(
@@ -1593,18 +1609,41 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
     const effectiveBidMap = new Map<string, number>();
 
     for (const player of eligiblePlayers) {
-      if (maxAllowed < access.league.minBid || state.remainingRosterSlots <= 0) {
+      if (state.remainingRosterSlots <= 0) {
         continue;
       }
 
       const explicitBid = explicitBidMap.get(player.id);
-      const effectiveBid = Math.max(
-        access.league.minBid,
-        Math.min(
-          explicitBid ?? getDefaultBidFromSuggestedValue(player.suggestedValue),
-          maxAllowed,
-        ),
-      );
+      let effectiveBid: number;
+
+      if (explicitBid === 0) {
+        // Explicit 0 bid means "I do not want this player" — treat as pass.
+        effectiveBid = 0;
+      } else if (explicitBid !== undefined) {
+        // Non-zero explicit bid — clamp to [minBid, maxAllowed].
+        if (maxAllowed < access.league.minBid) {
+          effectiveBid = 0;
+        } else {
+          effectiveBid = Math.max(
+            access.league.minBid,
+            Math.min(explicitBid, maxAllowed),
+          );
+        }
+      } else if (isAllRemainingRound && player.suggestedValue < 2) {
+        // In an all-remaining round, cheap players default to a pass.
+        effectiveBid = 0;
+      } else if (maxAllowed < access.league.minBid) {
+        effectiveBid = 0;
+      } else {
+        effectiveBid = Math.max(
+          access.league.minBid,
+          Math.min(
+            getDefaultBidFromSuggestedValue(player.suggestedValue),
+            maxAllowed,
+          ),
+        );
+      }
+
       effectiveBidMap.set(player.id, effectiveBid);
 
       if (!explicitBidMap.has(player.id)) {
@@ -1638,6 +1677,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
     acquisitionBid: number;
     acquisitionOrder: number;
     wonByTiebreak: boolean;
+    isAutoAssigned: boolean;
   }> = [];
 
   let acquisitionOrder = 1;
@@ -1676,7 +1716,9 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
         );
         const bidAmount = effectiveBidMapByUser.get(member.userId)?.get(playerId) ?? 0;
 
+        // A 0 bid means the member passed on this player; exclude from contention.
         if (
+          bidAmount <= 0 ||
           bidAmount < access.league.minBid ||
           bidAmount > currentMaxBid ||
           bidAmount > state.remainingBudget
@@ -1733,6 +1775,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
       acquisitionBid: bestCandidate.topBid,
       acquisitionOrder,
       wonByTiebreak: sortedContenders.length > 1,
+      isAutoAssigned: false,
     });
 
     acquisitionOrder += 1;
@@ -1742,6 +1785,63 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
 
     if (sortedContenders.length > 1) {
       priorityOrder = moveWinnerToEnd(priorityOrder, winnerUserId);
+    }
+  }
+
+  // After an all-remaining round, any team that still has empty roster slots is
+  // filled by auto-assigning leftover players at $1 apiece. Teams receive
+  // players in tiebreaker priority order, and the best available player (by
+  // total projected points) is handed out first.
+  if (isAllRemainingRound) {
+    const leftoverPlayers = Array.from(remainingPlayerIds)
+      .map((playerId) => playerMap.get(playerId))
+      .filter((player): player is NonNullable<typeof player> => Boolean(player))
+      .sort((left, right) => {
+        const leftPoints = left.totalPoints ?? 0;
+        const rightPoints = right.totalPoints ?? 0;
+
+        if (rightPoints !== leftPoints) {
+          return rightPoints - leftPoints;
+        }
+
+        return left.name.localeCompare(right.name);
+      });
+
+    let keepAssigning = true;
+
+    while (keepAssigning && leftoverPlayers.length) {
+      keepAssigning = false;
+
+      for (const memberUserId of priorityOrder) {
+        const state = mutableStates.get(memberUserId);
+
+        if (!state || state.remainingRosterSlots <= 0) {
+          continue;
+        }
+
+        if (!leftoverPlayers.length) {
+          break;
+        }
+
+        const nextPlayer = leftoverPlayers.shift()!;
+
+        awards.push({
+          playerId: nextPlayer.id,
+          playerName: nextPlayer.name,
+          playerTeam: nextPlayer.team,
+          winnerUserId: memberUserId,
+          acquisitionBid: 1,
+          acquisitionOrder,
+          wonByTiebreak: false,
+          isAutoAssigned: true,
+        });
+
+        acquisitionOrder += 1;
+        state.remainingBudget = Math.max(0, state.remainingBudget - 1);
+        state.remainingRosterSlots -= 1;
+        remainingPlayerIds.delete(nextPlayer.id);
+        keepAssigning = true;
+      }
     }
   }
 
@@ -1782,6 +1882,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
           acquisitionOrder: award.acquisitionOrder,
           acquisitionBid: award.acquisitionBid,
           wonByTiebreak: award.wonByTiebreak,
+          isAutoAssigned: award.isAutoAssigned,
           createdAt: now,
           updatedAt: now,
         })),
