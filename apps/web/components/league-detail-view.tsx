@@ -519,9 +519,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [bidConferenceFilter, setBidConferenceFilter] = useState("all");
   const [bidTeamFilter, setBidTeamFilter] = useState("all");
   const [bidSeedFilter, setBidSeedFilter] = useState("all");
-  const [lastBulkSnapshot, setLastBulkSnapshot] = useState<
-    Record<string, string> | null
-  >(null);
+  const [undoStack, setUndoStack] = useState<Array<Record<string, string>>>([]);
   const [expandedHistoryRows, setExpandedHistoryRows] = useState<Set<string>>(
     () => new Set(),
   );
@@ -529,6 +527,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const bidValuesRef = useRef<Record<string, string>>({});
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const submitAbortRef = useRef<AbortController | null>(null);
+  // While the user types in a single field, we only want one snapshot for
+  // that whole run of keystrokes. `lastContinuousBidField` tracks the field
+  // the most recent snapshot is tied to; a new snapshot gets pushed when the
+  // source changes (different field, or a discrete action like reset/0/bulk).
+  const lastContinuousBidField = useRef<string | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
 
   const loadLeague = useCallback(
@@ -610,6 +613,13 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       }
     };
   }, []);
+
+  // A round change means the old undo snapshots reference a different set
+  // of player IDs and shouldn't be restorable.
+  useEffect(() => {
+    setUndoStack([]);
+    lastContinuousBidField.current = null;
+  }, [data?.currentRound?.id]);
 
   useEffect(() => {
     if (data?.league.phase) {
@@ -1044,7 +1054,27 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     }
   }
 
-  function setBidValue(playerId: string, value: string) {
+  function pushUndoSnapshot() {
+    setUndoStack((current) => [...current, { ...bidValuesRef.current }]);
+  }
+
+  function setBidValue(
+    playerId: string,
+    value: string,
+    options?: { discrete?: boolean },
+  ) {
+    // Discrete actions ($0 button, reset, bulk, undo) always push a new
+    // snapshot. Continuous typing in the same field reuses the snapshot
+    // already on top of the stack so we don't flood it with per-keystroke
+    // entries.
+    const isDiscrete = options?.discrete === true;
+    const shouldPush =
+      isDiscrete || lastContinuousBidField.current !== playerId;
+    if (shouldPush) {
+      pushUndoSnapshot();
+    }
+    lastContinuousBidField.current = isDiscrete ? null : playerId;
+
     setBidValues((current) => {
       const next = { ...current, [playerId]: sanitizeBidInput(value) };
       bidValuesRef.current = next;
@@ -1054,6 +1084,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   }
 
   function resetBidValue(playerId: string) {
+    pushUndoSnapshot();
+    lastContinuousBidField.current = null;
     setBidValues((current) => {
       const next = { ...current };
       delete next[playerId];
@@ -1066,7 +1098,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   function applyBulkBids(mode: "suggested" | "zero" | "clear") {
     if (!data?.currentRound) return;
     const players = data.currentRound.players;
-    setLastBulkSnapshot({ ...bidValuesRef.current });
+    pushUndoSnapshot();
+    lastContinuousBidField.current = null;
     setBidValues((current) => {
       const next = { ...current };
       for (const player of players) {
@@ -1090,13 +1123,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     scheduleAutoSaveBids();
   }
 
-  function undoBulkBids() {
-    if (!lastBulkSnapshot) return;
-    const restored = lastBulkSnapshot;
-    setBidValues(restored);
-    bidValuesRef.current = restored;
-    setLastBulkSnapshot(null);
-    scheduleAutoSaveBids();
+  function undoLastBidChange() {
+    setUndoStack((currentStack) => {
+      if (!currentStack.length) return currentStack;
+      const restored = currentStack[currentStack.length - 1];
+      setBidValues(restored);
+      bidValuesRef.current = restored;
+      lastContinuousBidField.current = null;
+      scheduleAutoSaveBids();
+      return currentStack.slice(0, -1);
+    });
   }
 
   function toggleSelectedPlayer(playerId: string, checked: boolean) {
@@ -1704,8 +1740,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={undoBulkBids}
-                        disabled={!lastBulkSnapshot}
+                        onClick={undoLastBidChange}
+                        disabled={undoStack.length === 0}
                         className="ml-auto"
                       >
                         ↶ Undo
@@ -1754,7 +1790,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               type="button"
                               variant="ghost"
                               size="icon-sm"
-                              onClick={() => setBidValue(player.id, "0")}
+                              onClick={() => setBidValue(player.id, "0", { discrete: true })}
                               title="Pass (bid $0)"
                               aria-label={`Pass on ${player.name}`}
                               className="px-1 text-xs font-semibold tabular-nums"
@@ -1857,7 +1893,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     type="button"
                                     variant="ghost"
                                     size="icon-xs"
-                                    onClick={() => setBidValue(player.id, "0")}
+                                    onClick={() => setBidValue(player.id, "0", { discrete: true })}
                                     title="Pass (bid $0)"
                                     aria-label={`Pass on ${player.name}`}
                                     className="px-1.5 text-[11px] font-semibold tabular-nums"
