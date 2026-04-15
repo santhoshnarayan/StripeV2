@@ -7,6 +7,8 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
     "noEmit": true,
     "plugins": [{ "name": "next" }]
   }

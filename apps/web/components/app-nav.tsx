@@ -147,20 +147,11 @@ export function AppNav() {
   return (
     <>
       <header className="sticky top-0 z-40 border-b border-border/80 bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70 pt-[env(safe-area-inset-top)]">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-[96rem] items-center justify-between gap-4 px-4 py-2 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <Logo />
             {/* Desktop primary nav */}
             <nav className="hidden items-center gap-2 md:flex">
-              <Link
-                href="/players"
-                className={buttonVariants({
-                  variant: playersItem.isActive(pathname) ? "default" : "ghost",
-                  size: "sm",
-                })}
-              >
-                Players
-              </Link>
               <Link
                 href="/"
                 className={buttonVariants({
@@ -169,6 +160,15 @@ export function AppNav() {
                 })}
               >
                 Leagues
+              </Link>
+              <Link
+                href="/players"
+                className={buttonVariants({
+                  variant: playersItem.isActive(pathname) ? "default" : "ghost",
+                  size: "sm",
+                })}
+              >
+                Players
               </Link>
               {showAuthNav && !isSignedIn ? (
                 <>

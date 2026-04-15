@@ -844,7 +844,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
   if (loading) {
     return (
-      <main className="mx-auto flex w-full max-w-6xl px-4 py-12 sm:px-6 lg:px-8">
+      <main className="mx-auto flex w-full max-w-[96rem] px-4 py-12 sm:px-6 lg:px-8">
         <p className="text-sm text-muted-foreground">Loading league...</p>
       </main>
     );
@@ -852,7 +852,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
   if (error && !data) {
     return (
-      <main className="mx-auto flex w-full max-w-6xl px-4 py-12 sm:px-6 lg:px-8">
+      <main className="mx-auto flex w-full max-w-[96rem] px-4 py-12 sm:px-6 lg:px-8">
         <Card className="w-full max-w-xl">
           <CardHeader>
             <CardTitle>Unable to load league</CardTitle>

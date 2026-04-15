@@ -11,7 +11,7 @@ export default function Home() {
 
   if (isPending) {
     return (
-      <main className="mx-auto flex w-full max-w-6xl px-4 py-12 sm:px-6 lg:px-8">
+      <main className="mx-auto flex w-full max-w-[96rem] px-4 py-12 sm:px-6 lg:px-8">
         <p className="text-sm text-muted-foreground">Loading...</p>
       </main>
     );
