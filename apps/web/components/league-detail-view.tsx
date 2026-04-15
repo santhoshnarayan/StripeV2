@@ -2190,103 +2190,128 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
             <CardHeader>
               <CardTitle>Draft History</CardTitle>
               <CardDescription>
-                Full resolved bid history by player, including winner, runner-up, and every team bid.
+                Every team&apos;s sealed bid for each resolved round. Winning
+                bids are highlighted emerald; runner-ups in amber.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
+            <CardContent className="space-y-8">
               {data.draftHistory.length ? (
-                data.draftHistory.map((round) => (
-                  <div key={round.id} className="space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <p className="font-medium text-foreground">Round {round.roundNumber}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {round.resolvedAt
-                            ? new Date(round.resolvedAt).toLocaleString()
-                            : "Resolved"}
+                data.draftHistory.map((round) => {
+                  const totalSpent = round.rows.reduce(
+                    (sum, row) => sum + (row.winningBid ?? 0),
+                    0,
+                  );
+                  const playerCount = round.rows.length;
+                  return (
+                    <div key={round.id} className="space-y-3">
+                      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                        <div className="flex items-baseline gap-3">
+                          <h3 className="text-base font-semibold text-foreground">
+                            Round {round.roundNumber}
+                          </h3>
+                          <span className="text-xs text-muted-foreground">
+                            {round.resolvedAt
+                              ? formatRelativeTime(round.resolvedAt)
+                              : "resolved"}
+                          </span>
+                        </div>
+                        <p className="text-xs tabular-nums text-muted-foreground">
+                          {playerCount} {playerCount === 1 ? "player" : "players"}
+                          {" · "}
+                          <span className="font-medium text-foreground">${totalSpent}</span>{" "}
+                          spent
                         </p>
                       </div>
-                      <p className="text-sm text-muted-foreground">
-                        {round.rows.length} players
-                      </p>
-                    </div>
 
-                    <div className="overflow-x-auto rounded-xl border border-border/80">
-                      <table className="min-w-[72rem] text-left text-sm">
-                        <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
-                          <tr>
-                            <th className="px-3 py-3 font-medium">Player / Suggested</th>
-                            <th className="px-3 py-3 font-medium">Winner / Bid</th>
-                            <th className="px-3 py-3 font-medium">Runner-Up / Bid</th>
-                            {round.participants.map((participant) => (
-                              <th key={participant.userId} className="px-3 py-3 font-medium">
-                                {participant.name}
+                      <div className="overflow-x-auto rounded-xl border border-border/80">
+                        <table className="w-full min-w-[48rem] border-separate border-spacing-0 text-sm">
+                          <thead className="bg-muted/40 text-[10px] tracking-[0.12em] text-muted-foreground uppercase">
+                            <tr>
+                              <th className="sticky left-0 z-10 bg-muted/40 px-3 py-2 text-left font-medium backdrop-blur">
+                                Player
                               </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {round.rows.map((row) => (
-                            <tr key={row.playerId} className="border-t border-border/70 align-top">
-                              <td className="px-3 py-3">
-                                <div className="font-medium text-foreground">{row.playerName}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  {row.playerTeam} · ${row.suggestedValue}
-                                </div>
-                              </td>
-                              <td className="px-3 py-3">
-                                <div className="rounded-lg bg-emerald-500/10 px-3 py-2">
-                                  <div className="font-medium text-foreground">
-                                    {row.winnerName ?? "-"}
-                                  </div>
-                                  <div className="text-xs text-emerald-700">
-                                    {row.winningBid !== null ? `$${row.winningBid}` : "-"}
-                                  </div>
-                                </div>
-                              </td>
-                              <td className="px-3 py-3">
-                                <div className="rounded-lg bg-amber-500/10 px-3 py-2">
-                                  <div className="font-medium text-foreground">
-                                    {row.runnerUpName ?? "-"}
-                                  </div>
-                                  <div className="text-xs text-amber-700">
-                                    {row.runnerUpBid === null
-                                      ? "-"
-                                      : row.runnerUpBid === 0
-                                        ? "Pass"
-                                        : `$${row.runnerUpBid}`}
-                                  </div>
-                                </div>
-                              </td>
-                              {row.bids.map((bid) => (
-                                <td key={bid.userId} className="px-3 py-3">
-                                  <div
+                              <th className="px-2 py-2 text-right font-medium">Sug.</th>
+                              {round.participants.map((participant) => {
+                                const first = participant.name.split(" ")[0] ?? participant.name;
+                                return (
+                                  <th
+                                    key={participant.userId}
+                                    className="px-2 py-2 text-right font-medium"
+                                    title={participant.name}
+                                  >
+                                    {first}
+                                  </th>
+                                );
+                              })}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {round.rows.map((row, rowIndex) => {
+                              const stripe = rowIndex % 2 === 0 ? "bg-background" : "bg-muted/15";
+                              return (
+                                <tr
+                                  key={row.playerId}
+                                  className={[
+                                    "border-t border-border/60",
+                                    "hover:bg-muted/25",
+                                  ].join(" ")}
+                                >
+                                  <td
                                     className={[
-                                      "rounded-lg px-3 py-2 text-sm",
-                                      bid.isWinningBid
-                                        ? "bg-emerald-500/10 font-medium text-foreground"
-                                        : bid.isSecondPlaceBid
-                                          ? "bg-amber-500/10 font-medium text-foreground"
-                                          : bid.amount === 0
-                                            ? "bg-muted/30 italic text-muted-foreground"
-                                            : "bg-muted/30 text-muted-foreground",
+                                      "sticky left-0 z-10 px-3 py-2",
+                                      stripe,
+                                      "border-r border-border/60",
                                     ].join(" ")}
                                   >
-                                    {bid.amount === null
-                                      ? "-"
-                                      : bid.amount === 0
-                                        ? "Pass"
-                                        : `$${bid.amount}`}
-                                  </div>
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                                    <div className="truncate font-medium text-foreground">
+                                      {row.playerName}
+                                    </div>
+                                    <div className="text-[11px] text-muted-foreground">
+                                      {row.playerTeam}
+                                    </div>
+                                  </td>
+                                  <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">
+                                    ${row.suggestedValue}
+                                  </td>
+                                  {row.bids.map((bid) => {
+                                    const display =
+                                      bid.amount === null
+                                        ? "—"
+                                        : bid.amount === 0
+                                          ? "Pass"
+                                          : `$${bid.amount}`;
+                                    const isWin = bid.isWinningBid;
+                                    const isRunnerUp = !isWin && bid.isSecondPlaceBid;
+                                    return (
+                                      <td key={bid.userId} className="px-1.5 py-2">
+                                        <span
+                                          className={[
+                                            "inline-flex min-w-[3rem] items-center justify-end rounded-md px-2 py-0.5 tabular-nums transition-colors",
+                                            isWin
+                                              ? "bg-emerald-500/20 font-semibold text-emerald-800 ring-1 ring-emerald-500/50 dark:bg-emerald-400/15 dark:text-emerald-200 dark:ring-emerald-400/40"
+                                              : isRunnerUp
+                                                ? "font-medium text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-300 dark:ring-amber-400/30"
+                                                : bid.amount === 0
+                                                  ? "italic text-muted-foreground/70"
+                                                  : bid.amount === null
+                                                    ? "text-muted-foreground/50"
+                                                    : "text-muted-foreground",
+                                          ].join(" ")}
+                                        >
+                                          {display}
+                                        </span>
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <p className="text-sm text-muted-foreground">
                   No resolved draft rounds yet.
