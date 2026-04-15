@@ -17,9 +17,11 @@ import {
 import { auth } from "../auth.js";
 import { decryptBidAmount, encryptBidAmount } from "../lib/bid-crypto.js";
 import {
+  auctionConfigFromLeague,
   getDefaultBidFromSuggestedValue,
-  getPlayerPool,
-  getPlayerPoolMap,
+  getPlayerPoolForAuction,
+  getPlayerPoolMapForAuction,
+  type AuctionConfig,
   type PlayerPoolEntry,
 } from "../lib/player-pool.js";
 
@@ -88,9 +90,16 @@ function normalizeEmail(email: string) {
 }
 
 appRouter.get("/players", async (c) => {
-  const players = await getPlayerPool();
+  // Public players page — values assume the default 8-manager / 9-pick / $200 league.
+  const players = await getPlayerPoolForAuction();
 
   return c.json({
+    assumption: {
+      managers: 8,
+      rosterSize: 9,
+      budgetPerTeam: 200,
+      minBid: 1,
+    },
     players: players.map((player) => ({
       ...player,
       defaultBid: getDefaultBidFromSuggestedValue(player.suggestedValue),
@@ -298,9 +307,10 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     return null;
   }
 
-  const players = await getPlayerPool();
-  const playerMap = new Map(players.map((player) => [player.id, player]));
   const members = await getLeagueMembers(leagueId);
+  const auctionConfig = auctionConfigFromLeague(access.league, members.length);
+  const players = await getPlayerPoolForAuction(auctionConfig);
+  const playerMap = new Map(players.map((player) => [player.id, player]));
   const pendingInvites = await getPendingLeagueInvites(leagueId);
   const rosterRows = await db
     .select()
@@ -1084,13 +1094,15 @@ appRouter.post("/leagues/:leagueId/members/:userId/remove", async (c) => {
     return c.json({ error: "Member not found" }, 404);
   }
 
-  const playerMap = await getPlayerPoolMap();
+  const remainingMembers = members.filter((member) => member.userId !== memberUserId);
+  const playerMap = await getPlayerPoolMapForAuction(
+    auctionConfigFromLeague(access.league, remainingMembers.length),
+  );
   const rosterRows = await db
     .select()
     .from(rosterEntry)
     .where(eq(rosterEntry.leagueId, access.league.id));
   const now = new Date();
-  const remainingMembers = members.filter((member) => member.userId !== memberUserId);
   const remainingRosterRows = rosterRows.filter((entry) => entry.userId !== memberUserId);
   const remainingStates = buildMemberStates(
     access.league,
@@ -1291,7 +1303,9 @@ appRouter.post("/leagues/:leagueId/draft/rounds", async (c) => {
     return c.json({ error: "Add at least one other manager before drafting" }, 400);
   }
 
-  const players = await getPlayerPool();
+  const players = await getPlayerPoolForAuction(
+    auctionConfigFromLeague(access.league, members.length),
+  );
   const rosterRows = await db
     .select()
     .from(rosterEntry)
@@ -1402,7 +1416,10 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
     return c.json({ error: body.error.errors[0]?.message ?? "Invalid request" }, 400);
   }
 
-  const playerMap = await getPlayerPoolMap();
+  const members = await getLeagueMembers(access.league.id);
+  const playerMap = await getPlayerPoolMapForAuction(
+    auctionConfigFromLeague(access.league, members.length),
+  );
   const eligiblePlayers = await db
     .select()
     .from(draftRoundPlayer)
@@ -1412,7 +1429,6 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
     .select()
     .from(rosterEntry)
     .where(eq(rosterEntry.leagueId, access.league.id));
-  const members = await getLeagueMembers(access.league.id);
   const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap);
   const viewerState = memberStates.get(session.user.id);
 
@@ -1534,8 +1550,10 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
     return c.json({ error: "Open round not found" }, 404);
   }
 
-  const playerMap = await getPlayerPoolMap();
   const members = await getLeagueMembers(access.league.id);
+  const playerMap = await getPlayerPoolMapForAuction(
+    auctionConfigFromLeague(access.league, members.length),
+  );
   const rosterRows = await db
     .select()
     .from(rosterEntry)

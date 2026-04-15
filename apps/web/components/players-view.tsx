@@ -21,8 +21,23 @@ type PlayerRow = {
   totalGames: number | null;
 };
 
+type AuctionAssumption = {
+  managers: number;
+  rosterSize: number;
+  budgetPerTeam: number;
+  minBid: number;
+};
+
 type PlayersPayload = {
+  assumption?: AuctionAssumption;
   players: PlayerRow[];
+};
+
+const DEFAULT_ASSUMPTION: AuctionAssumption = {
+  managers: 8,
+  rosterSize: 9,
+  budgetPerTeam: 200,
+  minBid: 1,
 };
 
 function formatNullableNumber(value: number | null, digits = 1) {
@@ -35,6 +50,7 @@ function formatNullableNumber(value: number | null, digits = 1) {
 
 export function PlayersView() {
   const [players, setPlayers] = useState<PlayerRow[]>([]);
+  const [assumption, setAssumption] = useState<AuctionAssumption>(DEFAULT_ASSUMPTION);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -52,6 +68,9 @@ export function PlayersView() {
 
         if (active) {
           setPlayers(payload.players);
+          if (payload.assumption) {
+            setAssumption(payload.assumption);
+          }
         }
       } catch (loadError) {
         if (active) {
@@ -96,6 +115,13 @@ export function PlayersView() {
         <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
           Full playoff pool with regular-season stats, suggested values, default bids,
           and projected playoff scoring totals from the current CSV.
+        </p>
+        <p className="max-w-3xl rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          Dollar values below assume a {assumption.managers}-manager league where each
+          team drafts {assumption.rosterSize} players from a ${assumption.budgetPerTeam}{" "}
+          budget (min bid ${assumption.minBid}). Values are calculated as Value Over
+          Replacement Player — your own league&apos;s page will show values tuned to its
+          settings.
         </p>
       </section>
 

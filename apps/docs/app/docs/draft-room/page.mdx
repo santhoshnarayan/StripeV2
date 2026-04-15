@@ -6,7 +6,7 @@ The draft uses commissioner-controlled batch auction rounds:
 
 - The commissioner opens a round with either selected players or all remaining players.
 - Managers submit sealed bids.
-- Missing bids default to `floor(50% of suggested value)`, never below `1`.
+- Missing bids default to `floor(50% of suggested value)`, never below `1`. Suggested values are computed per league — see **Suggested Value (VORP)** below.
 - Bids are validated against the active max-bid rule:
 
 ```text
@@ -61,6 +61,26 @@ Commissioners can:
 - Rename the league at any time (names cannot collide with an existing league ID)
 - Adjust roster size while no round is open and the league is not in scoring
 - Change their account password from `/account`
+
+## Suggested Value (VORP)
+
+Each player's `suggestedValue` is **computed per league** based on the league's own settings — it's not the raw value from the CSV. The algorithm is Value Over Replacement Player (VORP):
+
+1. Let `M` = number of active managers, `R` = roster size, `B` = budget per team, `m` = min bid.
+2. The draft pool is the top `M × R` players sorted by projected playoff total points.
+3. The **replacement player** is the first player *outside* the draft pool — the one at rank `M × R + 1`.
+4. Each drafted player's VORP is `max(0, player.totalPoints - replacement.totalPoints)`.
+5. Total dollars in play = `M × B`. Each slot must spend at least `m`, so the "free" dollars managers can distribute = `M × (B - R × m)`.
+6. Each drafted player's suggested value = `m + round((playerVorp / sumOfVorps) × freeDollars)`, with a floor at `m`.
+7. Players outside the draft pool get `suggestedValue = m`.
+
+This means:
+
+- **A 10-manager league drafting 12 players each** spreads the same CSV projections across 120 roster slots and 10 × $200 = $2,000 of total budget. Stars get more expensive.
+- **A 6-manager league drafting 8 players each** has 48 roster slots and $1,200 of total budget. The replacement bar is much higher, so only the very top players command big prices; mid-tier players are cheaper.
+- The public `/players` page displays values for a default assumption of **8 managers × 9 picks × $200 budget**. Your league's own page overrides that with its real settings, and values update automatically as the roster size, budget, or active manager count changes.
+
+The default bid for a missing submission is still `floor(suggestedValue × 0.5)` (min `1`), so it inherits the league-tuned value.
 
 ## Scoring
 
