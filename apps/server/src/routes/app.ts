@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { Hono } from "hono";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
@@ -785,6 +785,7 @@ appRouter.get("/dashboard", async (c) => {
       rosterSize: league.rosterSize,
       commissionerUserId: league.commissionerUserId,
       role: leagueMember.role,
+      createdAt: league.createdAt,
       updatedAt: league.updatedAt,
     })
     .from(leagueMember)
@@ -795,7 +796,7 @@ appRouter.get("/dashboard", async (c) => {
         eq(leagueMember.status, "active"),
       ),
     )
-    .orderBy(desc(league.updatedAt));
+    .orderBy(asc(league.createdAt));
 
   const leagueIds = memberships.map((membership) => membership.leagueId);
   const commissionerIds = Array.from(
