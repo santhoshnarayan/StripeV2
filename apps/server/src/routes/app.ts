@@ -58,9 +58,14 @@ const submitBidsSchema = z.object({
   bids: z.record(z.string(), z.number().int().min(1)).default({}),
 });
 
-const updateLeagueSettingsSchema = z.object({
-  rosterSize: z.number().int().min(8).max(12),
-});
+const updateLeagueSettingsSchema = z
+  .object({
+    name: z.string().min(2).max(120).optional(),
+    rosterSize: z.number().int().min(8).max(12).optional(),
+  })
+  .refine((value) => typeof value.name === "string" || typeof value.rosterSize === "number", {
+    message: "Provide at least one setting to update",
+  });
 
 export const appRouter = new Hono<{
   Variables: {
@@ -81,6 +86,17 @@ function getRequiredSession(c: { get: (key: "session") => AppSession }) {
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
+
+appRouter.get("/players", async (c) => {
+  const players = await getPlayerPool();
+
+  return c.json({
+    players: players.map((player) => ({
+      ...player,
+      defaultBid: getDefaultBidFromSuggestedValue(player.suggestedValue),
+    })),
+  });
+});
 
 function computeMaxBid(
   remainingBudget: number,
@@ -303,6 +319,12 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       .limit(1)
   )[0] ?? null;
 
+  const resolvedRounds = await db
+    .select()
+    .from(draftRound)
+    .where(and(eq(draftRound.leagueId, leagueId), eq(draftRound.status, "resolved")))
+    .orderBy(desc(draftRound.roundNumber));
+
   const latestResolvedRound = (
     await db
       .select()
@@ -330,8 +352,13 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       name: string;
       team: string;
       conference: string;
+      seed: number | null;
+      gamesPlayed: number | null;
+      minutesPerGame: number | null;
+      pointsPerGame: number | null;
       suggestedValue: number;
       totalPoints: number | null;
+      totalGames: number | null;
       defaultBid: number;
       myExplicitBid: number | null;
       myEffectiveBid: number;
@@ -400,8 +427,13 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
             name: player.name,
             team: player.team,
             conference: player.conference,
+            seed: player.seed,
+            gamesPlayed: player.gamesPlayed,
+            minutesPerGame: player.minutesPerGame,
+            pointsPerGame: player.pointsPerGame,
             suggestedValue: player.suggestedValue,
             totalPoints: player.totalPoints,
+            totalGames: player.totalGames,
             defaultBid,
             myExplicitBid,
             myEffectiveBid: myExplicitBid ?? defaultBid,
@@ -425,6 +457,195 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     0,
     ...Array.from(memberStates.values()).map((state) => state.rosterCount),
   );
+
+  const resolvedRoundIds = resolvedRounds.map((round) => round.id);
+  const resolvedRoundPlayers = resolvedRoundIds.length
+    ? await db
+        .select()
+        .from(draftRoundPlayer)
+        .where(inArray(draftRoundPlayer.roundId, resolvedRoundIds))
+    : [];
+  const resolvedSubmissions = resolvedRoundIds.length
+    ? await db
+        .select()
+        .from(draftSubmission)
+        .where(inArray(draftSubmission.roundId, resolvedRoundIds))
+    : [];
+  const resolvedSubmissionIds = resolvedSubmissions.map((submission) => submission.id);
+  const resolvedBidRows = resolvedSubmissionIds.length
+    ? await db
+        .select()
+        .from(draftBid)
+        .where(inArray(draftBid.submissionId, resolvedSubmissionIds))
+    : [];
+  const historyUserIds = Array.from(
+    new Set([
+      ...resolvedSubmissions.map((submission) => submission.userId),
+      ...rosterRows
+        .filter((entry) => entry.acquisitionRoundId !== null)
+        .map((entry) => entry.userId),
+    ]),
+  ).filter((userId) => !memberNameMap.has(userId));
+  const historyUsers = historyUserIds.length
+    ? await db.select().from(user).where(inArray(user.id, historyUserIds))
+    : [];
+  const historyUserEntries: Array<[string, string]> = [
+    ...Array.from(memberNameMap.entries()),
+    ...historyUsers.map((historyUser) => [historyUser.id, historyUser.name] as [string, string]),
+  ];
+  const historyUserMap = new Map<string, string>(historyUserEntries);
+  const submissionsByRoundId = new Map<string, Array<typeof draftSubmission.$inferSelect>>();
+
+  for (const submission of resolvedSubmissions) {
+    submissionsByRoundId.set(submission.roundId, [
+      ...(submissionsByRoundId.get(submission.roundId) ?? []),
+      submission,
+    ]);
+  }
+
+  const bidsBySubmissionId = new Map<string, Array<typeof draftBid.$inferSelect>>();
+
+  for (const bid of resolvedBidRows) {
+    bidsBySubmissionId.set(bid.submissionId, [...(bidsBySubmissionId.get(bid.submissionId) ?? []), bid]);
+  }
+
+  const roundPlayersByRoundId = new Map<string, Array<typeof draftRoundPlayer.$inferSelect>>();
+
+  for (const roundPlayer of resolvedRoundPlayers) {
+    roundPlayersByRoundId.set(roundPlayer.roundId, [
+      ...(roundPlayersByRoundId.get(roundPlayer.roundId) ?? []),
+      roundPlayer,
+    ]);
+  }
+
+  const awardsByRoundId = new Map<string, Array<typeof rosterEntry.$inferSelect>>();
+
+  for (const rosterEntryRow of rosterRows.filter((entry) => entry.acquisitionRoundId !== null)) {
+    const roundId = rosterEntryRow.acquisitionRoundId;
+
+    if (!roundId) {
+      continue;
+    }
+
+    awardsByRoundId.set(roundId, [...(awardsByRoundId.get(roundId) ?? []), rosterEntryRow]);
+  }
+
+  const draftHistory = resolvedRounds.map((round) => {
+    const roundSubmissionsForHistory = submissionsByRoundId.get(round.id) ?? [];
+    const roundParticipantIds = Array.from(
+      new Set(roundSubmissionsForHistory.map((submission) => submission.userId)),
+    ).sort((left, right) =>
+      (historyUserMap.get(left) ?? "Unknown").localeCompare(historyUserMap.get(right) ?? "Unknown"),
+    );
+    const roundParticipants = roundParticipantIds.map((userId) => ({
+      userId,
+      name: historyUserMap.get(userId) ?? "Unknown",
+    }));
+    const submissionByUserId = new Map<string, typeof draftSubmission.$inferSelect>(
+      roundSubmissionsForHistory.map((submission) => [submission.userId, submission] as [
+        string,
+        typeof draftSubmission.$inferSelect,
+      ]),
+    );
+    const awardsForRound = [...(awardsByRoundId.get(round.id) ?? [])].sort(
+      (left, right) => left.acquisitionOrder - right.acquisitionOrder,
+    );
+    const awardByPlayerId = new Map(awardsForRound.map((award) => [award.playerId, award]));
+    const playersForRound = (roundPlayersByRoundId.get(round.id) ?? [])
+      .map((roundPlayer) => playerMap.get(roundPlayer.playerId))
+      .filter((player): player is NonNullable<typeof player> => Boolean(player))
+      .sort((left, right) => {
+        const leftAward = awardByPlayerId.get(left.id);
+        const rightAward = awardByPlayerId.get(right.id);
+
+        if (leftAward && rightAward) {
+          return leftAward.acquisitionOrder - rightAward.acquisitionOrder;
+        }
+
+        if (leftAward) {
+          return -1;
+        }
+
+        if (rightAward) {
+          return 1;
+        }
+
+        return (
+          right.suggestedValue - left.suggestedValue ||
+          (right.totalPoints ?? -1) - (left.totalPoints ?? -1) ||
+          left.name.localeCompare(right.name)
+        );
+      });
+
+    return {
+      id: round.id,
+      roundNumber: round.roundNumber,
+      resolvedAt: round.resolvedAt,
+      participants: roundParticipants,
+      rows: playersForRound.map((player) => {
+        const award = awardByPlayerId.get(player.id) ?? null;
+        const bids = roundParticipants.map((participant) => {
+          const submission = submissionByUserId.get(participant.userId);
+          const bidAmount = submission
+            ? bidsBySubmissionId
+                .get(submission.id)
+                ?.find((bid) => bid.playerId === player.id)
+            : null;
+          const amount = bidAmount ? decryptBidAmount(bidAmount.encryptedAmount) : null;
+
+          return {
+            userId: participant.userId,
+            userName: participant.name,
+            amount,
+          };
+        });
+        const rankedBids = [...bids]
+          .filter((bid) => bid.amount !== null)
+          .sort((left, right) => {
+            if ((right.amount ?? -1) !== (left.amount ?? -1)) {
+              return (right.amount ?? -1) - (left.amount ?? -1);
+            }
+
+            if (award?.userId === left.userId) {
+              return -1;
+            }
+
+            if (award?.userId === right.userId) {
+              return 1;
+            }
+
+            return left.userName.localeCompare(right.userName);
+          });
+        const winnerBid = award?.acquisitionBid ?? rankedBids[0]?.amount ?? null;
+        const winnerName = award ? historyUserMap.get(award.userId) ?? "Unknown" : null;
+        const runnerUpAmount =
+          rankedBids.find((bid) => bid.userId !== award?.userId)?.amount ?? null;
+        const runnerUpNames = rankedBids
+          .filter((bid) => bid.userId !== award?.userId && bid.amount === runnerUpAmount)
+          .map((bid) => bid.userName);
+
+        return {
+          playerId: player.id,
+          playerName: player.name,
+          playerTeam: player.team,
+          suggestedValue: player.suggestedValue,
+          winnerUserId: award?.userId ?? null,
+          winnerName,
+          winningBid: winnerBid,
+          runnerUpName: runnerUpNames.length ? runnerUpNames.join(", ") : null,
+          runnerUpBid: runnerUpAmount,
+          bids: bids.map((bid) => ({
+            ...bid,
+            isWinningBid: bid.userId === award?.userId && bid.amount !== null,
+            isSecondPlaceBid:
+              bid.userId !== award?.userId &&
+              runnerUpAmount !== null &&
+              bid.amount === runnerUpAmount,
+          })),
+        };
+      }),
+    };
+  });
 
   return {
     league: {
@@ -452,6 +673,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     ),
     availablePlayers,
     currentRound,
+    draftHistory,
     lastResolvedRound: latestResolvedRound
       ? {
           id: latestResolvedRound.id,
@@ -466,7 +688,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
               playerName: entry.playerName,
               playerTeam: entry.playerTeam,
               winnerUserId: entry.userId,
-              winnerName: memberNameMap.get(entry.userId) ?? "Unknown",
+              winnerName: historyUserMap.get(entry.userId) ?? "Unknown",
               winningBid: entry.acquisitionBid,
               wonByTiebreak: entry.wonByTiebreak,
             })),
@@ -750,48 +972,74 @@ appRouter.post("/leagues/:leagueId/settings", async (c) => {
     return c.json({ error: body.error.errors[0]?.message ?? "Invalid request" }, 400);
   }
 
-  const openRound = await db
-    .select()
-    .from(draftRound)
-    .where(and(eq(draftRound.leagueId, access.league.id), eq(draftRound.status, "open")))
-    .limit(1);
+  if (typeof body.data.rosterSize === "number") {
+    const openRound = await db
+      .select()
+      .from(draftRound)
+      .where(and(eq(draftRound.leagueId, access.league.id), eq(draftRound.status, "open")))
+      .limit(1);
 
-  if (openRound[0]) {
-    return c.json({ error: "Close the active round before changing roster size" }, 400);
+    if (openRound[0]) {
+      return c.json({ error: "Close the active round before changing roster size" }, 400);
+    }
+
+    if (access.league.phase === "scoring") {
+      return c.json({ error: "League settings are locked once scoring begins" }, 400);
+    }
+
+    const members = await getLeagueMembers(access.league.id);
+    const rosterRows = await db
+      .select()
+      .from(rosterEntry)
+      .where(eq(rosterEntry.leagueId, access.league.id));
+    const rosterCountByUser = new Map<string, number>();
+
+    for (const entry of rosterRows) {
+      rosterCountByUser.set(entry.userId, (rosterCountByUser.get(entry.userId) ?? 0) + 1);
+    }
+
+    const maxRosterCount = Math.max(
+      0,
+      ...members.map((member) => rosterCountByUser.get(member.userId) ?? 0),
+    );
+
+    if (body.data.rosterSize < maxRosterCount) {
+      return c.json({
+        error: `Roster size cannot be smaller than the current largest roster (${maxRosterCount})`,
+      }, 400);
+    }
   }
 
-  if (access.league.phase === "scoring") {
-    return c.json({ error: "League settings are locked once scoring begins" }, 400);
+  const updates: Partial<typeof league.$inferInsert> = {
+    updatedAt: new Date(),
+  };
+
+  if (typeof body.data.name === "string") {
+    const trimmedName = body.data.name.trim();
+
+    const conflictingLeague = await db
+      .select({ id: league.id })
+      .from(league)
+      .where(eq(league.id, trimmedName))
+      .limit(1);
+
+    if (conflictingLeague[0]) {
+      return c.json(
+        { error: "League name cannot match an existing league ID" },
+        400,
+      );
+    }
+
+    updates.name = trimmedName;
   }
 
-  const members = await getLeagueMembers(access.league.id);
-  const rosterRows = await db
-    .select()
-    .from(rosterEntry)
-    .where(eq(rosterEntry.leagueId, access.league.id));
-  const rosterCountByUser = new Map<string, number>();
-
-  for (const entry of rosterRows) {
-    rosterCountByUser.set(entry.userId, (rosterCountByUser.get(entry.userId) ?? 0) + 1);
-  }
-
-  const maxRosterCount = Math.max(
-    0,
-    ...members.map((member) => rosterCountByUser.get(member.userId) ?? 0),
-  );
-
-  if (body.data.rosterSize < maxRosterCount) {
-    return c.json({
-      error: `Roster size cannot be smaller than the current largest roster (${maxRosterCount})`,
-    }, 400);
+  if (typeof body.data.rosterSize === "number") {
+    updates.rosterSize = body.data.rosterSize;
   }
 
   await db
     .update(league)
-    .set({
-      rosterSize: body.data.rosterSize,
-      updatedAt: new Date(),
-    })
+    .set(updates)
     .where(eq(league.id, access.league.id));
 
   return c.json({ ok: true });

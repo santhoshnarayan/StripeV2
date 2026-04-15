@@ -2,7 +2,13 @@
 
 ## Overview
 
-StripeV2 is a TypeScript monorepo managed by Turborepo and pnpm workspaces.
+Player Pool is a TypeScript monorepo managed by Turborepo and pnpm workspaces. The app supports:
+
+- public player-pool browsing
+- Better Auth email/password sign-in and sign-up
+- league creation and invite flow
+- sealed-bid batch auction rounds
+- automatic playoff scoring from the player CSV projections
 
 ## Services
 
@@ -10,10 +16,14 @@ StripeV2 is a TypeScript monorepo managed by Turborepo and pnpm workspaces.
 - **Framework**: Next.js 15 (App Router)
 - **Deployment**: Vercel
 - **Auth**: Better Auth client
+- **UI**: React, Tailwind, shadcn/ui
+- **Proxy Routes**: `/api/auth/*` and `/api/app/*` are proxied through Next to Railway
 
 ### Backend (`apps/server`)
 - **Framework**: Hono
-- **API**: GraphQL via Yoga + Pothos
+- **APIs**:
+  - GraphQL via Yoga + Pothos
+  - REST-style app routes for leagues, invites, draft rounds, bids, and player pool data
 - **Auth**: Better Auth server
 - **Cron**: node-cron for scheduled tasks
 - **Background Tasks**: BullMQ + Redis
@@ -22,6 +32,15 @@ StripeV2 is a TypeScript monorepo managed by Turborepo and pnpm workspaces.
 ### Database
 - **ORM**: Drizzle ORM
 - **Provider**: PlanetScale (PostgreSQL)
+- **App Tables**:
+  - `league`
+  - `league_member`
+  - `league_invite`
+  - `draft_round`
+  - `draft_round_player`
+  - `draft_submission`
+  - `draft_bid`
+  - `roster_entry`
 
 ### Cache / Queue
 - **Provider**: Railway Redis
@@ -29,8 +48,10 @@ StripeV2 is a TypeScript monorepo managed by Turborepo and pnpm workspaces.
 
 ## Data Flow
 
-1. User interacts with Next.js frontend
-2. Auth requests go to server's `/api/auth/*` endpoints
-3. GraphQL queries/mutations go to server's `/graphql` endpoint
-4. Server reads/writes to PlanetScale via Drizzle ORM
-5. Background tasks are enqueued to Redis via BullMQ
+1. Users can browse `/players` without signing in.
+2. Signed-in users interact with the league hub and league detail pages in Next.js.
+3. Web app requests hit Next route handlers under `/api/app/*` and `/api/auth/*`.
+4. Those route handlers proxy to the Railway-hosted Hono server.
+5. Hono handles auth, league state, round lifecycle, bid submission, and reveal logic.
+6. Server reads the player pool CSV and reads/writes to PlanetScale via Drizzle ORM.
+7. Automatic scoring currently uses projected playoff `Total Pts` values from the CSV.

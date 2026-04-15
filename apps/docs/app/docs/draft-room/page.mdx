@@ -1,0 +1,67 @@
+# Draft Room
+
+## Blind Auction Model
+
+The draft uses commissioner-controlled batch auction rounds:
+
+- The commissioner opens a round with either selected players or all remaining players.
+- Managers submit sealed bids.
+- Missing bids default to `floor(50% of suggested value)`, never below `1`.
+- Bids are validated against the active max-bid rule:
+
+```text
+maxBid = remainingBudget - (remainingRosterSlots - 1)
+```
+
+- Bids are encrypted at rest on the server and only revealed when the commissioner closes the round.
+
+## Tiebreaks
+
+- Ties are broken by a public priority order.
+- That priority order is randomized before the first draft round.
+- If a team wins a tiebreak, it moves to the end of the priority order.
+
+## League Tabs
+
+The league detail page is organized into tabs:
+
+- **Overview** — priority order and league settings. Commissioners can rename the league and adjust roster size here.
+- **Managers** — active managers, remaining budget / roster slots, and invite controls.
+- **Draft Room** — submission status and the bid table for the current round, or the "Open next round" controls when no round is open.
+- **Reveal** — the latest revealed round plus the full draft history table.
+- **Standings** — rosters with current projected points.
+
+## Draft Room UI
+
+The league Draft Room tab includes:
+
+- submission status tracking for the active round
+- a bid-entry table ordered by suggested dollar value descending
+- regular-season stat columns and projected playoff totals in the bid view
+- commissioner filtering and sorting when selecting players for a new round
+- conference, seed, and team filters
+- selected-player counts
+- preset selection tools such as "top N projected players per team", with include/exclude team scopes
+- a mobile-optimized bid card layout with a sticky submit bar
+- live polling for other managers' submissions while a round is open
+
+## Draft History
+
+The Reveal tab contains the draft history table. Each resolved round renders a row per player with:
+
+- Player name + suggested value
+- Winning manager + winning bid (highlighted)
+- Runner-up manager + runner-up bid (highlighted)
+- Fixed per-manager columns showing every bid
+
+## League Settings
+
+Commissioners can:
+
+- Rename the league at any time (names cannot collide with an existing league ID)
+- Adjust roster size while no round is open and the league is not in scoring
+- Change their account password from `/account`
+
+## Scoring
+
+Current scoring is automatic and uses the CSV's projected playoff `Total Pts` values. Rosters lock once the draft is complete.

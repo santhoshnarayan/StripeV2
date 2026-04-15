@@ -3,13 +3,16 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "StripeV2 Docs",
-  description: "Documentation for StripeV2",
+  title: "Player Pool Docs",
+  description: "Documentation for the Player Pool NBA Playoffs app",
 };
 
 const navLinks = [
   { href: "/docs/getting-started", label: "Getting Started" },
   { href: "/docs/architecture", label: "Architecture" },
+  { href: "/docs/game-flow", label: "Game Flow" },
+  { href: "/docs/draft-room", label: "Draft Room" },
+  { href: "/docs/deployments", label: "Deployments" },
   { href: "/docs/auth", label: "Auth" },
   { href: "/docs/graphql", label: "GraphQL" },
   { href: "/docs/cron-jobs", label: "Cron Jobs" },
@@ -27,7 +30,7 @@ export default function RootLayout({
         <div className="flex min-h-screen">
           <nav className="w-60 shrink-0 border-r border-gray-200 px-4 py-8">
             <Link href="/" className="text-lg font-bold tracking-tight">
-              StripeV2 Docs
+              Player Pool Docs
             </Link>
             <ul className="mt-6 space-y-1">
               {navLinks.map((link) => (

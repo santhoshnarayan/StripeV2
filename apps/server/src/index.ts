@@ -11,11 +11,20 @@ import { startWorker } from "./tasks/queue.js";
 
 const app = new Hono();
 
+const trustedOrigins = [
+  process.env.FRONTEND_URL,
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:3002",
+  "http://localhost:3003",
+  "https://nba-player-pool.vercel.app",
+].filter((origin): origin is string => typeof origin === "string" && origin.length > 0);
+
 app.use("*", logger());
 app.use(
   "*",
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: (origin) => (origin && trustedOrigins.includes(origin) ? origin : trustedOrigins[0]),
     credentials: true,
   })
 );

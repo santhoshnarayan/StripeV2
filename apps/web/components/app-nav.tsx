@@ -10,6 +10,9 @@ export function AppNav() {
   const { data: session, isPending } = useSession();
   const isSignInPage = pathname.startsWith("/auth/sign-in");
   const isSignUpPage = pathname.startsWith("/auth/sign-up");
+  const isPlayersPage = pathname.startsWith("/players");
+  const isAccountPage = pathname.startsWith("/account");
+  const isLeaguesPage = pathname === "/" || pathname.startsWith("/leagues/");
 
   return (
     <header className="sticky top-0 z-50 border-b border-border/80 bg-background/85 backdrop-blur">
@@ -17,20 +20,29 @@ export function AppNav() {
         <div className="flex min-w-0 items-center gap-3">
           <Link
             href="/"
-            className="shrink-0 leading-none"
+            className="shrink-0 leading-[1]"
           >
-            <span className="block text-xl font-bold tracking-tight text-foreground">
+            <span className="block text-[11px] font-bold tracking-tight text-foreground">
               Player Pool
             </span>
-            <span className="block pt-0.5 text-[0.55rem] font-semibold tracking-[0.3em] text-[#ff5a00] uppercase">
+            <span className="block pt-[1px] text-[7px] font-semibold tracking-[0.26em] text-[#ff5a00] uppercase">
               NBA PLAYOFFS
             </span>
           </Link>
           <nav className="flex items-center gap-2">
             <Link
+              href="/players"
+              className={buttonVariants({
+                variant: isPlayersPage ? "default" : "ghost",
+                size: "sm",
+              })}
+            >
+              Players
+            </Link>
+            <Link
               href="/"
               className={buttonVariants({
-                variant: pathname === "/" ? "default" : "ghost",
+                variant: isLeaguesPage ? "default" : "ghost",
                 size: "sm",
               })}
             >
@@ -62,11 +74,17 @@ export function AppNav() {
         </div>
 
         {!isPending && session ? (
-          <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium text-foreground">{session.user.name}</p>
-              <p className="text-xs text-muted-foreground">{session.user.email}</p>
-            </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/account"
+              className={buttonVariants({
+                variant: isAccountPage ? "default" : "ghost",
+                size: "sm",
+              })}
+            >
+              <span className="hidden sm:inline">{session.user.name}</span>
+              <span className="sm:hidden">Account</span>
+            </Link>
             <Button variant="outline" size="sm" onClick={() => signOut()}>
               Sign Out
             </Button>

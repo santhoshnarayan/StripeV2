@@ -10,3 +10,4 @@ export const signOut = authClient.signOut;
 export const useSession = authClient.useSession;
 export const requestPasswordReset = authClient.requestPasswordReset;
 export const resetPassword = authClient.resetPassword;
+export const changePassword = authClient.changePassword;

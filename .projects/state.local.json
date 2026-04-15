@@ -8,6 +8,24 @@
     "projectName": "StripeV2"
   },
   "providers": {
+    "planetscale": {
+      "accountRequestId": "facctrq_61UTPvu3xSQAK799S16UT7DQKhSQVv3jfYQnOCM4WBgm",
+      "linkedAt": "2026-04-08T19:41:39.481Z",
+      "providerId": "prvdr_61UGL5sd8z0WkMArr5Jlo",
+      "providerName": "PlanetScale",
+      "redirectUrl": null,
+      "requestedAt": "2026-04-08T19:41:22.996Z",
+      "status": "complete"
+    },
+    "railway": {
+      "accountRequestId": "facctrq_61UTPcGkHs9vompPD16UT7DQKhSQVv3jfYQnOCM4WFia",
+      "linkedAt": "2026-04-08T19:21:05.704Z",
+      "providerId": "prvdr_61UK2uWsoydL7tUBp57Fg",
+      "providerName": "Railway",
+      "redirectUrl": null,
+      "requestedAt": "2026-04-08T19:21:05.704Z",
+      "status": "complete"
+    },
     "vercel": {
       "accountRequestId": "fprvcnn_61UT7LTkkG7ncKDBy16UT7DQKhSQVv3jfYQnOCM4W35c",
       "linkedAt": "2026-04-07T23:50:31.326Z",
@@ -19,6 +37,45 @@
     }
   },
   "resources": {
+    "postgres-db": {
+      "configuration": {
+        "name": "stripev2",
+        "cluster": "PS-10",
+        "region": "aws-us-east"
+      },
+      "createdAt": "2026-04-08T19:43:29.452Z",
+      "lastRevealedAt": "2026-04-08T19:43:29.746Z",
+      "lastStatus": "complete",
+      "name": "postgres-db",
+      "providerId": "prvdr_61UGL5sd8z0WkMArr5Jlo",
+      "providerName": "PlanetScale",
+      "resourceId": "fres_61UTPwDe6UWQBojqQ16UT7DQKhSQVv3jfYQnOCM4WFP6",
+      "serviceId": "postgresql"
+    },
+    "railway-hosting": {
+      "configuration": {
+        "repo": "santhoshnarayan/StripeV2"
+      },
+      "createdAt": "2026-04-08T19:24:56.919Z",
+      "lastRevealedAt": "2026-04-08T19:24:57.115Z",
+      "lastStatus": "complete",
+      "name": "railway-hosting",
+      "providerId": "prvdr_61UK2uWsoydL7tUBp57Fg",
+      "providerName": "Railway",
+      "resourceId": "fres_61UTPfkyjjBHK7iDO16UT7DQKhSQVv3jfYQnOCM4W0RE",
+      "serviceId": "hosting"
+    },
+    "redis-cache": {
+      "configuration": {},
+      "createdAt": "2026-04-08T19:59:34.467Z",
+      "lastRevealedAt": "2026-04-08T19:59:34.779Z",
+      "lastStatus": "complete",
+      "name": "redis-cache",
+      "providerId": "prvdr_61UK2uWsoydL7tUBp57Fg",
+      "providerName": "Railway",
+      "resourceId": "fres_61UTQDE4a32lAUg1016UT7DQKhSQVv3jfYQnOCM4WKbQ",
+      "serviceId": "redis"
+    },
     "vercel-project": {
       "configuration": {
         "name": "StripeV2"

@@ -15,8 +15,11 @@ pnpm install
 # Pull environment variables
 stripe projects env --pull
 
-# Push database schema
-pnpm db:push
+# Apply additive app tables
+pnpm db:apply-app-schema
+
+# Seed the demo users and Founders League
+pnpm seed:users
 
 # Start development
 pnpm dev
@@ -27,13 +30,25 @@ This starts:
 - **Server** (Hono) at `http://localhost:4000`
 - **Docs** at `http://localhost:3001`
 
+## App Surface
+
+- `/players` is public and shows the full player pool with stats, suggested values, and projected playoff totals.
+- `/` is the signed-in league hub.
+- `/leagues/[leagueId]` is the league workspace, split into overview, managers, draft room, reveal, and standings sections.
+
+## Local Data Setup
+
+- `pnpm db:apply-app-schema` creates the league, invite, round, bid, and roster tables without trying to rebuild the Better Auth tables.
+- `pnpm seed:users` upserts the curated test users and creates `Founders League` with Santhosh as commissioner.
+- The player pool source of truth is the repo-root CSV: `nba-player-pool-values.csv`.
+
 ## Project Structure
 
 ```
 ├── apps/
 │   ├── web/        # Next.js frontend (Vercel)
 │   ├── server/     # Hono backend (Railway)
-│   └── docs/       # Documentation
+│   └── docs/       # Product and technical documentation
 ├── packages/
 │   ├── db/         # Drizzle ORM + schema
 │   ├── validators/ # Shared Zod schemas

@@ -1,0 +1,46 @@
+# Game Flow
+
+## Top-Level Navigation
+
+- `Players` is public and shows the full player pool, projected playoff totals, suggested values, and default bid baselines.
+- `Leagues` is the signed-in hub for memberships, pending invites, and commissioner league creation.
+- The signed-in user's name in the nav bar links to `/account`, where they can change their password.
+
+## Live Updates
+
+League pages poll every 8 seconds while the tab is visible and the user has interacted in the last 3 minutes. Polling pauses when the tab is hidden and resumes on focus. Shadcn/Sonner toasts fire when:
+
+- Another manager submits their bids
+- A new round opens
+- A round closes
+
+## League Phases
+
+Every league moves through three phases:
+
+1. `Invite`
+2. `Draft`
+3. `Scoring`
+
+The commissioner controls invite and draft actions. Once all active rosters are full, the league automatically moves into scoring.
+
+## League Membership
+
+- A league supports up to `16` active managers.
+- The commissioner can remove managers at any time.
+- Roster size is configurable by the commissioner, with a default of `10` and current bounds of `8-12`.
+
+## Founders League Seed Data
+
+The seed script creates:
+
+- the curated user accounts used for local testing
+- `Founders League`
+- Santhosh as commissioner
+- the listed managers as active league members
+
+Use:
+
+```bash
+pnpm seed:users
+```

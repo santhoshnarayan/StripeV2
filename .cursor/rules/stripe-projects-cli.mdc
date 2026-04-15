@@ -63,6 +63,6 @@ Deploying a project might require to provision a provider that offers compute or
 
 # Troubleshooting
 - If a command fails, run `stripe projects status --json` to understand the current state.
-- If a provider shows status `PENDING_AUTH` or `EXPIRED`, run `stripe projects link <provider>` to re-authenticate. Add `--force` if you need a fresh re-link request regardless of local state.
+- If a provider shows status `PENDING_AUTH` or `EXPIRED`, run `stripe projects link <provider>` to re-authenticate. Add `--force` if you need a fresh re-link request regardless of local state.no its
 - If credentials seem stale, run `stripe projects rotate <resource>` then `stripe projects env --pull`.
 

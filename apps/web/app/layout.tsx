@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import { AppNav } from "@/components/app-nav";
+import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import "./globals.css";
 
@@ -23,6 +24,7 @@ export default function RootLayout({
           <AppNav />
           {children}
         </div>
+        <Toaster />
       </body>
     </html>
   );

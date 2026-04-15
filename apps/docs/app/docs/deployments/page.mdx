@@ -1,0 +1,27 @@
+# Deployments
+
+## Production Services
+
+- Web: Vercel
+- Server: Railway
+- Database: PlanetScale
+
+## Important Deployment Rule
+
+The frontend depends on the Railway backend for:
+
+- Better Auth endpoints under `/api/auth/*`
+- app routes under `/api/app/*`
+
+That means a frontend deploy can break production if Railway is still serving an older backend version.
+
+## Safe Deploy Sequence
+
+1. Push the web changes to trigger the Vercel deployment.
+2. Deploy Railway for any matching backend or proxy-contract changes.
+3. Verify the live dashboard and league detail routes after both are updated.
+
+## Local and Production Notes
+
+- The web proxy routes should target the same backend port and base URL as the Hono server.
+- If Vercel is updated but Railway is not, league dashboard requests can fail because newer frontend code expects backend routes that do not exist in the older server deployment.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Authentication is handled by [Better Auth](https://www.better-auth.com/) with email/password sign-in.
+Authentication is handled by [Better Auth](https://www.better-auth.com/) with public email/password sign-in and sign-up.
 
 ## Server Configuration
 
@@ -14,7 +14,10 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "pg", schema }),
-  emailAndPassword: { enabled: true },
+  emailAndPassword: {
+    enabled: true,
+    minPasswordLength: 5,
+  },
 });
 ```
 
@@ -25,10 +28,29 @@ The auth client is in `apps/web/lib/auth-client.ts`:
 ```ts
 import { createAuthClient } from "better-auth/react";
 
-export const { signIn, signUp, signOut, useSession } = createAuthClient({
-  baseURL: process.env.NEXT_PUBLIC_API_URL,
+const authClient = createAuthClient({
+  baseURL: typeof window !== "undefined" ? window.location.origin : "http://localhost:3000",
 });
 ```
+
+## Product Rules
+
+- Anyone can create an account.
+- League creation is currently restricted in the app layer to `santhoshnarayan@gmail.com`.
+- League invites are email-based. An invited user can sign up later with that same email and then accept the invite.
+- The commissioner sees the same submission-status view during an open draft round as every other manager. Bid amounts stay sealed until reveal.
+
+## Account Flows
+
+- `/auth/sign-in` — email + password sign in; includes a "Forgot password?" link.
+- `/auth/sign-up` — create an account.
+- `/auth/forgot-password` — request a password reset email. Delivered via Resend if `RESEND_API_KEY` is set; otherwise logged to the server console.
+- `/auth/reset-password?token=...` — set a new password from a reset link.
+- `/account` — signed-in users can change their password (requires current password).
+
+## Trusted Origins
+
+The Better Auth `trustedOrigins` list includes the deployed frontend URL plus `http://localhost:3000-3003` for local dev. The CORS allowlist on the Hono server mirrors the same set so cookies work from either environment.
 
 ## Database Tables
 

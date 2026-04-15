@@ -1,11 +1,32 @@
 {
   "version": 1,
   "providers": {
+    "planetscale": {
+      "name": "PlanetScale"
+    },
+    "railway": {
+      "name": "Railway"
+    },
     "vercel": {
       "name": "Vercel"
     }
   },
   "resources": {
+    "postgres-db": {
+      "name": "postgres-db",
+      "providerName": "PlanetScale",
+      "serviceId": "postgresql"
+    },
+    "railway-hosting": {
+      "name": "railway-hosting",
+      "providerName": "Railway",
+      "serviceId": "hosting"
+    },
+    "redis-cache": {
+      "name": "redis-cache",
+      "providerName": "Railway",
+      "serviceId": "redis"
+    },
     "vercel-project": {
       "name": "vercel-project",
       "providerName": "Vercel",

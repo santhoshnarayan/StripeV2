@@ -34,6 +34,9 @@ export default function Home() {
                 scoring phases.
               </p>
               <div className="flex flex-wrap gap-3">
+                <Link href="/players" className={buttonVariants({ variant: "secondary" })}>
+                  Browse Players
+                </Link>
                 <Link href="/auth/sign-in" className={buttonVariants()}>
                   Sign In
                 </Link>
