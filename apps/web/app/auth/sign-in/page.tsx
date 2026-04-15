@@ -69,7 +69,7 @@ export default function SignInPage() {
           <CardDescription>Access your leagues, bids, and scoring dashboard.</CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-4 pb-6">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <Input

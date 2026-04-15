@@ -1,13 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { signOut, useSession } from "@/lib/auth-client";
 
 export function AppNav() {
   const pathname = usePathname();
+  const router = useRouter();
   const { data: session, isPending } = useSession();
+
+  async function handleSignOut() {
+    await signOut();
+    router.push("/");
+    router.refresh();
+  }
   const isSignInPage = pathname.startsWith("/auth/sign-in");
   const isSignUpPage = pathname.startsWith("/auth/sign-up");
   const isPlayersPage = pathname.startsWith("/players");
@@ -85,7 +92,7 @@ export function AppNav() {
               <span className="hidden sm:inline">{session.user.name}</span>
               <span className="sm:hidden">Account</span>
             </Link>
-            <Button variant="outline" size="sm" onClick={() => signOut()}>
+            <Button variant="outline" size="sm" onClick={() => void handleSignOut()}>
               Sign Out
             </Button>
           </div>

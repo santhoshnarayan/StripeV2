@@ -100,7 +100,7 @@ export default function AccountPage() {
           </CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-4 pb-6">
             <div className="space-y-2">
               <Label htmlFor="current-password">Current Password</Label>
               <Input
