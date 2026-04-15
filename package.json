@@ -9,6 +9,8 @@
     "lint": "turbo lint",
     "db:generate": "dotenv -e .env -- pnpm --filter @repo/db db:generate",
     "db:push": "dotenv -e .env -- pnpm --filter @repo/db db:push",
+    "db:apply-app-schema": "dotenv -e .env -- pnpm --filter @repo/db exec node scripts/apply-app-schema.mjs",
+    "seed:users": "dotenv -e .env -- pnpm --filter @repo/server exec tsx src/scripts/seed-users.ts",
     "deploy": "./scripts/deploy.sh"
   },
   "devDependencies": {

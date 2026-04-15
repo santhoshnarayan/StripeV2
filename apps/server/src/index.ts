@@ -5,6 +5,7 @@ import { logger } from "hono/logger";
 import { createYoga } from "graphql-yoga";
 import { schema } from "./graphql/schema.js";
 import { auth } from "./auth.js";
+import { appRouter } from "./routes/app.js";
 import { startCronJobs } from "./cron/index.js";
 import { startWorker } from "./tasks/queue.js";
 
@@ -26,6 +27,9 @@ app.get("/health", (c) => c.json({ status: "ok" }));
 app.on(["POST", "GET"], "/api/auth/**", (c) => {
   return auth.handler(c.req.raw);
 });
+
+// App API
+app.route("/api/app", appRouter);
 
 // GraphQL Yoga
 const yoga = createYoga({ schema });

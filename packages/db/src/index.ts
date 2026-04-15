@@ -9,6 +9,11 @@ const connectionString = rawUrl.replace(/&sslrootcert=[^&]*/g, "");
 const client = postgres(connectionString, { ssl: "require" });
 
 export const db = drizzle(client, { schema });
+export const dbClient = client;
+
+export async function closeDb() {
+  await client.end();
+}
 
 export type Database = typeof db;
 

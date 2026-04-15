@@ -1,7 +1,3 @@
-.projects/cache
-.projects/vault
-.env
-.env.local
 
 # Dependencies
 node_modules/
@@ -20,3 +16,10 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+.vercel
+
+.projects/cache
+.projects/vault
+.env
+.env.local
