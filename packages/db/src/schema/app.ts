@@ -191,6 +191,7 @@ export const rosterEntry = pgTable(
     acquisitionOrder: integer("acquisition_order").notNull(),
     acquisitionBid: integer("acquisition_bid").notNull(),
     wonByTiebreak: boolean("won_by_tiebreak").notNull().default(false),
+    isAutoAssigned: boolean("is_auto_assigned").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
