@@ -519,6 +519,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [bidConferenceFilter, setBidConferenceFilter] = useState("all");
   const [bidTeamFilter, setBidTeamFilter] = useState("all");
   const [bidSeedFilter, setBidSeedFilter] = useState("all");
+  const [lastBulkSnapshot, setLastBulkSnapshot] = useState<
+    Record<string, string> | null
+  >(null);
   const [expandedHistoryRows, setExpandedHistoryRows] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1063,6 +1066,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   function applyBulkBids(mode: "suggested" | "zero" | "clear") {
     if (!data?.currentRound) return;
     const players = data.currentRound.players;
+    setLastBulkSnapshot({ ...bidValuesRef.current });
     setBidValues((current) => {
       const next = { ...current };
       for (const player of players) {
@@ -1083,6 +1087,15 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       bidValuesRef.current = next;
       return next;
     });
+    scheduleAutoSaveBids();
+  }
+
+  function undoBulkBids() {
+    if (!lastBulkSnapshot) return;
+    const restored = lastBulkSnapshot;
+    setBidValues(restored);
+    bidValuesRef.current = restored;
+    setLastBulkSnapshot(null);
     scheduleAutoSaveBids();
   }
 
@@ -1659,9 +1672,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2 border-y border-border/60 bg-muted/20 px-3 py-2 -mx-3 sm:mx-0 sm:rounded-lg sm:border">
-                      <span className="self-center text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Bulk:
+                    <div className="flex flex-wrap items-center gap-2 border-y border-border/60 bg-muted/20 px-3 py-2 -mx-3 sm:mx-0 sm:rounded-lg sm:border">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Quick:
                       </span>
                       <Button
                         type="button"
@@ -1686,6 +1699,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         onClick={() => applyBulkBids("clear")}
                       >
                         Clear all
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={undoBulkBids}
+                        disabled={!lastBulkSnapshot}
+                        className="ml-auto"
+                      >
+                        ↶ Undo
                       </Button>
                     </div>
                     <div className="flex flex-col gap-3 md:hidden">
