@@ -295,31 +295,50 @@ function parseBidValue(raw: string): number | null {
 
 // Ratio-driven background color for a bid input. Uses CSS variables
 // declared in globals.css so it looks correct in both light and dark mode.
-//   ratio < 0.75  -> flat gray ("bargain")
-//   0.75..1.00    -> gray -> green ("approaching value")
-//   1.00..1.50    -> green -> red ("paying a premium")
+// Four stops, interpolated linearly in oklch:
+//   ratio ≤ 0       -> red     ("bidding nothing")
+//   0..0.75         -> red -> yellow
+//   0.75..1.0       -> yellow -> white
+//   1.0..1.25       -> white -> green
+//   ratio ≥ 1.25    -> green   ("paying well above value")
 function bidInputStyle(bid: number | null, suggestedValue: number): React.CSSProperties {
-  if (bid === null || bid <= 0 || suggestedValue <= 0) {
+  if (bid === null || suggestedValue <= 0) {
     return {};
   }
   const ratio = bid / suggestedValue;
-  if (ratio < 0.75) {
+  const mix = (low: string, high: string, t: number) =>
+    `color-mix(in oklch, ${low}, ${high} ${Math.round(t * 100)}%)`;
+
+  if (ratio <= 0) {
     return {
-      backgroundColor: "var(--bid-low-bg)",
-      color: "var(--bid-low-fg)",
+      backgroundColor: "var(--bid-red-bg)",
+      color: "var(--bid-red-fg)",
+    };
+  }
+  if (ratio <= 0.75) {
+    const t = ratio / 0.75;
+    return {
+      backgroundColor: mix("var(--bid-red-bg)", "var(--bid-yellow-bg)", t),
+      color: mix("var(--bid-red-fg)", "var(--bid-yellow-fg)", t),
     };
   }
   if (ratio <= 1.0) {
-    const pct = Math.round(((ratio - 0.75) / 0.25) * 100);
+    const t = (ratio - 0.75) / 0.25;
     return {
-      backgroundColor: `color-mix(in oklch, var(--bid-low-bg), var(--bid-fair-bg) ${pct}%)`,
-      color: `color-mix(in oklch, var(--bid-low-fg), var(--bid-fair-fg) ${pct}%)`,
+      backgroundColor: mix("var(--bid-yellow-bg)", "var(--bid-white-bg)", t),
+      color: mix("var(--bid-yellow-fg)", "var(--bid-white-fg)", t),
     };
   }
-  const pct = Math.round(Math.min(1, (ratio - 1.0) / 0.5) * 100);
+  if (ratio <= 1.25) {
+    const t = (ratio - 1.0) / 0.25;
+    return {
+      backgroundColor: mix("var(--bid-white-bg)", "var(--bid-green-bg)", t),
+      color: mix("var(--bid-white-fg)", "var(--bid-green-fg)", t),
+    };
+  }
   return {
-    backgroundColor: `color-mix(in oklch, var(--bid-fair-bg), var(--bid-over-bg) ${pct}%)`,
-    color: `color-mix(in oklch, var(--bid-fair-fg), var(--bid-over-fg) ${pct}%)`,
+    backgroundColor: "var(--bid-green-bg)",
+    color: "var(--bid-green-fg)",
   };
 }
 
