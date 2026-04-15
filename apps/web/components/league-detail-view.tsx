@@ -2149,35 +2149,42 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                   : "No blind auction reveal yet."}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-2">
               {data.lastResolvedRound ? (
                 data.lastResolvedRound.results.length ? (
-                  data.lastResolvedRound.results.map((result) => (
-                    <div
-                      key={result.playerId}
-                      className="rounded-xl border border-border/80 px-4 py-4"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="font-medium text-foreground">
-                            #{result.order} {result.playerName}
+                  data.lastResolvedRound.results.map((result) => {
+                    const note = result.isAutoAssigned
+                      ? "auto-assigned"
+                      : result.wonByTiebreak
+                        ? "after tiebreak"
+                        : null;
+                    return (
+                      <div
+                        key={result.playerId}
+                        className="flex flex-col gap-2 rounded-xl bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-foreground">
+                            <span className="mr-1 text-xs tabular-nums text-muted-foreground">
+                              #{result.order}
+                            </span>
+                            {result.playerName}
                           </p>
-                          <p className="text-sm text-muted-foreground">{result.playerTeam}</p>
+                          <p className="text-xs text-muted-foreground">{result.playerTeam}</p>
                         </div>
-                        <div className="text-right">
-                          <p className="font-medium text-foreground">{result.winnerName}</p>
-                          <p className="text-sm text-muted-foreground">
-                            ${result.winningBid}
-                            {result.isAutoAssigned
-                              ? " · auto-assigned"
-                              : result.wonByTiebreak
-                                ? " after tiebreak"
-                                : ""}
-                          </p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200">
+                            <span aria-hidden>👑</span>
+                            {result.winnerName}
+                            <span className="tabular-nums">· ${result.winningBid}</span>
+                          </span>
+                          {note ? (
+                            <span className="text-[11px] text-muted-foreground">· {note}</span>
+                          ) : null}
                         </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="text-sm text-muted-foreground">No players were awarded in the latest round.</p>
                 )
@@ -2273,7 +2280,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   </p>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 ring-1 ring-emerald-500/40 dark:bg-emerald-400/10 dark:text-emerald-200 dark:ring-emerald-400/40">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200">
                                     <span aria-hidden>👑</span>
                                     {row.winnerName ?? "—"}
                                     {row.winningBid !== null ? (
@@ -2284,7 +2291,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     ) : null}
                                   </span>
                                   {row.runnerUpName ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-300 dark:ring-amber-400/30">
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-400/10 dark:text-amber-200">
                                       2nd · {row.runnerUpName}
                                       {row.runnerUpBid !== null ? (
                                         <span className="tabular-nums">
@@ -2373,20 +2380,21 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                           </thead>
                           <tbody>
                             {round.rows.map((row, rowIndex) => {
-                              const stripe = rowIndex % 2 === 0 ? "bg-background" : "bg-muted/15";
+                              const stripe = rowIndex % 2 === 0 ? "bg-background" : "bg-muted/20";
                               return (
                                 <tr
                                   key={row.playerId}
                                   className={[
-                                    "border-t border-border/60 align-top",
-                                    "hover:bg-muted/25",
+                                    "group/history-row border-t border-border/60 align-middle",
+                                    stripe,
+                                    "hover:bg-muted/40",
                                   ].join(" ")}
                                 >
                                   <td
                                     className={[
                                       "sticky left-0 z-10 px-3 py-3",
                                       stripe,
-                                      "border-r border-border/60",
+                                      "border-r border-border/60 group-hover/history-row:bg-muted/40",
                                     ].join(" ")}
                                   >
                                     <div className="truncate font-medium text-foreground">
@@ -2396,8 +2404,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       {row.playerTeam} · ${row.suggestedValue}
                                     </div>
                                   </td>
-                                  <td className="px-3 py-3">
-                                    <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-emerald-500/15 px-3 py-1.5 ring-1 ring-emerald-500/40 dark:bg-emerald-400/10 dark:ring-emerald-400/40">
+                                  <td className="px-3 py-3 align-middle">
+                                    <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-emerald-500/15 px-3 py-1.5 dark:bg-emerald-400/10">
                                       <span className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
                                         {row.winnerName ?? "—"}
                                       </span>
@@ -2406,8 +2414,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       </span>
                                     </div>
                                   </td>
-                                  <td className="px-3 py-3">
-                                    <div className="inline-flex min-w-[8rem] flex-col rounded-lg px-3 py-1.5 ring-1 ring-amber-500/40 dark:ring-amber-400/30">
+                                  <td className="px-3 py-3 align-middle">
+                                    <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-amber-500/10 px-3 py-1.5 dark:bg-amber-400/10">
                                       <span className="text-sm font-semibold text-amber-900 dark:text-amber-100">
                                         {row.runnerUpName ?? "—"}
                                       </span>
@@ -2430,19 +2438,22 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     const isWin = bid.isWinningBid;
                                     const isRunnerUp = !isWin && bid.isSecondPlaceBid;
                                     return (
-                                      <td key={bid.userId} className="px-1.5 py-3">
+                                      <td
+                                        key={bid.userId}
+                                        className="px-2 py-3 text-right align-middle"
+                                      >
                                         <span
                                           className={[
-                                            "inline-flex min-w-[3rem] items-center justify-end rounded-md px-2 py-0.5 tabular-nums transition-colors",
+                                            "inline-flex min-w-[4rem] items-center justify-end rounded-md px-2.5 py-1 text-sm tabular-nums transition-colors",
                                             isWin
-                                              ? "bg-emerald-500/20 font-semibold text-emerald-800 ring-1 ring-emerald-500/50 dark:bg-emerald-400/15 dark:text-emerald-200 dark:ring-emerald-400/40"
+                                              ? "bg-emerald-500/20 font-semibold text-emerald-900 dark:bg-emerald-400/15 dark:text-emerald-100"
                                               : isRunnerUp
-                                                ? "font-medium text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-300 dark:ring-amber-400/30"
+                                                ? "bg-amber-500/10 font-medium text-amber-900 dark:bg-amber-400/10 dark:text-amber-100"
                                                 : bid.amount === 0
                                                   ? "italic text-muted-foreground/70"
                                                   : bid.amount === null
                                                     ? "text-muted-foreground/50"
-                                                    : "text-muted-foreground",
+                                                    : "text-foreground",
                                           ].join(" ")}
                                         >
                                           {display}
