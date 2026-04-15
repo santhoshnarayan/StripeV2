@@ -32,7 +32,6 @@ type LeagueDetail = {
     commissionerName: string;
     isCommissioner: boolean;
     canEditRosterSize: boolean;
-    replacementProjectedPoints: number;
   };
   members: Array<{
     membershipId: string;
@@ -70,7 +69,6 @@ type LeagueDetail = {
     suggestedValue: number;
     totalPoints: number | null;
     totalGames: number | null;
-    projectedPointsRank: number;
   }>;
   currentRound: null | {
     id: string;
@@ -189,7 +187,6 @@ type DraftPlayerRow = {
   suggestedValue: number;
   totalPoints: number | null;
   totalGames: number | null;
-  projectedPointsRank?: number;
 };
 
 const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> = {
@@ -666,6 +663,48 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       window.clearInterval(interval);
     };
   }, [loadLeague]);
+
+  // Build the projected-points ranking across the *full* league pool
+  // (undrafted available players + everyone already on a roster). 173 rows
+  // is cheap to sort locally and avoids a server round-trip for the UI.
+  const projectionPool = useMemo(() => {
+    if (!data) {
+      return { rankById: new Map<string, number>(), replacementPts: 0 };
+    }
+
+    const entries: Array<{ id: string; totalPoints: number }> = [];
+    const seen = new Set<string>();
+    const push = (id: string, totalPoints: number | null | undefined) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      entries.push({ id, totalPoints: totalPoints ?? 0 });
+    };
+
+    for (const player of data.availablePlayers) {
+      push(player.id, player.totalPoints);
+    }
+    for (const roster of data.rosters) {
+      for (const drafted of roster.players) {
+        push(drafted.playerId, drafted.totalPoints);
+      }
+    }
+
+    entries.sort((left, right) => right.totalPoints - left.totalPoints);
+
+    const rankById = new Map<string, number>();
+    entries.forEach((player, index) => {
+      rankById.set(player.id, index + 1);
+    });
+
+    const draftPoolSize = Math.min(
+      entries.length,
+      data.members.length * data.league.rosterSize,
+    );
+    const replacement = entries[draftPoolSize] ?? entries[entries.length - 1];
+    const replacementPts = Math.max(0, Math.round(replacement?.totalPoints ?? 0));
+
+    return { rankById, replacementPts };
+  }, [data]);
 
   const filteredAvailablePlayers = useMemo(() => {
     if (!data) {
@@ -1548,7 +1587,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                 Replacement
               </span>
               <span className="text-foreground tabular-nums">
-                {data.league.replacementProjectedPoints}
+                {projectionPool.replacementPts}
               </span>
               projected pts — the first player outside a full draft pool.
             </p>
@@ -1576,7 +1615,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     (player) => (
                       <tr key={player.id} className="border-t border-border/70">
                         <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {player.projectedPointsRank ?? "—"}
+                          {projectionPool.rankById.get(player.id) ?? "—"}
                         </td>
                         <td className="px-3 py-3 font-medium text-foreground">{player.name}</td>
                         <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
@@ -1641,7 +1680,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                   <span>
                     Replacement pts:{" "}
                     <span className="tabular-nums font-medium text-foreground">
-                      {data.league.replacementProjectedPoints}
+                      {projectionPool.replacementPts}
                     </span>
                   </span>
                 </div>
