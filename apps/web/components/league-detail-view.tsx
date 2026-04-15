@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { appApiFetch } from "@/lib/app-api";
+import { useSession } from "@/lib/auth-client";
 
 const POLL_INTERVAL_MS = 8_000;
 const POLL_INACTIVE_TIMEOUT_MS = 3 * 60_000;
@@ -481,6 +482,8 @@ function bidInputStyle(bid: number | null, suggestedValue: number): React.CSSPro
 
 export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const router = useRouter();
+  const { data: session } = useSession();
+  const viewerUserId = session?.user?.id ?? null;
   const [data, setData] = useState<LeagueDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -520,6 +523,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     () => new Set(),
   );
   const dataRef = useRef<LeagueDetail | null>(null);
+  const bidValuesRef = useRef<Record<string, string>>({});
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const submitAbortRef = useRef<AbortController | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
 
   const loadLeague = useCallback(
@@ -539,15 +545,15 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           setLeagueName(payload.league.name);
           setRosterSize(String(payload.league.rosterSize));
           setSelectedPlayerIds([]);
-          setBidValues(
-            payload.currentRound
-              ? Object.fromEntries(
-                  payload.currentRound.players
-                    .filter((player) => player.myExplicitBid !== null)
-                    .map((player) => [player.id, String(player.myExplicitBid)]),
-                )
-              : {},
-          );
+          const initialBids = payload.currentRound
+            ? Object.fromEntries(
+                payload.currentRound.players
+                  .filter((player) => player.myExplicitBid !== null)
+                  .map((player) => [player.id, String(player.myExplicitBid)]),
+              )
+            : {};
+          setBidValues(initialBids);
+          bidValuesRef.current = initialBids;
         } else if (previous?.currentRound && payload.currentRound) {
           const previousById = new Map(
             previous.currentRound.submissionStatuses.map((status) => [
@@ -589,6 +595,18 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   useEffect(() => {
     void loadLeague();
   }, [loadLeague]);
+
+  // Clean up any pending auto-save timer + in-flight submission on unmount.
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+      if (submitAbortRef.current) {
+        submitAbortRef.current.abort();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (data?.league.phase) {
@@ -898,42 +916,102 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     }
   }
 
-  async function submitBids() {
-    if (!data?.currentRound) {
+  async function submitBids({ silent = false }: { silent?: boolean } = {}) {
+    const round = data?.currentRound;
+    if (!round || !viewerUserId) {
       return;
     }
 
+    // Cancel any pending debounce — we're firing right now.
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
     if (invalidBidMessage) {
+      // Don't silently post invalid bids; wait for the user to fix them.
       setSubmitError(invalidBidMessage);
       return;
     }
+
+    // Abort any in-flight submission — its result is stale now that a
+    // newer save is going out. The previous caller will see AbortError
+    // and no-op in its catch branch.
+    if (submitAbortRef.current) {
+      submitAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    submitAbortRef.current = controller;
 
     setSubmitPending(true);
     setSubmitError("");
 
     try {
       const bids = Object.fromEntries(
-        Object.entries(bidValues)
+        Object.entries(bidValuesRef.current)
           .filter(([, value]) => value.trim())
           .map(([playerId, value]) => [playerId, Number(value)]),
       );
 
       await appApiFetch(
-        `/leagues/${leagueId}/draft/rounds/${data.currentRound.id}/submission`,
+        `/leagues/${leagueId}/draft/rounds/${round.id}/submission`,
         {
           method: "POST",
           body: JSON.stringify({ bids }),
+          signal: controller.signal,
         },
       );
 
-      await loadLeague();
+      // Optimistically mark our own submission row as submitted so the UI
+      // updates instantly. Polling will reconcile if anything drifts.
+      const submittedAtIso = new Date().toISOString();
+      setData((current) => {
+        if (!current?.currentRound) return current;
+        const updated = {
+          ...current,
+          currentRound: {
+            ...current.currentRound,
+            submissionStatuses: current.currentRound.submissionStatuses.map((status) =>
+              status.userId === viewerUserId
+                ? { ...status, submittedAt: submittedAtIso }
+                : status,
+            ),
+          },
+        };
+        dataRef.current = updated;
+        return updated;
+      });
+
+      toast.success("Bids saved");
     } catch (submitBidsError) {
+      if ((submitBidsError as { name?: string })?.name === "AbortError") {
+        // Superseded by a newer save; leave UI state to that call.
+        return;
+      }
       setSubmitError(
-        submitBidsError instanceof Error ? submitBidsError.message : "Failed to submit bids",
+        submitBidsError instanceof Error
+          ? submitBidsError.message
+          : "Failed to submit bids",
       );
+      if (silent) {
+        toast.error("Failed to save bids");
+      }
     } finally {
-      setSubmitPending(false);
+      if (submitAbortRef.current === controller) {
+        setSubmitPending(false);
+        submitAbortRef.current = null;
+      }
     }
+  }
+
+  function scheduleAutoSaveBids() {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void submitBids({ silent: true });
+    }, 600);
   }
 
   async function closeRound() {
@@ -964,18 +1042,22 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   }
 
   function setBidValue(playerId: string, value: string) {
-    setBidValues((current) => ({
-      ...current,
-      [playerId]: sanitizeBidInput(value),
-    }));
+    setBidValues((current) => {
+      const next = { ...current, [playerId]: sanitizeBidInput(value) };
+      bidValuesRef.current = next;
+      return next;
+    });
+    scheduleAutoSaveBids();
   }
 
   function resetBidValue(playerId: string) {
     setBidValues((current) => {
       const next = { ...current };
       delete next[playerId];
+      bidValuesRef.current = next;
       return next;
     });
+    scheduleAutoSaveBids();
   }
 
   function applyBulkBids(mode: "suggested" | "zero" | "clear") {
@@ -998,8 +1080,10 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           next[player.id] = String(Math.max(0, capped));
         }
       }
+      bidValuesRef.current = next;
       return next;
     });
+    scheduleAutoSaveBids();
   }
 
   function toggleSelectedPlayer(playerId: string, checked: boolean) {
@@ -1794,7 +1878,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         disabled={submitPending}
                         className="flex-1 md:flex-none"
                       >
-                        {submitPending ? "Submitting..." : "Submit / Update Bids"}
+                        {submitPending ? "Saving..." : "Submit Bids"}
                       </Button>
                       {data.league.isCommissioner ? (
                         <Button
