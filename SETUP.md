@@ -95,7 +95,7 @@ PORT=4001
 FRONTEND_URL="http://localhost:3000"
 
 # Frontend
-NEXT_PUBLIC_API_URL="http://localhost:4001"
+API_URL="http://localhost:4001"
 
 # Database (copy from PLANETSCALE_URL)
 DATABASE_URL="<same as PLANETSCALE_URL>"
@@ -167,13 +167,21 @@ BETTER_AUTH_SECRET=<your secret>
 BETTER_AUTH_URL=https://stripev2-production-723a.up.railway.app
 FRONTEND_URL=https://stripev2-web-santhoshnarayans-projects.vercel.app
 PORT=4000
+INTERNAL_API_TOKEN=<shared secret — same value as Vercel>
 ```
 
-**Vercel (web)** — set via `vercel env add`:
+`INTERNAL_API_TOKEN` gates every non-`/health` request. When unset, the
+gate is inert (useful for local dev and for rollback).
+
+**Vercel (web)** — set via `vercel env add` (both Production and Preview):
 
 ```
-NEXT_PUBLIC_API_URL=https://stripev2-production-723a.up.railway.app
+API_URL=https://stripev2-production-723a.up.railway.app
+INTERNAL_API_TOKEN=<shared secret — same value as Railway>
 ```
+
+See [DEPLOY.md](./DEPLOY.md) for the ordered rollout required when rotating
+`INTERNAL_API_TOKEN` or first enabling the backend gate.
 
 ## Manual Steps (outside CLI)
 
