@@ -1632,10 +1632,10 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                             Projected {formatNullableNumber(player.totalPoints)} pts · Default $
                             {player.defaultBid}
                           </p>
-                          <div className="mt-3 flex items-center gap-2 border-t border-border/60 bg-muted/30 px-3 py-3">
+                          <div className="mt-3 flex items-center gap-1 border-t border-border/60 bg-muted/30 px-3 py-3">
                             <Button
                               type="button"
-                              variant="outline"
+                              variant="ghost"
                               size="icon-sm"
                               onClick={() => resetBidValue(player.id)}
                               aria-label={`Reset bid for ${player.name}`}
@@ -1645,11 +1645,12 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                             </Button>
                             <Button
                               type="button"
-                              variant="outline"
-                              size="sm"
+                              variant="ghost"
+                              size="icon-sm"
                               onClick={() => setBidValue(player.id, "0")}
                               title="Pass (bid $0)"
-                              className="h-7 px-2 text-xs tabular-nums"
+                              aria-label={`Pass on ${player.name}`}
+                              className="px-1 text-xs font-semibold tabular-nums"
                             >
                               $0
                             </Button>
@@ -1747,11 +1748,12 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   </Button>
                                   <Button
                                     type="button"
-                                    variant="outline"
-                                    size="xs"
+                                    variant="ghost"
+                                    size="icon-xs"
                                     onClick={() => setBidValue(player.id, "0")}
                                     title="Pass (bid $0)"
-                                    className="h-6 px-1.5 tabular-nums"
+                                    aria-label={`Pass on ${player.name}`}
+                                    className="px-1.5 text-[11px] font-semibold tabular-nums"
                                   >
                                     $0
                                   </Button>
