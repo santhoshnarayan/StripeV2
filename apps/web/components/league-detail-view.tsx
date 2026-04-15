@@ -2444,16 +2444,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       >
                                         <span
                                           className={[
-                                            "inline-flex min-w-[4rem] items-center justify-end rounded-md px-2.5 py-1 text-sm tabular-nums transition-colors",
+                                            "inline-block min-w-[3rem] text-sm tabular-nums transition-colors",
                                             isWin
-                                              ? "bg-emerald-500/20 font-semibold text-emerald-900 dark:bg-emerald-400/15 dark:text-emerald-100"
+                                              ? "font-semibold text-emerald-700 dark:text-emerald-300"
                                               : isRunnerUp
-                                                ? "bg-amber-500/10 font-medium text-amber-900 dark:bg-amber-400/10 dark:text-amber-100"
+                                                ? "font-medium text-amber-700 dark:text-amber-300"
                                                 : bid.amount === 0
                                                   ? "italic text-muted-foreground/70"
                                                   : bid.amount === null
                                                     ? "text-muted-foreground/50"
-                                                    : "text-foreground",
+                                                    : "text-muted-foreground",
                                           ].join(" ")}
                                         >
                                           {display}

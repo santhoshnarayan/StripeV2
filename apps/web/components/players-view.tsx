@@ -135,66 +135,15 @@ export function PlayersView() {
 
   return (
     <main className="mx-auto flex w-full max-w-[96rem] flex-col gap-6 px-4 py-10 sm:px-6 lg:px-8">
-      <section className="space-y-4">
-        <div className="space-y-2">
-          <p className="text-xs font-semibold tracking-[0.25em] text-muted-foreground uppercase">
-            Player Pool
-          </p>
-          <h1 className="text-3xl font-semibold tracking-tight text-foreground">Players</h1>
-          <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
-            Full playoff pool with regular-season stats, projected playoff totals, and
-            auction values tuned to the league shape you pick below.
-          </p>
-        </div>
-
-        <Card className="max-w-3xl">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-foreground">
-              League Shape
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pb-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="players-managers" className="text-xs text-muted-foreground">
-                  Managers
-                </Label>
-                <Input
-                  id="players-managers"
-                  type="number"
-                  inputMode="numeric"
-                  min={MIN_MANAGERS}
-                  max={MAX_MANAGERS}
-                  value={managersInput}
-                  onChange={(event) => setManagersInput(event.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="players-roster" className="text-xs text-muted-foreground">
-                  Roster size
-                </Label>
-                <Input
-                  id="players-roster"
-                  type="number"
-                  inputMode="numeric"
-                  min={MIN_ROSTER}
-                  max={MAX_ROSTER}
-                  value={rosterSizeInput}
-                  onChange={(event) => setRosterSizeInput(event.target.value)}
-                />
-              </div>
-            </div>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Values below are Value Over Replacement Player for{" "}
-              <strong className="text-foreground">{assumption.managers}</strong> managers
-              ×{" "}
-              <strong className="text-foreground">{assumption.rosterSize}</strong> picks,
-              ${assumption.budgetPerTeam} budget / ${assumption.minBid} min bid. Budget
-              and min bid aren&apos;t configurable here yet — the defaults match the
-              in-app league settings.
-            </p>
-          </CardContent>
-        </Card>
+      <section className="space-y-2">
+        <p className="text-xs font-semibold tracking-[0.25em] text-muted-foreground uppercase">
+          Player Pool
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Players</h1>
+        <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
+          Full playoff pool with regular-season stats, projected playoff totals, and
+          auction values tuned to the league shape below.
+        </p>
       </section>
 
       <section className="grid gap-4 sm:grid-cols-3">
@@ -218,11 +167,50 @@ export function PlayersView() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Visible Without Login</CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">League Shape</CardTitle>
           </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Search and browse the pool before joining a league.
+          <CardContent className="space-y-2">
+            <div className="flex items-end gap-3">
+              <div className="flex-1 space-y-1">
+                <Label
+                  htmlFor="players-managers"
+                  className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                >
+                  Managers
+                </Label>
+                <Input
+                  id="players-managers"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={managersInput}
+                  onChange={(event) => setManagersInput(event.target.value)}
+                  className="h-8 text-right font-semibold tabular-nums"
+                />
+              </div>
+              <span aria-hidden className="pb-2 text-sm text-muted-foreground">
+                ×
+              </span>
+              <div className="flex-1 space-y-1">
+                <Label
+                  htmlFor="players-roster"
+                  className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                >
+                  Roster
+                </Label>
+                <Input
+                  id="players-roster"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={rosterSizeInput}
+                  onChange={(event) => setRosterSizeInput(event.target.value)}
+                  className="h-8 text-right font-semibold tabular-nums"
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              ${assumption.budgetPerTeam} budget / ${assumption.minBid} min bid.
             </p>
           </CardContent>
         </Card>
