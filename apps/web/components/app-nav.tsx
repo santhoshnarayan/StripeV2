@@ -6,6 +6,7 @@ import type { ComponentProps } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Logo } from "@/components/logo";
 import { signOut, useSession } from "@/lib/auth-client";
+import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 type IconProps = ComponentProps<"svg">;
@@ -89,6 +90,48 @@ function LogInIcon(props: IconProps) {
   );
 }
 
+function SunIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m4.93 19.07 1.41-1.41" />
+      <path d="m17.66 6.34 1.41-1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />
+    </svg>
+  );
+}
+
 type NavItem = {
   href: string;
   label: string;
@@ -128,6 +171,7 @@ export function AppNav() {
   const pathname = usePathname();
   const router = useRouter();
   const { data: session, isPending } = useSession();
+  const { resolvedTheme, toggleTheme } = useTheme();
 
   async function handleSignOut() {
     await signOut();
@@ -195,25 +239,40 @@ export function AppNav() {
             </nav>
           </div>
 
-          {isSignedIn ? (
-            <div className="flex items-center gap-2">
-              <Link
-                href="/account"
-                className={cn(
-                  buttonVariants({
-                    variant: accountItem.isActive(pathname) ? "default" : "ghost",
-                    size: "sm",
-                  }),
-                  "hidden md:inline-flex",
-                )}
-              >
-                {session!.user.name}
-              </Link>
-              <Button variant="outline" size="sm" onClick={() => void handleSignOut()}>
-                Sign Out
-              </Button>
-            </div>
-          ) : null}
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Switch to ${resolvedTheme === "dark" ? "light" : "dark"} mode`}
+              onClick={toggleTheme}
+            >
+              {resolvedTheme === "dark" ? (
+                <SunIcon className="size-4" />
+              ) : (
+                <MoonIcon className="size-4" />
+              )}
+            </Button>
+            {isSignedIn ? (
+              <>
+                <Link
+                  href="/account"
+                  className={cn(
+                    buttonVariants({
+                      variant: accountItem.isActive(pathname) ? "default" : "ghost",
+                      size: "sm",
+                    }),
+                    "hidden md:inline-flex",
+                  )}
+                >
+                  {session!.user.name}
+                </Link>
+                <Button variant="outline" size="sm" onClick={() => void handleSignOut()}>
+                  Sign Out
+                </Button>
+              </>
+            ) : null}
+          </div>
         </div>
       </header>
 

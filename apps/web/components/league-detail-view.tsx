@@ -283,6 +283,46 @@ function parseTeamsInput(value: string) {
     .filter(Boolean);
 }
 
+function sanitizeBidInput(raw: string) {
+  return raw.replace(/[^\d]/g, "").replace(/^0+(?=\d)/, "");
+}
+
+function parseBidValue(raw: string): number | null {
+  if (!raw) return null;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+// Ratio-driven background color for a bid input. Uses CSS variables
+// declared in globals.css so it looks correct in both light and dark mode.
+//   ratio < 0.75  -> flat gray ("bargain")
+//   0.75..1.00    -> gray -> green ("approaching value")
+//   1.00..1.50    -> green -> red ("paying a premium")
+function bidInputStyle(bid: number | null, suggestedValue: number): React.CSSProperties {
+  if (bid === null || bid <= 0 || suggestedValue <= 0) {
+    return {};
+  }
+  const ratio = bid / suggestedValue;
+  if (ratio < 0.75) {
+    return {
+      backgroundColor: "var(--bid-low-bg)",
+      color: "var(--bid-low-fg)",
+    };
+  }
+  if (ratio <= 1.0) {
+    const pct = Math.round(((ratio - 0.75) / 0.25) * 100);
+    return {
+      backgroundColor: `color-mix(in oklch, var(--bid-low-bg), var(--bid-fair-bg) ${pct}%)`,
+      color: `color-mix(in oklch, var(--bid-low-fg), var(--bid-fair-fg) ${pct}%)`,
+    };
+  }
+  const pct = Math.round(Math.min(1, (ratio - 1.0) / 0.5) * 100);
+  return {
+    backgroundColor: `color-mix(in oklch, var(--bid-fair-bg), var(--bid-over-bg) ${pct}%)`,
+    color: `color-mix(in oklch, var(--bid-fair-fg), var(--bid-over-fg) ${pct}%)`,
+  };
+}
+
 export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const router = useRouter();
   const [data, setData] = useState<LeagueDetail | null>(null);
@@ -1167,16 +1207,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
               <table className="w-full text-left text-sm">
                 <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
                   <tr>
-                    <th className="px-3 py-3 font-medium">Player</th>
-                    <th className="px-3 py-3 font-medium">Team</th>
-                    <th className="px-3 py-3 font-medium">Conf</th>
-                    <th className="px-3 py-3 font-medium">Seed</th>
-                    <th className="px-3 py-3 font-medium">GP</th>
-                    <th className="px-3 py-3 font-medium">MPG</th>
-                    <th className="px-3 py-3 font-medium">PPG</th>
-                    <th className="px-3 py-3 font-medium">Value</th>
-                    <th className="px-3 py-3 font-medium">Proj. Pts</th>
-                    <th className="px-3 py-3 font-medium">Proj. GP</th>
+                    <th className="px-3 py-3 text-left font-medium">Player</th>
+                    <th className="px-3 py-3 text-left font-medium">Team</th>
+                    <th className="px-3 py-3 text-left font-medium">Conf</th>
+                    <th className="px-3 py-3 text-right font-medium">Seed</th>
+                    <th className="px-3 py-3 text-right font-medium">GP</th>
+                    <th className="px-3 py-3 text-right font-medium">MPG</th>
+                    <th className="px-3 py-3 text-right font-medium">PPG</th>
+                    <th className="px-3 py-3 text-right font-medium">Value</th>
+                    <th className="px-3 py-3 text-right font-medium">Proj. Pts</th>
+                    <th className="px-3 py-3 text-right font-medium">Proj. GP</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1186,25 +1226,25 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         <td className="px-3 py-3 font-medium text-foreground">{player.name}</td>
                         <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
                         <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
-                        <td className="px-3 py-3 text-muted-foreground">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                           {player.seed ?? "-"}
                         </td>
-                        <td className="px-3 py-3 text-muted-foreground">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                           {formatNullableNumber(player.gamesPlayed, 0)}
                         </td>
-                        <td className="px-3 py-3 text-muted-foreground">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                           {formatNullableNumber(player.minutesPerGame)}
                         </td>
-                        <td className="px-3 py-3 text-muted-foreground">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                           {formatNullableNumber(player.pointsPerGame)}
                         </td>
-                        <td className="px-3 py-3 font-medium text-foreground">
+                        <td className="px-3 py-3 text-right tabular-nums font-medium text-foreground">
                           ${player.suggestedValue}
                         </td>
-                        <td className="px-3 py-3 text-muted-foreground">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                           {formatNullableNumber(player.totalPoints)}
                         </td>
-                        <td className="px-3 py-3 text-muted-foreground">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                           {formatNullableNumber(player.totalGames)}
                         </td>
                       </tr>
@@ -1408,19 +1448,23 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               </span>
                               <Input
                                 id={`bid-${player.id}`}
-                                type="number"
+                                type="text"
                                 inputMode="numeric"
-                                min={0}
-                                max={data.currentRound?.myMaxBid ?? 0}
+                                pattern="[0-9]*"
+                                autoComplete="off"
                                 placeholder={String(player.defaultBid)}
                                 value={bidValues[player.id] ?? ""}
                                 onChange={(event) =>
                                   setBidValues((current) => ({
                                     ...current,
-                                    [player.id]: event.target.value,
+                                    [player.id]: sanitizeBidInput(event.target.value),
                                   }))
                                 }
-                                className="pl-6"
+                                className="pl-6 pr-3 text-right font-medium tabular-nums"
+                                style={bidInputStyle(
+                                  parseBidValue(bidValues[player.id] ?? ""),
+                                  player.suggestedValue,
+                                )}
                               />
                             </div>
                           </div>
@@ -1433,22 +1477,22 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       ) : null}
                     </div>
 
-                    <div className="hidden max-h-[42rem] overflow-auto rounded-xl border border-border/80 md:block">
+                    <div className="hidden overflow-x-auto rounded-xl border border-border/80 md:block">
                       <table className="w-full text-left text-sm">
                         <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
                           <tr>
-                            <th className="px-3 py-3 font-medium">Player</th>
-                            <th className="px-3 py-3 font-medium">Team</th>
-                            <th className="px-3 py-3 font-medium">Conf</th>
-                            <th className="px-3 py-3 font-medium">Seed</th>
-                            <th className="px-3 py-3 font-medium">GP</th>
-                            <th className="px-3 py-3 font-medium">MPG</th>
-                            <th className="px-3 py-3 font-medium">PPG</th>
-                            <th className="px-3 py-3 font-medium">Suggested</th>
-                            <th className="px-3 py-3 font-medium">Default</th>
-                            <th className="px-3 py-3 font-medium">Proj. Pts</th>
-                            <th className="px-3 py-3 font-medium">Proj. GP</th>
-                            <th className="px-3 py-3 font-medium">Your Bid</th>
+                            <th className="px-3 py-3 text-left font-medium">Player</th>
+                            <th className="px-3 py-3 text-left font-medium">Team</th>
+                            <th className="px-3 py-3 text-left font-medium">Conf</th>
+                            <th className="px-3 py-3 text-right font-medium">Seed</th>
+                            <th className="px-3 py-3 text-right font-medium">GP</th>
+                            <th className="px-3 py-3 text-right font-medium">MPG</th>
+                            <th className="px-3 py-3 text-right font-medium">PPG</th>
+                            <th className="px-3 py-3 text-right font-medium">Suggested</th>
+                            <th className="px-3 py-3 text-right font-medium">Default</th>
+                            <th className="px-3 py-3 text-right font-medium">Proj. Pts</th>
+                            <th className="px-3 py-3 text-right font-medium">Proj. GP</th>
+                            <th className="px-3 py-3 text-right font-medium">Your Bid</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1457,41 +1501,49 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               <td className="px-3 py-3 font-medium text-foreground">{player.name}</td>
                               <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
                               <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
-                              <td className="px-3 py-3 text-muted-foreground">
+                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                 {player.seed ?? "-"}
                               </td>
-                              <td className="px-3 py-3 text-muted-foreground">
+                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                 {formatNullableNumber(player.gamesPlayed, 0)}
                               </td>
-                              <td className="px-3 py-3 text-muted-foreground">
+                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                 {formatNullableNumber(player.minutesPerGame)}
                               </td>
-                              <td className="px-3 py-3 text-muted-foreground">
+                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                 {formatNullableNumber(player.pointsPerGame)}
                               </td>
-                              <td className="px-3 py-3 text-muted-foreground">
+                              <td className="px-3 py-3 text-right font-medium tabular-nums text-foreground">
                                 ${player.suggestedValue}
                               </td>
-                              <td className="px-3 py-3 text-muted-foreground">${player.defaultBid}</td>
-                              <td className="px-3 py-3 text-muted-foreground">
+                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                                ${player.defaultBid}
+                              </td>
+                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                 {formatNullableNumber(player.totalPoints)}
                               </td>
-                              <td className="px-3 py-3 text-muted-foreground">
+                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                 {formatNullableNumber(player.totalGames)}
                               </td>
                               <td className="px-3 py-3">
                                 <Input
-                                  type="number"
-                                  min={0}
-                                  max={data.currentRound?.myMaxBid ?? 0}
-                                  placeholder={`Default $${player.defaultBid}`}
+                                  type="text"
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  autoComplete="off"
+                                  placeholder={String(player.defaultBid)}
                                   value={bidValues[player.id] ?? ""}
                                   onChange={(event) =>
                                     setBidValues((current) => ({
                                       ...current,
-                                      [player.id]: event.target.value,
+                                      [player.id]: sanitizeBidInput(event.target.value),
                                     }))
                                   }
+                                  className="h-8 w-24 text-right font-medium tabular-nums"
+                                  style={bidInputStyle(
+                                    parseBidValue(bidValues[player.id] ?? ""),
+                                    player.suggestedValue,
+                                  )}
                                 />
                               </td>
                             </tr>
@@ -1756,21 +1808,21 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         ) : null}
                       </div>
 
-                      <div className="hidden max-h-[34rem] overflow-auto rounded-xl border border-border/80 md:block">
+                      <div className="hidden overflow-x-auto rounded-xl border border-border/80 md:block">
                         <table className="min-w-full text-left text-sm">
                           <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
                             <tr>
-                              <th className="px-3 py-3 font-medium">Pick</th>
-                              <th className="px-3 py-3 font-medium">Player</th>
-                              <th className="px-3 py-3 font-medium">Team</th>
-                              <th className="px-3 py-3 font-medium">Conf</th>
-                              <th className="px-3 py-3 font-medium">Seed</th>
-                              <th className="px-3 py-3 font-medium">GP</th>
-                              <th className="px-3 py-3 font-medium">MPG</th>
-                              <th className="px-3 py-3 font-medium">PPG</th>
-                              <th className="px-3 py-3 font-medium">Suggested</th>
-                              <th className="px-3 py-3 font-medium">Proj. Pts</th>
-                              <th className="px-3 py-3 font-medium">Proj. GP</th>
+                              <th className="px-3 py-3 text-left font-medium">Pick</th>
+                              <th className="px-3 py-3 text-left font-medium">Player</th>
+                              <th className="px-3 py-3 text-left font-medium">Team</th>
+                              <th className="px-3 py-3 text-left font-medium">Conf</th>
+                              <th className="px-3 py-3 text-right font-medium">Seed</th>
+                              <th className="px-3 py-3 text-right font-medium">GP</th>
+                              <th className="px-3 py-3 text-right font-medium">MPG</th>
+                              <th className="px-3 py-3 text-right font-medium">PPG</th>
+                              <th className="px-3 py-3 text-right font-medium">Suggested</th>
+                              <th className="px-3 py-3 text-right font-medium">Proj. Pts</th>
+                              <th className="px-3 py-3 text-right font-medium">Proj. GP</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1791,25 +1843,25 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   <td className="px-3 py-3 font-medium text-foreground">{player.name}</td>
                                   <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
                                   <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
-                                  <td className="px-3 py-3 text-muted-foreground">
+                                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                     {player.seed ?? "-"}
                                   </td>
-                                  <td className="px-3 py-3 text-muted-foreground">
+                                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                     {formatNullableNumber(player.gamesPlayed, 0)}
                                   </td>
-                                  <td className="px-3 py-3 text-muted-foreground">
+                                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                     {formatNullableNumber(player.minutesPerGame)}
                                   </td>
-                                  <td className="px-3 py-3 text-muted-foreground">
+                                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                     {formatNullableNumber(player.pointsPerGame)}
                                   </td>
-                                  <td className="px-3 py-3 text-muted-foreground">
+                                  <td className="px-3 py-3 text-right tabular-nums font-medium text-foreground">
                                     ${player.suggestedValue}
                                   </td>
-                                  <td className="px-3 py-3 text-muted-foreground">
+                                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                     {formatNullableNumber(player.totalPoints)}
                                   </td>
-                                  <td className="px-3 py-3 text-muted-foreground">
+                                  <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                     {formatNullableNumber(player.totalGames)}
                                   </td>
                                 </tr>

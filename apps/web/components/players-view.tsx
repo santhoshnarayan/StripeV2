@@ -256,23 +256,25 @@ export function PlayersView() {
               <table className="min-w-full text-left text-sm">
                 <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
                   <tr>
-                    <th className="px-3 py-3 font-medium">Rank</th>
-                    <th className="px-3 py-3 font-medium">Player</th>
-                    <th className="px-3 py-3 font-medium">Team</th>
-                    <th className="px-3 py-3 font-medium">Seed</th>
-                    <th className="px-3 py-3 font-medium">GP</th>
-                    <th className="px-3 py-3 font-medium">MPG</th>
-                    <th className="px-3 py-3 font-medium">PPG</th>
-                    <th className="px-3 py-3 font-medium">Value</th>
-                    <th className="px-3 py-3 font-medium">Default</th>
-                    <th className="px-3 py-3 font-medium">Proj. Pts</th>
-                    <th className="px-3 py-3 font-medium">Proj. GP</th>
+                    <th className="px-3 py-3 text-right font-medium">Rank</th>
+                    <th className="px-3 py-3 text-left font-medium">Player</th>
+                    <th className="px-3 py-3 text-left font-medium">Team</th>
+                    <th className="px-3 py-3 text-right font-medium">Seed</th>
+                    <th className="px-3 py-3 text-right font-medium">GP</th>
+                    <th className="px-3 py-3 text-right font-medium">MPG</th>
+                    <th className="px-3 py-3 text-right font-medium">PPG</th>
+                    <th className="px-3 py-3 text-right font-medium">Value</th>
+                    <th className="px-3 py-3 text-right font-medium">Default</th>
+                    <th className="px-3 py-3 text-right font-medium">Proj. Pts</th>
+                    <th className="px-3 py-3 text-right font-medium">Proj. GP</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredPlayers.map((player) => (
                     <tr key={player.id} className="border-t border-border/70">
-                      <td className="px-3 py-3 text-muted-foreground">{player.rank}</td>
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                        {player.rank}
+                      </td>
                       <td className="px-3 py-3">
                         <div className="font-medium text-foreground">{player.name}</div>
                         <div className="text-xs text-muted-foreground">
@@ -280,26 +282,28 @@ export function PlayersView() {
                         </div>
                       </td>
                       <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
-                      <td className="px-3 py-3 text-muted-foreground">
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {player.seed ?? "-"}
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground">
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {formatNullableNumber(player.gamesPlayed, 0)}
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground">
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {formatNullableNumber(player.minutesPerGame)}
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground">
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {formatNullableNumber(player.pointsPerGame)}
                       </td>
-                      <td className="px-3 py-3 font-medium text-foreground">
+                      <td className="px-3 py-3 text-right tabular-nums font-medium text-foreground">
                         ${player.suggestedValue}
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground">${player.defaultBid}</td>
-                      <td className="px-3 py-3 text-muted-foreground">
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                        ${player.defaultBid}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {formatNullableNumber(player.totalPoints)}
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground">
+                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {formatNullableNumber(player.totalGames)}
                       </td>
                     </tr>

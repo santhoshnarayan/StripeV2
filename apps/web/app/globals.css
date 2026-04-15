@@ -80,6 +80,14 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    /* Bid-vs-suggested color ramp. Anchors flipped in .dark so contrast
+       stays correct against either theme's card background. */
+    --bid-low-bg: oklch(0.96 0.005 260);
+    --bid-low-fg: oklch(0.48 0.01 260);
+    --bid-fair-bg: oklch(0.92 0.07 150);
+    --bid-fair-fg: oklch(0.36 0.1 150);
+    --bid-over-bg: oklch(0.88 0.14 25);
+    --bid-over-fg: oklch(0.4 0.17 25);
 }
 
 .dark {
@@ -114,6 +122,12 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+    --bid-low-bg: oklch(0.26 0.01 260);
+    --bid-low-fg: oklch(0.78 0.02 260);
+    --bid-fair-bg: oklch(0.32 0.09 150);
+    --bid-fair-fg: oklch(0.88 0.14 150);
+    --bid-over-bg: oklch(0.36 0.14 25);
+    --bid-over-fg: oklch(0.9 0.17 25);
 }
 
 @layer base {
