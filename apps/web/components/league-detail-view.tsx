@@ -1035,7 +1035,14 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         return updated;
       });
 
-      toast.success("Bids saved");
+      toast.success("Bids saved", {
+        id: "bids-saved",
+        duration: 5000,
+        action: {
+          label: "Undo",
+          onClick: () => undoLastBidChange(),
+        },
+      });
     } catch (submitBidsError) {
       if ((submitBidsError as { name?: string })?.name === "AbortError") {
         // Superseded by a newer save; leave UI state to that call.
