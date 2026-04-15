@@ -26,6 +26,14 @@ const trustedOrigins = [
       ]),
 ].filter((origin): origin is string => typeof origin === "string" && origin.length > 0);
 
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN;
+
+if (isProduction && !INTERNAL_API_TOKEN) {
+  console.warn(
+    "[server] INTERNAL_API_TOKEN is not set — backend is publicly reachable. Set it on the host and on the Next.js frontend to restrict access to the proxy.",
+  );
+}
+
 app.use("*", logger());
 app.use(
   "*",
@@ -35,7 +43,24 @@ app.use(
   })
 );
 
-// Health check
+// Internal token gate — only applied when INTERNAL_API_TOKEN is configured.
+// /health is always allowed so Railway healthchecks keep working.
+// When unset (e.g. local dev), all requests pass through so nothing breaks.
+app.use("*", async (c, next) => {
+  if (c.req.path === "/health") {
+    return next();
+  }
+  if (!INTERNAL_API_TOKEN) {
+    return next();
+  }
+  const provided = c.req.header("x-internal-api-token");
+  if (provided !== INTERNAL_API_TOKEN) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  return next();
+});
+
+// Health check — must remain open for Railway healthchecks
 app.get("/health", (c) => c.json({ status: "ok" }));
 
 // Better Auth
