@@ -520,6 +520,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [bidTeamFilter, setBidTeamFilter] = useState("all");
   const [bidSeedFilter, setBidSeedFilter] = useState("all");
   const [undoStack, setUndoStack] = useState<Array<Record<string, string>>>([]);
+  const [redoStack, setRedoStack] = useState<Array<Record<string, string>>>([]);
   const [expandedHistoryRows, setExpandedHistoryRows] = useState<Set<string>>(
     () => new Set(),
   );
@@ -614,10 +615,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     };
   }, []);
 
-  // A round change means the old undo snapshots reference a different set
-  // of player IDs and shouldn't be restorable.
+  // A round change means the old undo/redo snapshots reference a different
+  // set of player IDs and shouldn't be restorable.
   useEffect(() => {
     setUndoStack([]);
+    setRedoStack([]);
     lastContinuousBidField.current = null;
   }, [data?.currentRound?.id]);
 
@@ -1054,8 +1056,12 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     }
   }
 
+  // Push the current bidValues onto the undo stack. This is for *user-driven*
+  // mutations (typing, reset, $0, bulk) — it also clears the redo stack,
+  // since the user has branched away from whatever redo timeline existed.
   function pushUndoSnapshot() {
     setUndoStack((current) => [...current, { ...bidValuesRef.current }]);
+    setRedoStack([]);
   }
 
   function setBidValue(
@@ -1127,9 +1133,30 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     setUndoStack((currentStack) => {
       if (!currentStack.length) return currentStack;
       const restored = currentStack[currentStack.length - 1];
+      const currentSnapshot = { ...bidValuesRef.current };
       setBidValues(restored);
       bidValuesRef.current = restored;
       lastContinuousBidField.current = null;
+      // Preserve the redo timeline by stacking the pre-undo state onto
+      // redoStack instead of clearing it.
+      setRedoStack((redo) => [...redo, currentSnapshot]);
+      scheduleAutoSaveBids();
+      return currentStack.slice(0, -1);
+    });
+  }
+
+  function redoLastBidChange() {
+    setRedoStack((currentStack) => {
+      if (!currentStack.length) return currentStack;
+      const restored = currentStack[currentStack.length - 1];
+      const currentSnapshot = { ...bidValuesRef.current };
+      setBidValues(restored);
+      bidValuesRef.current = restored;
+      lastContinuousBidField.current = null;
+      // Re-push to undo so the user can immediately undo back out of the
+      // redo. Don't clear redoStack on this path — that's only user
+      // mutations.
+      setUndoStack((undo) => [...undo, currentSnapshot]);
       scheduleAutoSaveBids();
       return currentStack.slice(0, -1);
     });
@@ -1736,16 +1763,30 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       >
                         Clear all
                       </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={undoLastBidChange}
-                        disabled={undoStack.length === 0}
-                        className="ml-auto"
-                      >
-                        ↶ Undo
-                      </Button>
+                      <div className="ml-auto flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={undoLastBidChange}
+                          disabled={undoStack.length === 0}
+                          title="Undo last bid change"
+                          aria-label="Undo last bid change"
+                        >
+                          ↶ Undo
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={redoLastBidChange}
+                          disabled={redoStack.length === 0}
+                          title="Redo last undone change"
+                          aria-label="Redo last undone change"
+                        >
+                          Redo ↷
+                        </Button>
+                      </div>
                     </div>
                     <div className="flex flex-col gap-3 md:hidden">
                       {filteredBidPlayers.map((player) => (
