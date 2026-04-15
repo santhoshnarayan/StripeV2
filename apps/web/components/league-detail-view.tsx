@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -293,6 +293,143 @@ function parseBidValue(raw: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function RefreshIcon(props: ComponentProps<"svg">) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15.5 6.3L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon(props: ComponentProps<"svg">) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+/**
+ * Consistent styled <select>: native control with appearance-none + an
+ * overlaid chevron so the indicator looks the same on every platform.
+ */
+function SelectField({
+  className = "",
+  children,
+  ...rest
+}: ComponentProps<"select">) {
+  return (
+    <div className="relative">
+      <select
+        {...rest}
+        className={[
+          "h-8 appearance-none rounded-lg border border-input bg-background pl-3 pr-8 text-sm",
+          "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+          className,
+        ].join(" ")}
+      >
+        {children}
+      </select>
+      <ChevronDownIcon className="pointer-events-none absolute top-1/2 right-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+    </div>
+  );
+}
+
+type ConfirmDialogProps = {
+  open: boolean;
+  title: string;
+  description?: ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+  loading?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+};
+
+function ConfirmDialog({
+  open,
+  title,
+  description,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  destructive = false,
+  loading = false,
+  onCancel,
+  onConfirm,
+}: ConfirmDialogProps) {
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onCancel]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="confirm-title"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <button
+        type="button"
+        aria-label="Cancel"
+        className="absolute inset-0 bg-foreground/40 backdrop-blur-sm"
+        onClick={onCancel}
+      />
+      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-border/80 bg-card p-6 shadow-lg">
+        <h2 id="confirm-title" className="text-lg font-semibold text-foreground">
+          {title}
+        </h2>
+        {description ? (
+          <div className="mt-2 text-sm text-muted-foreground">{description}</div>
+        ) : null}
+        <div className="mt-6 flex justify-end gap-2">
+          <Button variant="outline" onClick={onCancel} disabled={loading}>
+            {cancelLabel}
+          </Button>
+          <Button
+            variant={destructive ? "destructive" : "default"}
+            onClick={onConfirm}
+            disabled={loading}
+          >
+            {loading ? "Working..." : confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Ratio-driven background color for a bid input. Uses CSS variables
 // declared in globals.css so it looks correct in both light and dark mode.
 // Four stops, interpolated linearly in oklch:
@@ -362,6 +499,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [submitError, setSubmitError] = useState("");
   const [submitPending, setSubmitPending] = useState(false);
   const [closePending, setClosePending] = useState(false);
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [memberActionId, setMemberActionId] = useState<string | null>(null);
   const [bidValues, setBidValues] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<LeagueTab>("overview");
@@ -818,7 +956,47 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       );
     } finally {
       setClosePending(false);
+      setShowCloseConfirm(false);
     }
+  }
+
+  function setBidValue(playerId: string, value: string) {
+    setBidValues((current) => ({
+      ...current,
+      [playerId]: sanitizeBidInput(value),
+    }));
+  }
+
+  function resetBidValue(playerId: string) {
+    setBidValues((current) => {
+      const next = { ...current };
+      delete next[playerId];
+      return next;
+    });
+  }
+
+  function applyBulkBids(mode: "suggested" | "zero" | "clear") {
+    if (!data?.currentRound) return;
+    const players = data.currentRound.players;
+    setBidValues((current) => {
+      const next = { ...current };
+      for (const player of players) {
+        if (mode === "clear") {
+          delete next[player.id];
+        } else if (mode === "zero") {
+          next[player.id] = "0";
+        } else {
+          // "suggested" — cap at the viewer's current max bid so the
+          // value we drop in is always submittable.
+          const capped = Math.min(
+            player.suggestedValue,
+            data.currentRound!.myMaxBid,
+          );
+          next[player.id] = String(Math.max(0, capped));
+        }
+      }
+      return next;
+    });
   }
 
   function toggleSelectedPlayer(playerId: string, checked: boolean) {
@@ -930,28 +1108,6 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     return null;
   }
 
-  const summaryCards = [
-    {
-      label: "Phase",
-      value: PHASE_LABELS[data.league.phase] ?? data.league.phase,
-      detail: `Commissioner: ${data.league.commissionerName}`,
-    },
-    {
-      label: "Managers",
-      value: String(data.members.length),
-      detail: `${data.pendingInvites.length} pending invites`,
-    },
-    {
-      label: "Remaining Players",
-      value: String(data.availablePlayers.length),
-      detail: `${data.league.rosterSize} spots per team`,
-    },
-    {
-      label: "Draft Status",
-      value: data.currentRound ? `Round ${data.currentRound.roundNumber}` : "Closed",
-      detail: data.currentRound ? `Max bid $${data.currentRound.myMaxBid}` : "No active round",
-    },
-  ];
   const selectedPlayerIdSet = new Set(selectedPlayerIds);
   const selectedVisibleCount = filteredAvailablePlayers.filter((player) =>
     selectedPlayerIdSet.has(player.id),
@@ -959,7 +1115,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
   return (
     <main className="mx-auto flex w-full max-w-[96rem] flex-col gap-6 px-4 py-10 sm:px-6 lg:px-8">
-      <section className="space-y-2">
+      <section className="space-y-3">
         <button
           type="button"
           className="text-sm text-muted-foreground underline underline-offset-4"
@@ -967,7 +1123,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         >
           Back to leagues
         </button>
-        <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
             <p className="text-xs font-semibold tracking-[0.25em] text-muted-foreground uppercase">
               {PHASE_LABELS[data.league.phase] ?? data.league.phase}
@@ -977,28 +1133,33 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
             </h1>
             <p className="text-sm text-muted-foreground">
               Commissioner: {data.league.commissionerName}
+              {" · "}
+              {data.members.length} managers
+              {" · "}
+              {data.availablePlayers.length} players remaining
             </p>
           </div>
-          <div className="rounded-2xl border border-border/80 bg-background px-4 py-3 text-sm text-muted-foreground">
-            <p>Roster size: {data.league.rosterSize}</p>
-            <p>Budget: ${data.league.budgetPerTeam}</p>
-            <p>Min bid: ${data.league.minBid}</p>
+          <div className="grid gap-1 rounded-2xl border border-border/80 bg-card px-4 py-3 text-sm text-muted-foreground">
+            <p>
+              Roster size: <span className="font-medium text-foreground">{data.league.rosterSize}</span>
+            </p>
+            <p>
+              Budget: <span className="font-medium text-foreground">${data.league.budgetPerTeam}</span>
+            </p>
+            <p>
+              Min bid: <span className="font-medium text-foreground">${data.league.minBid}</span>
+            </p>
+            {data.currentRound ? (
+              <p className="mt-1 border-t border-border/70 pt-2">
+                <span className="text-foreground font-medium">
+                  Round {data.currentRound.roundNumber}
+                </span>
+                {" · Max bid "}
+                <span className="text-foreground font-medium">${data.currentRound.myMaxBid}</span>
+              </p>
+            ) : null}
           </div>
         </div>
-      </section>
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {summaryCards.map((card) => (
-          <Card key={card.label}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">{card.label}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold text-foreground">{card.value}</p>
-              <p className="mt-1 text-sm text-muted-foreground">{card.detail}</p>
-            </CardContent>
-          </Card>
-        ))}
       </section>
 
       {error ? (
@@ -1378,17 +1539,15 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                           placeholder="Search players or teams"
                           className="w-full sm:w-52"
                         />
-                        <select
-                          className="h-8 rounded-lg border border-input bg-background px-3 text-sm"
+                        <SelectField
                           value={bidConferenceFilter}
                           onChange={(event) => setBidConferenceFilter(event.target.value)}
                         >
                           <option value="all">All conferences</option>
                           <option value="E">East</option>
                           <option value="W">West</option>
-                        </select>
-                        <select
-                          className="h-8 rounded-lg border border-input bg-background px-3 text-sm"
+                        </SelectField>
+                        <SelectField
                           value={bidTeamFilter}
                           onChange={(event) => setBidTeamFilter(event.target.value)}
                         >
@@ -1398,9 +1557,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               {team}
                             </option>
                           ))}
-                        </select>
-                        <select
-                          className="h-8 rounded-lg border border-input bg-background px-3 text-sm"
+                        </SelectField>
+                        <SelectField
                           value={bidSeedFilter}
                           onChange={(event) => setBidSeedFilter(event.target.value)}
                         >
@@ -1410,57 +1568,88 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               Seed {seed}
                             </option>
                           ))}
-                        </select>
+                        </SelectField>
                       </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 border-y border-border/60 bg-muted/20 px-3 py-2 -mx-3 sm:mx-0 sm:rounded-lg sm:border">
+                      <span className="self-center text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Bulk:
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyBulkBids("suggested")}
+                      >
+                        Set all → suggested
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyBulkBids("zero")}
+                      >
+                        Set all → $0
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => applyBulkBids("clear")}
+                      >
+                        Clear all
+                      </Button>
                     </div>
                     <div className="flex flex-col gap-3 md:hidden">
                       {filteredBidPlayers.map((player) => (
                         <div
                           key={player.id}
-                          className="rounded-xl border border-border/80 bg-background p-4 shadow-sm"
+                          className="overflow-hidden rounded-2xl border border-border/80 bg-card shadow-sm"
                         >
-                          <div className="flex items-baseline justify-between gap-3">
-                            <p className="text-base font-medium text-foreground">{player.name}</p>
-                            <p className="text-sm font-semibold text-foreground">
-                              ${player.suggestedValue}
-                            </p>
+                          <div className="flex items-start justify-between gap-3 px-4 pt-4">
+                            <div className="min-w-0">
+                              <p className="truncate text-base font-semibold text-foreground">
+                                {player.name}
+                              </p>
+                              <p className="mt-0.5 text-xs text-muted-foreground">
+                                {player.team} · {player.conference} · Seed {player.seed ?? "-"}
+                              </p>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                                Suggested
+                              </p>
+                              <p className="text-lg font-bold tabular-nums text-foreground">
+                                ${player.suggestedValue}
+                              </p>
+                            </div>
                           </div>
-                          <p className="text-xs text-muted-foreground">
-                            {player.team} · Seed {player.seed ?? "-"}
+                          <p className="mt-1 px-4 text-xs text-muted-foreground">
+                            Projected {formatNullableNumber(player.totalPoints)} pts · Default $
+                            {player.defaultBid}
                           </p>
-                          <dl className="mt-3 grid grid-cols-3 gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                            <div>
-                              <dt className="uppercase tracking-wide">GP</dt>
-                              <dd className="text-foreground">{formatNullableNumber(player.gamesPlayed, 0)}</dd>
-                            </div>
-                            <div>
-                              <dt className="uppercase tracking-wide">MPG</dt>
-                              <dd className="text-foreground">{formatNullableNumber(player.minutesPerGame)}</dd>
-                            </div>
-                            <div>
-                              <dt className="uppercase tracking-wide">PPG</dt>
-                              <dd className="text-foreground">{formatNullableNumber(player.pointsPerGame)}</dd>
-                            </div>
-                            <div>
-                              <dt className="uppercase tracking-wide">Proj Pts</dt>
-                              <dd className="text-foreground">{formatNullableNumber(player.totalPoints)}</dd>
-                            </div>
-                            <div>
-                              <dt className="uppercase tracking-wide">Proj GP</dt>
-                              <dd className="text-foreground">{formatNullableNumber(player.totalGames)}</dd>
-                            </div>
-                            <div>
-                              <dt className="uppercase tracking-wide">Default</dt>
-                              <dd className="text-foreground">${player.defaultBid}</dd>
-                            </div>
-                          </dl>
-                          <div className="mt-3 flex items-center gap-2">
-                            <Label
-                              htmlFor={`bid-${player.id}`}
-                              className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                          <div className="mt-3 flex items-center gap-2 border-t border-border/60 bg-muted/30 px-3 py-3">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="icon-sm"
+                              onClick={() => resetBidValue(player.id)}
+                              aria-label={`Reset bid for ${player.name}`}
+                              title="Reset to default"
                             >
-                              Your bid
-                            </Label>
+                              <RefreshIcon className="size-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setBidValue(player.id, "0")}
+                              title="Pass (bid $0)"
+                              className="h-7 px-2 text-xs tabular-nums"
+                            >
+                              $0
+                            </Button>
                             <div className="relative flex-1">
                               <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-muted-foreground">
                                 $
@@ -1474,12 +1663,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                 placeholder={String(player.defaultBid)}
                                 value={bidValues[player.id] ?? ""}
                                 onChange={(event) =>
-                                  setBidValues((current) => ({
-                                    ...current,
-                                    [player.id]: sanitizeBidInput(event.target.value),
-                                  }))
+                                  setBidValue(player.id, event.target.value)
                                 }
-                                className="pl-6 pr-3 text-right font-medium tabular-nums"
+                                className="h-9 pl-6 pr-3 text-right text-base font-semibold tabular-nums"
                                 style={bidInputStyle(
                                   parseBidValue(bidValues[player.id] ?? ""),
                                   player.suggestedValue,
@@ -1545,25 +1731,44 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                 {formatNullableNumber(player.totalGames)}
                               </td>
                               <td className="px-3 py-3">
-                                <Input
-                                  type="text"
-                                  inputMode="numeric"
-                                  pattern="[0-9]*"
-                                  autoComplete="off"
-                                  placeholder={String(player.defaultBid)}
-                                  value={bidValues[player.id] ?? ""}
-                                  onChange={(event) =>
-                                    setBidValues((current) => ({
-                                      ...current,
-                                      [player.id]: sanitizeBidInput(event.target.value),
-                                    }))
-                                  }
-                                  className="h-8 w-24 text-right font-medium tabular-nums"
-                                  style={bidInputStyle(
-                                    parseBidValue(bidValues[player.id] ?? ""),
-                                    player.suggestedValue,
-                                  )}
-                                />
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    onClick={() => resetBidValue(player.id)}
+                                    aria-label={`Reset bid for ${player.name}`}
+                                    title="Reset to default"
+                                  >
+                                    <RefreshIcon className="size-3" />
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="xs"
+                                    onClick={() => setBidValue(player.id, "0")}
+                                    title="Pass (bid $0)"
+                                    className="h-6 px-1.5 tabular-nums"
+                                  >
+                                    $0
+                                  </Button>
+                                  <Input
+                                    type="text"
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    autoComplete="off"
+                                    placeholder={String(player.defaultBid)}
+                                    value={bidValues[player.id] ?? ""}
+                                    onChange={(event) =>
+                                      setBidValue(player.id, event.target.value)
+                                    }
+                                    className="h-7 w-20 text-right font-medium tabular-nums"
+                                    style={bidInputStyle(
+                                      parseBidValue(bidValues[player.id] ?? ""),
+                                      player.suggestedValue,
+                                    )}
+                                  />
+                                </div>
                               </td>
                             </tr>
                           ))}
@@ -1578,7 +1783,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     {submitError || invalidBidMessage ? (
                       <p className="text-sm text-destructive">{submitError || invalidBidMessage}</p>
                     ) : null}
-                    <div className="sticky bottom-2 z-10 flex flex-wrap gap-3 rounded-xl border border-border/80 bg-background/95 p-3 shadow-sm backdrop-blur md:static md:border-0 md:bg-transparent md:p-0 md:shadow-none md:backdrop-blur-none">
+                    <div className="sticky bottom-2 z-10 flex flex-wrap gap-3 rounded-xl border border-border/80 bg-background/95 p-3 shadow-sm backdrop-blur md:static md:justify-end md:border-0 md:bg-transparent md:p-0 md:shadow-none md:backdrop-blur-none">
                       <Button
                         onClick={() => void submitBids()}
                         disabled={submitPending}
@@ -1589,7 +1794,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       {data.league.isCommissioner ? (
                         <Button
                           variant="outline"
-                          onClick={() => void closeRound()}
+                          onClick={() => setShowCloseConfirm(true)}
                           disabled={closePending}
                         >
                           {closePending ? "Closing..." : "Close Round and Reveal"}
@@ -1613,9 +1818,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
                       <Label htmlFor="round-mode">Eligible Players</Label>
-                      <select
+                      <SelectField
                         id="round-mode"
-                        className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                        className="h-9 w-full"
                         value={roundMode}
                         onChange={(event) =>
                           setRoundMode(event.target.value as "selected" | "all_remaining")
@@ -1623,7 +1828,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       >
                         <option value="selected">Selected players</option>
                         <option value="all_remaining">All remaining players</option>
-                      </select>
+                      </SelectField>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="round-deadline">Helpful Deadline</Label>
@@ -1653,17 +1858,17 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                 onChange={(event) => setDraftQuery(event.target.value)}
                                 placeholder="Search players or teams"
                               />
-                              <select
-                                className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+                              <SelectField
+                                className="h-9 w-full"
                                 value={draftConferenceFilter}
                                 onChange={(event) => setDraftConferenceFilter(event.target.value)}
                               >
                                 <option value="all">All conferences</option>
                                 <option value="E">East</option>
                                 <option value="W">West</option>
-                              </select>
-                              <select
-                                className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+                              </SelectField>
+                              <SelectField
+                                className="h-9 w-full"
                                 value={draftTeamFilter}
                                 onChange={(event) => setDraftTeamFilter(event.target.value)}
                               >
@@ -1673,9 +1878,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     {team}
                                   </option>
                                 ))}
-                              </select>
-                              <select
-                                className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+                              </SelectField>
+                              <SelectField
+                                className="h-9 w-full"
                                 value={draftSeedFilter}
                                 onChange={(event) => setDraftSeedFilter(event.target.value)}
                               >
@@ -1685,9 +1890,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     Seed {seed}
                                   </option>
                                 ))}
-                              </select>
-                              <select
-                                className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+                              </SelectField>
+                              <SelectField
+                                className="h-9 w-full"
                                 value={draftSort}
                                 onChange={(event) =>
                                   setDraftSort(event.target.value as DraftSortOption)
@@ -1698,7 +1903,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                 <option value="name_asc">Player name</option>
                                 <option value="team_asc">Team</option>
                                 <option value="seed_asc">Seed</option>
-                              </select>
+                              </SelectField>
                             </div>
 
                             <div className="flex flex-wrap gap-2">
@@ -1740,9 +1945,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               </div>
                               <div className="space-y-2 sm:col-span-2">
                                 <Label htmlFor="preset-scope">Scope</Label>
-                                <select
+                                <SelectField
                                   id="preset-scope"
-                                  className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                                  className="h-9 w-full"
                                   value={presetScope}
                                   onChange={(event) =>
                                     setPresetScope(event.target.value as PresetScope)
@@ -1751,7 +1956,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   <option value="all">All teams</option>
                                   <option value="exclude">All teams except</option>
                                   <option value="include">Only these teams</option>
-                                </select>
+                                </SelectField>
                               </div>
                             </div>
                             <div className="space-y-2">
@@ -2143,6 +2348,24 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           </CardContent>
         </Card>
       ) : null}
+
+      <ConfirmDialog
+        open={showCloseConfirm}
+        title="Close round and reveal?"
+        description={
+          <p>
+            This will lock every bid, resolve the auction, update rosters, and
+            post the results. You can&apos;t undo this.
+          </p>
+        }
+        confirmLabel="Close and reveal"
+        destructive
+        loading={closePending}
+        onCancel={() => {
+          if (!closePending) setShowCloseConfirm(false);
+        }}
+        onConfirm={() => void closeRound()}
+      />
     </main>
   );
 }
