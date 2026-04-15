@@ -186,13 +186,20 @@ type DraftPlayerRow = {
   totalGames: number | null;
 };
 
-const LEAGUE_TABS: Array<{ id: LeagueTab; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "managers", label: "Managers" },
-  { id: "draft", label: "Draft Room" },
-  { id: "results", label: "Reveal" },
-  { id: "standings", label: "Standings" },
-];
+const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> = {
+  overview: { label: "Overview", shortLabel: "Home" },
+  managers: { label: "Managers", shortLabel: "Teams" },
+  draft: { label: "Draft Room", shortLabel: "Draft" },
+  results: { label: "Reveal", shortLabel: "Reveal" },
+  standings: { label: "Standings", shortLabel: "Rank" },
+};
+
+function getLeagueTabOrder(phase: string): LeagueTab[] {
+  if (phase === "draft" || phase === "invite") {
+    return ["draft", "overview", "managers", "results", "standings"];
+  }
+  return ["standings", "overview", "managers", "draft", "results"];
+}
 
 function formatNullableNumber(value: number | null, digits = 1) {
   if (value === null) {
@@ -351,8 +358,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   }, [loadLeague]);
 
   useEffect(() => {
-    setActiveTab("overview");
-  }, [leagueId]);
+    if (data?.league.phase) {
+      const order = getLeagueTabOrder(data.league.phase);
+      setActiveTab(order[0] ?? "overview");
+    }
+  }, [leagueId, data?.league.phase]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -851,7 +861,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   ).length;
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-10 sm:px-6 lg:px-8">
+    <main className="mx-auto flex w-full max-w-[96rem] flex-col gap-6 px-4 py-10 sm:px-6 lg:px-8">
       <section className="space-y-2">
         <button
           type="button"
@@ -901,20 +911,27 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       ) : null}
 
       <section className="rounded-2xl border border-border/80 bg-background/90 p-2">
-        <div className="flex flex-wrap gap-2">
-          {LEAGUE_TABS.map((tab) => (
+        <div className="flex flex-nowrap gap-1 overflow-x-auto sm:gap-2">
+          {getLeagueTabOrder(data.league.phase).map((tabId) => {
+            const def = LEAGUE_TAB_DEFS[tabId];
+            return (
             <button
-              key={tab.id}
+              key={tabId}
               type="button"
-              className={buttonVariants({
-                variant: activeTab === tab.id ? "default" : "ghost",
-                size: "sm",
-              })}
-              onClick={() => setActiveTab(tab.id)}
+              className={[
+                buttonVariants({
+                  variant: activeTab === tabId ? "default" : "ghost",
+                  size: "sm",
+                }),
+                "shrink-0",
+              ].join(" ")}
+              onClick={() => setActiveTab(tabId)}
             >
-              {tab.label}
+              <span className="hidden sm:inline">{def.label}</span>
+              <span className="sm:hidden">{def.shortLabel}</span>
             </button>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -1025,7 +1042,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     <span>{member.rosterCount} players</span>
                     <span>${member.remainingBudget} left</span>
                     <span>{member.remainingRosterSlots} spots left</span>
-                    <span>{member.totalPoints} points</span>
+                    <span>{member.totalPoints} proj. pts</span>
                   </div>
                   {data.league.isCommissioner && member.role !== "commissioner" ? (
                     <div className="mt-3">
@@ -1120,22 +1137,24 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                   </span>
                 </div>
 
-                <div className="grid gap-4 xl:grid-cols-[0.8fr_1.4fr]">
-                  <div className="space-y-2">
+                <div className="space-y-4">
+                  <div>
                     <p className="text-sm font-medium text-foreground">Submission Status</p>
-                    {data.currentRound.submissionStatuses.map((submission) => (
-                      <div
-                        key={submission.userId}
-                        className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-sm"
-                      >
-                        <span>{submission.name}</span>
-                        <span className="text-muted-foreground">
-                          {submission.submittedAt
-                            ? `Submitted ${new Date(submission.submittedAt).toLocaleTimeString()}`
-                            : "Waiting"}
-                        </span>
-                      </div>
-                    ))}
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {data.currentRound.submissionStatuses.map((submission) => (
+                        <div
+                          key={submission.userId}
+                          className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-sm"
+                        >
+                          <span className="truncate">{submission.name}</span>
+                          <span className="shrink-0 pl-2 text-xs text-muted-foreground">
+                            {submission.submittedAt
+                              ? new Date(submission.submittedAt).toLocaleTimeString()
+                              : "Waiting"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="space-y-3">
@@ -1267,8 +1286,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       ) : null}
                     </div>
 
-                    <div className="hidden max-h-[34rem] overflow-auto rounded-xl border border-border/80 md:block">
-                      <table className="min-w-full text-left text-sm">
+                    <div className="hidden max-h-[42rem] overflow-auto rounded-xl border border-border/80 md:block">
+                      <table className="w-full text-left text-sm">
                         <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
                           <tr>
                             <th className="px-3 py-3 font-medium">Player</th>
@@ -1844,9 +1863,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       {activeTab === "standings" ? (
         <Card>
           <CardHeader>
-            <CardTitle>Standings and Rosters</CardTitle>
+            <CardTitle>Projected Standings and Rosters</CardTitle>
             <CardDescription>
-              Scores currently use playoff total points from the player pool CSV.
+              Rankings use each player&apos;s projected playoff total points from the player pool CSV. Actual playoff scoring will replace these once games begin.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 lg:grid-cols-2">
@@ -1855,7 +1874,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="font-medium text-foreground">{roster.name}</p>
-                    <p className="text-sm text-muted-foreground">{roster.totalPoints} points</p>
+                    <p className="text-sm text-muted-foreground">{roster.totalPoints} projected pts</p>
                   </div>
                   <p className="text-sm text-muted-foreground">{roster.players.length} players</p>
                 </div>
@@ -1872,7 +1891,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         </div>
                         <div className="text-right text-muted-foreground">
                           <p>${player.acquisitionBid}</p>
-                          <p>{player.totalPoints} pts</p>
+                          <p>{player.totalPoints} proj pts</p>
                         </div>
                       </div>
                     ))
