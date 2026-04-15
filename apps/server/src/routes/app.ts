@@ -320,6 +320,37 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
   const members = await getLeagueMembers(leagueId);
   const auctionConfig = auctionConfigFromLeague(access.league, members.length);
   const players = await getPlayerPoolForAuction(auctionConfig);
+
+  // Rank every player in the pool by projected playoff points (descending)
+  // and pick the "replacement" player — the first player outside the
+  // draft pool — which is what VORP measures each player against.
+  const playersByProjectedPoints = [...players].sort((left, right) => {
+    const leftPts = left.totalPoints ?? Number.NEGATIVE_INFINITY;
+    const rightPts = right.totalPoints ?? Number.NEGATIVE_INFINITY;
+    if (rightPts !== leftPts) return rightPts - leftPts;
+    return right.suggestedValue - left.suggestedValue;
+  });
+  const projectedRankByPlayerId = new Map(
+    playersByProjectedPoints.map((player, index) => [player.id, index + 1]),
+  );
+  const draftPoolSize = Math.min(
+    playersByProjectedPoints.length,
+    auctionConfig.managers * auctionConfig.rosterSize,
+  );
+  const replacementPlayer =
+    playersByProjectedPoints[draftPoolSize] ??
+    playersByProjectedPoints[playersByProjectedPoints.length - 1] ??
+    null;
+  const replacementProjectedPoints = Math.max(
+    0,
+    Math.round(replacementPlayer?.totalPoints ?? 0),
+  );
+
+  const withProjectedRank = (player: (typeof players)[number]) => ({
+    ...player,
+    projectedPointsRank: projectedRankByPlayerId.get(player.id) ?? 0,
+  });
+
   const playerMap = new Map(players.map((player) => [player.id, player]));
   const pendingInvites = await getPendingLeagueInvites(leagueId);
   const rosterRows = await db
@@ -328,7 +359,29 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     .where(eq(rosterEntry.leagueId, leagueId));
   const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap);
   const rosteredPlayerIds = new Set(rosterRows.map((entry) => entry.playerId));
-  const availablePlayers = players.filter((player) => !rosteredPlayerIds.has(player.id));
+  const rosterByPlayerId = new Map(rosterRows.map((entry) => [entry.playerId, entry]));
+  const memberByUserId = new Map(members.map((member) => [member.userId, member]));
+  const availablePlayers = players
+    .filter((player) => !rosteredPlayerIds.has(player.id))
+    .map(withProjectedRank);
+  const draftedPlayers = players
+    .filter((player) => rosteredPlayerIds.has(player.id))
+    .map((player) => {
+      const entry = rosterByPlayerId.get(player.id);
+      const member = entry ? memberByUserId.get(entry.userId) : null;
+      return {
+        ...player,
+        draftedBy:
+          entry && member
+            ? {
+                userId: entry.userId,
+                name: member.name,
+                acquisitionBid: entry.acquisitionBid,
+                isAutoAssigned: entry.isAutoAssigned ?? false,
+              }
+            : null,
+      };
+    });
 
   const openRound = (
     await db
@@ -684,6 +737,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         access.league.phase !== "scoring" &&
         !openRound &&
         maxRosterCount <= access.league.rosterSize,
+      replacementProjectedPoints,
     },
     members: members
       .map((member) => {

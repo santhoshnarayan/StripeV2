@@ -32,6 +32,7 @@ type LeagueDetail = {
     commissionerName: string;
     isCommissioner: boolean;
     canEditRosterSize: boolean;
+    replacementProjectedPoints: number;
   };
   members: Array<{
     membershipId: string;
@@ -69,6 +70,7 @@ type LeagueDetail = {
     suggestedValue: number;
     totalPoints: number | null;
     totalGames: number | null;
+    projectedPointsRank: number;
   }>;
   currentRound: null | {
     id: string;
@@ -187,6 +189,7 @@ type DraftPlayerRow = {
   suggestedValue: number;
   totalPoints: number | null;
   totalGames: number | null;
+  projectedPointsRank?: number;
 };
 
 const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> = {
@@ -1544,12 +1547,22 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
               shape ({data.members.length} managers × {data.league.rosterSize} picks, $
               {data.league.budgetPerTeam} budget, min bid ${data.league.minBid}).
             </CardDescription>
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+              <span className="font-semibold uppercase tracking-wide text-muted-foreground">
+                Replacement
+              </span>
+              <span className="text-foreground tabular-nums">
+                {data.league.replacementProjectedPoints}
+              </span>
+              projected pts — the first player outside a full draft pool.
+            </p>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="overflow-auto rounded-xl border border-border/80">
               <table className="w-full text-left text-sm">
                 <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
                   <tr>
+                    <th className="px-3 py-3 text-right font-medium">#</th>
                     <th className="px-3 py-3 text-left font-medium">Player</th>
                     <th className="px-3 py-3 text-left font-medium">Team</th>
                     <th className="px-3 py-3 text-left font-medium">Conf</th>
@@ -1563,9 +1576,12 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortDraftPlayers(data.availablePlayers, "suggested_desc").map(
+                  {sortDraftPlayers(data.availablePlayers, "projected_desc").map(
                     (player) => (
                       <tr key={player.id} className="border-t border-border/70">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                          {player.projectedPointsRank ?? "—"}
+                        </td>
                         <td className="px-3 py-3 font-medium text-foreground">{player.name}</td>
                         <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
                         <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
@@ -1616,7 +1632,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-5">
-                <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
                   <span>Format: {data.currentRound.eligiblePlayerMode.replace("_", " ")}</span>
                   <span>Max bid: ${data.currentRound.myMaxBid}</span>
                   <span>
@@ -1625,6 +1641,12 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     {data.currentRound.deadlineAt
                       ? new Date(data.currentRound.deadlineAt).toLocaleString()
                       : "None"}
+                  </span>
+                  <span>
+                    Replacement pts:{" "}
+                    <span className="tabular-nums font-medium text-foreground">
+                      {data.league.replacementProjectedPoints}
+                    </span>
                   </span>
                 </div>
 
