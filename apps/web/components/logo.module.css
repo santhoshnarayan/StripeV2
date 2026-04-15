@@ -1,0 +1,34 @@
+.logo {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .logo {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    flex-shrink: 0;
+    margin-right: 8px;
+    line-height: 1;
+    text-decoration: none;
+  }
+}
+
+.logo__primary {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: #171717;
+}
+
+.dark .logo__primary {
+  color: #fafafa;
+}
+
+.logo__secondary {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #f97316;
+}
