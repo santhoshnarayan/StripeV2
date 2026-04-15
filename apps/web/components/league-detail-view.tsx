@@ -209,6 +209,36 @@ function formatNullableNumber(value: number | null, digits = 1) {
   return Number.isInteger(value) ? String(value) : value.toFixed(digits);
 }
 
+function formatRelativeTime(input: string | Date | null | undefined, now: number = Date.now()) {
+  if (!input) {
+    return "";
+  }
+  const then = typeof input === "string" ? new Date(input).getTime() : input.getTime();
+  if (Number.isNaN(then)) {
+    return "";
+  }
+  const diffSeconds = Math.round((then - now) / 1000);
+  const absSeconds = Math.abs(diffSeconds);
+  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+  if (absSeconds < 45) {
+    return diffSeconds >= 0 ? "just now" : "just now";
+  }
+  if (absSeconds < 60) {
+    return rtf.format(Math.round(diffSeconds), "second");
+  }
+  if (absSeconds < 60 * 60) {
+    return rtf.format(Math.round(diffSeconds / 60), "minute");
+  }
+  if (absSeconds < 60 * 60 * 24) {
+    return rtf.format(Math.round(diffSeconds / 3600), "hour");
+  }
+  if (absSeconds < 60 * 60 * 24 * 7) {
+    return rtf.format(Math.round(diffSeconds / 86400), "day");
+  }
+  return new Date(then).toLocaleDateString();
+}
+
 function sortDraftPlayers<T extends DraftPlayerRow>(players: T[], sort: DraftSortOption) {
   const sortedPlayers = [...players];
 
@@ -1139,21 +1169,59 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
                 <div className="space-y-4">
                   <div>
-                    <p className="text-sm font-medium text-foreground">Submission Status</p>
+                    <div className="flex items-baseline justify-between gap-3">
+                      <p className="text-sm font-medium text-foreground">Submission Status</p>
+                      <p className="text-xs text-muted-foreground">
+                        {
+                          data.currentRound.submissionStatuses.filter((s) => s.submittedAt)
+                            .length
+                        }{" "}
+                        / {data.currentRound.submissionStatuses.length} submitted
+                      </p>
+                    </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                      {data.currentRound.submissionStatuses.map((submission) => (
-                        <div
-                          key={submission.userId}
-                          className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-sm"
-                        >
-                          <span className="truncate">{submission.name}</span>
-                          <span className="shrink-0 pl-2 text-xs text-muted-foreground">
-                            {submission.submittedAt
-                              ? new Date(submission.submittedAt).toLocaleTimeString()
-                              : "Waiting"}
-                          </span>
-                        </div>
-                      ))}
+                      {data.currentRound.submissionStatuses.map((submission) => {
+                        const submitted = Boolean(submission.submittedAt);
+                        return (
+                          <div
+                            key={submission.userId}
+                            title={
+                              submission.submittedAt
+                                ? `Submitted ${new Date(submission.submittedAt).toLocaleString()}`
+                                : "Waiting on bids"
+                            }
+                            className={[
+                              "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
+                              submitted
+                                ? "border-emerald-500/40 bg-emerald-500/10 text-foreground"
+                                : "border-border/70 bg-background",
+                            ].join(" ")}
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span
+                                aria-hidden
+                                className={[
+                                  "inline-flex h-1.5 w-1.5 shrink-0 rounded-full",
+                                  submitted
+                                    ? "bg-emerald-500"
+                                    : "animate-pulse bg-amber-500",
+                                ].join(" ")}
+                              />
+                              <span className="truncate">{submission.name}</span>
+                            </span>
+                            <span
+                              className={[
+                                "shrink-0 text-[11px]",
+                                submitted ? "text-emerald-700" : "text-muted-foreground",
+                              ].join(" ")}
+                            >
+                              {submitted
+                                ? formatRelativeTime(submission.submittedAt!)
+                                : "Waiting"}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
