@@ -30,7 +30,7 @@ function CompetitorRow({
   fullNames: Record<string, string>;
   advPct?: number | null;
 }) {
-  const isTBD = team === "TBD" || team === "Play-In" || seed === 0;
+  const isTBD = team === "TBD" || team === "Play-In";
   return (
     <div className="flex items-center gap-1.5 px-2" style={{ height: CELL_H }}>
       {seed > 0 && (
