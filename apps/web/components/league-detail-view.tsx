@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { appApiFetch } from "@/lib/app-api";
 import { useSession } from "@/lib/auth-client";
+import { SimulatorTab } from "@/components/simulator-tab";
 
 const POLL_INTERVAL_MS = 8_000;
 const POLL_INACTIVE_TIMEOUT_MS = 3 * 60_000;
@@ -166,7 +167,7 @@ const PHASE_LABELS: Record<string, string> = {
   scoring: "Scoring",
 };
 
-type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings";
+type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator";
 type DraftSortOption =
   | "suggested_desc"
   | "projected_desc"
@@ -194,15 +195,16 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
   managers: { label: "Managers", shortLabel: "Teams" },
   players: { label: "Players", shortLabel: "Pool" },
   draft: { label: "Draft Room", shortLabel: "Draft" },
+  simulator: { label: "Simulator", shortLabel: "Sim" },
   results: { label: "Reveal", shortLabel: "Reveal" },
   standings: { label: "Standings", shortLabel: "Rank" },
 };
 
 function getLeagueTabOrder(phase: string): LeagueTab[] {
   if (phase === "draft" || phase === "invite") {
-    return ["draft", "overview", "managers", "players", "results", "standings"];
+    return ["draft", "simulator", "overview", "managers", "players", "results", "standings"];
   }
-  return ["standings", "overview", "managers", "players", "draft", "results"];
+  return ["standings", "simulator", "overview", "managers", "players", "draft", "results"];
 }
 
 function formatNullableNumber(value: number | null, digits = 1) {
@@ -2768,6 +2770,10 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
             </CardContent>
           </Card>
         </section>
+      ) : null}
+
+      {activeTab === "simulator" ? (
+        <SimulatorTab leagueId={leagueId} leagueName={data.league.name} />
       ) : null}
 
       {activeTab === "standings" ? (
