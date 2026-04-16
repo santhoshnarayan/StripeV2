@@ -1362,53 +1362,29 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   ).length;
 
   return (
-    <main className="mx-auto flex w-full max-w-[96rem] flex-col gap-6 px-4 py-10 sm:px-6 lg:px-8">
-      <section className="space-y-3">
+    <main className="mx-auto flex w-full max-w-[96rem] flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         <button
           type="button"
-          className="text-sm text-muted-foreground underline underline-offset-4"
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => startTransition(() => router.push("/"))}
         >
-          Back to leagues
+          ←
         </button>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-2">
-            <p className="text-xs font-semibold tracking-[0.25em] text-muted-foreground uppercase">
-              {PHASE_LABELS[data.league.phase] ?? data.league.phase}
-            </p>
-            <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-              {data.league.name}
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Commissioner: {data.league.commissionerName}
-              {" · "}
-              {data.members.length} managers
-              {" · "}
-              {data.availablePlayers.length} players remaining
-            </p>
-          </div>
-          <div className="grid gap-1 rounded-2xl border border-border/80 bg-card px-4 py-3 text-sm text-muted-foreground">
-            <p>
-              Roster size: <span className="font-medium text-foreground">{data.league.rosterSize}</span>
-            </p>
-            <p>
-              Budget: <span className="font-medium text-foreground">${data.league.budgetPerTeam}</span>
-            </p>
-            <p>
-              Min bid: <span className="font-medium text-foreground">${data.league.minBid}</span>
-            </p>
-            {data.currentRound ? (
-              <p className="mt-1 border-t border-border/70 pt-2">
-                <span className="text-foreground font-medium">
-                  Round {data.currentRound.roundNumber}
-                </span>
-                {" · Max bid "}
-                <span className="text-foreground font-medium">${data.currentRound.myMaxBid}</span>
-              </p>
-            ) : null}
-          </div>
+        <h1 className="text-lg font-semibold tracking-tight text-foreground">
+          {data.league.name}
+        </h1>
+        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          {PHASE_LABELS[data.league.phase] ?? data.league.phase}
+        </span>
+        <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
+          <span>{data.members.length} managers · {data.availablePlayers.length} remaining</span>
+          <span>Roster <span className="font-medium text-foreground">{data.league.rosterSize}</span> · Budget <span className="font-medium text-foreground">${data.league.budgetPerTeam}</span> · Min <span className="font-medium text-foreground">${data.league.minBid}</span></span>
+          {data.currentRound ? (
+            <span>Round <span className="font-medium text-foreground">{data.currentRound.roundNumber}</span> · Max bid <span className="font-medium text-foreground">${data.currentRound.myMaxBid}</span></span>
+          ) : null}
         </div>
-      </section>
+      </div>
 
       {error ? (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -2791,7 +2767,21 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       ) : null}
 
       {activeTab === "simulator" ? (
-        <SimulatorTab leagueId={leagueId} leagueName={data.league.name} />
+        <SimulatorTab
+          leagueId={leagueId}
+          leagueName={data.league.name}
+          leagueData={{
+            rosters: data.rosters,
+            members: data.members,
+            availablePlayers: data.availablePlayers,
+            league: {
+              budgetPerTeam: data.league.budgetPerTeam,
+              minBid: data.league.minBid,
+              rosterSize: data.league.rosterSize,
+            },
+            viewerUserId: viewerUserId ?? undefined,
+          }}
+        />
       ) : null}
 
       {activeTab === "standings" ? (

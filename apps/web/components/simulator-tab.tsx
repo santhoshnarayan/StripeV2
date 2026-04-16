@@ -25,14 +25,54 @@ import {
   type SimResults,
 } from "@/lib/sim";
 
-type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries";
+import {
+  computeManagerProjections,
+  computeMarginalValues,
+  type RosterInput,
+} from "@/lib/sim/draft";
+
+type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor";
+
+export interface LeagueRosterData {
+  rosters: Array<{
+    userId: string;
+    name: string;
+    totalPoints: number;
+    players: Array<{
+      playerId: string;
+      playerName: string;
+      playerTeam: string;
+      totalPoints: number;
+    }>;
+  }>;
+  members: Array<{
+    userId: string;
+    name: string;
+    remainingBudget: number;
+    remainingRosterSlots: number;
+  }>;
+  availablePlayers: Array<{
+    id: string;
+    name: string;
+    team: string;
+    suggestedValue: number;
+    totalPoints: number | null;
+  }>;
+  league: {
+    budgetPerTeam: number;
+    minBid: number;
+    rosterSize: number;
+  };
+  viewerUserId?: string;
+}
 
 interface SimulatorTabProps {
   leagueId: string;
   leagueName: string;
+  leagueData?: LeagueRosterData;
 }
 
-export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
+export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabProps) {
   const cacheKey = `league:${leagueId}`;
   const [simData, setSimData] = useState<SimData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -190,10 +230,52 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
 
   if (!simData) return null;
 
+  // Build roster inputs for draft optimizer
+  const rosterInputs: RosterInput[] = useMemo(() => {
+    if (!leagueData) return [];
+    return leagueData.rosters.map((r) => ({
+      userId: r.userId,
+      name: r.name,
+      playerIds: r.players.map((p) => p.playerId),
+    }));
+  }, [leagueData]);
+
+  const viewerIndex = useMemo(() => {
+    if (!leagueData?.viewerUserId) return 0;
+    return rosterInputs.findIndex((r) => r.userId === leagueData.viewerUserId);
+  }, [rosterInputs, leagueData?.viewerUserId]);
+
+  // Manager projections (roster analysis)
+  const managerProjections = useMemo(() => {
+    if (!simResults || !rosterInputs.length) return null;
+    return computeManagerProjections(simResults, rosterInputs);
+  }, [simResults, rosterInputs]);
+
+  // Marginal values (bid advisor)
+  const marginalValues = useMemo(() => {
+    if (!simResults || !rosterInputs.length || !leagueData) return null;
+    const viewer = leagueData.members.find((m) => m.userId === leagueData.viewerUserId);
+    if (!viewer) return null;
+    const availableIds = leagueData.availablePlayers.map((p) => p.id);
+    return computeMarginalValues(
+      simResults,
+      rosterInputs,
+      viewerIndex >= 0 ? viewerIndex : 0,
+      availableIds,
+      viewer.remainingBudget,
+      viewer.remainingRosterSlots,
+      leagueData.league.minBid,
+    );
+  }, [simResults, rosterInputs, leagueData, viewerIndex]);
+
   const subTabs: { id: SimSubTab; label: string }[] = [
     { id: "players", label: "Players" },
     { id: "teams", label: "Teams" },
     { id: "bracket", label: "Bracket" },
+    ...(leagueData ? [
+      { id: "roster" as SimSubTab, label: "Roster" },
+      { id: "advisor" as SimSubTab, label: "Advisor" },
+    ] : []),
     { id: "adjustments", label: "Adjustments" },
     { id: "injuries", label: "Injuries" },
   ];
@@ -484,6 +566,176 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
             </div>
           </CardContent>
         </Card>
+      ) : null}
+
+      {/* Roster Analysis */}
+      {subTab === "roster" && managerProjections ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Roster Analysis</CardTitle>
+            <CardDescription>
+              Win probability and projected point distributions for each manager, based on {simResults?.numSims.toLocaleString()} simulations.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-xl border border-border/80">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-right font-medium">#</th>
+                    <th className="px-3 py-2 text-left font-medium">Manager</th>
+                    <th className="px-3 py-2 text-right font-medium">Players</th>
+                    <th className="px-3 py-2 text-right font-medium">Win%</th>
+                    <th className="px-3 py-2 text-right font-medium">Mean Pts</th>
+                    <th className="px-3 py-2 text-right font-medium">Std Dev</th>
+                    <th className="px-3 py-2 text-right font-medium">p10</th>
+                    <th className="px-3 py-2 text-right font-medium">p90</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...managerProjections]
+                    .sort((a, b) => b.winProbability - a.winProbability)
+                    .map((mp, idx) => {
+                      const roster = leagueData?.rosters.find((r) => r.userId === mp.userId);
+                      const isViewer = mp.userId === leagueData?.viewerUserId;
+                      return (
+                        <tr key={mp.userId} className={`border-t border-border/60 ${isViewer ? "bg-amber-50/50 dark:bg-amber-900/10" : ""}`}>
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {idx + 1}
+                          </td>
+                          <td className="px-3 py-2 font-medium text-foreground">
+                            {mp.name}{isViewer ? " (you)" : ""}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {roster?.players.length ?? 0}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold text-foreground">
+                            {(mp.winProbability * 100).toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                            {mp.mean.toFixed(0)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {mp.stddev.toFixed(0)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {mp.p10.toFixed(0)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {mp.p90.toFixed(0)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Win probability bar chart */}
+            {managerProjections.length > 0 && (
+              <div className="mt-6 space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Win Probability</p>
+                {[...managerProjections]
+                  .sort((a, b) => b.winProbability - a.winProbability)
+                  .map((mp) => {
+                    const isViewer = mp.userId === leagueData?.viewerUserId;
+                    return (
+                      <div key={mp.userId} className="flex items-center gap-3">
+                        <span className={`w-28 text-sm truncate ${isViewer ? "font-medium" : "text-muted-foreground"}`}>
+                          {mp.name}
+                        </span>
+                        <div className="flex-1 h-6 bg-muted/40 rounded-md overflow-hidden">
+                          <div
+                            className={`h-full rounded-md transition-all ${isViewer ? "bg-amber-500/60" : "bg-foreground/20"}`}
+                            style={{ width: `${Math.max(1, mp.winProbability * 100)}%` }}
+                          />
+                        </div>
+                        <span className="w-14 text-right text-sm tabular-nums font-medium">
+                          {(mp.winProbability * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : subTab === "roster" && !simResults ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          {simulating ? `Running simulation... ${Math.round(progress * 100)}%` : "Run a simulation to see roster analysis."}
+        </div>
+      ) : null}
+
+      {/* Bid Advisor */}
+      {subTab === "advisor" && marginalValues ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Bid Advisor</CardTitle>
+            <CardDescription>
+              Marginal win probability if you draft each remaining player. Higher delta = more valuable to your roster.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-xl border border-border/80">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-right font-medium">#</th>
+                    <th className="px-3 py-2 text-left font-medium">Player</th>
+                    <th className="px-3 py-2 text-left font-medium">Team</th>
+                    <th className="px-3 py-2 text-right font-medium">Proj Pts</th>
+                    <th className="px-3 py-2 text-right font-medium">Cur Win%</th>
+                    <th className="px-3 py-2 text-right font-medium">New Win%</th>
+                    <th className="px-3 py-2 text-right font-medium">Delta</th>
+                    <th className="px-3 py-2 text-right font-medium">Sug. Bid</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {marginalValues.slice(0, 50).map((mv, idx) => (
+                    <tr key={mv.espnId} className="border-t border-border/60">
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {idx + 1}
+                      </td>
+                      <td className="px-3 py-2 font-medium text-foreground">
+                        <div className="flex items-center gap-2">
+                          <PlayerAvatar espnId={mv.espnId} team={mv.team} size={28} />
+                          {mv.playerName}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        <div className="flex items-center gap-1.5">
+                          <TeamLogo team={mv.team} size={16} />
+                          {mv.team}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {mv.projectedPoints.toFixed(0)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {(mv.currentWinProb * 100).toFixed(1)}%
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                        {(mv.newWinProb * 100).toFixed(1)}%
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        <span className={mv.marginalWinProb > 0 ? "font-medium text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}>
+                          {mv.marginalWinProb > 0 ? "+" : ""}{(mv.marginalWinProb * 100).toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
+                        ${mv.suggestedBid}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      ) : subTab === "advisor" && !simResults ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          {simulating ? `Running simulation... ${Math.round(progress * 100)}%` : "Run a simulation to see bid advisor."}
+        </div>
       ) : null}
     </div>
   );
