@@ -38,6 +38,16 @@ export interface SimData {
     westSeeds: [number, string][];
     eastPlayin: [number, string][];
     westPlayin: [number, string][];
+    playinR1?: {
+      east: {
+        game7v8: { winner: string; loser: string };
+        game9v10: { winner: string; loser: string };
+      };
+      west: {
+        game7v8: { winner: string; loser: string };
+        game9v10: { winner: string; loser: string };
+      };
+    };
     seriesPattern: boolean[];
     teamAliases: Record<string, string>;
     teamFullNames: Record<string, string>;

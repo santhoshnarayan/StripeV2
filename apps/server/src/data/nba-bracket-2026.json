@@ -27,12 +27,16 @@
     [9, "LAC"],
     [10, "GS"]
   ],
-  "playinResults": {
-    "_note": "Play-in R1: PHI beat ORL (E7v8), CHA beat MIA (E9v10), POR beat PHX (W7v8), GSW beat LAC (W9v10). R2 TBD: East 8 = ORL vs CHA, West 8 = PHX vs GSW. Update seeds once resolved.",
-    "east7": "PHI",
-    "east8": "ORL",
-    "west7": "POR",
-    "west8": "PHX"
+  "playinR1": {
+    "_note": "Play-in R1 completed. R2 TBD: East 8 = ORL vs CHA, West 8 = PHX vs GSW.",
+    "east": {
+      "game7v8": { "winner": "PHI", "loser": "ORL" },
+      "game9v10": { "winner": "CHA", "loser": "MIA" }
+    },
+    "west": {
+      "game7v8": { "winner": "POR", "loser": "PHX" },
+      "game9v10": { "winner": "GS", "loser": "LAC" }
+    }
   },
   "seriesPattern": [true, true, false, false, true, false, true],
   "teamAliases": {

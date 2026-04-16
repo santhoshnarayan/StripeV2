@@ -145,16 +145,25 @@ function PlayInBracket({
   seeds,
   playin,
   fullNames,
+  r1Results,
 }: {
   conf: string;
   seeds: [number, string][];
   playin: [number, string][];
   fullNames: Record<string, string>;
+  r1Results?: {
+    game7v8: { winner: string; loser: string };
+    game9v10: { winner: string; loser: string };
+  };
 }) {
   const s7 = seeds.find(([s]) => s === 7)?.[1] ?? "?";
   const s8 = seeds.find(([s]) => s === 8)?.[1] ?? "?";
   const s9 = playin.find(([s]) => s === 9)?.[1] ?? "?";
   const s10 = playin.find(([s]) => s === 10)?.[1] ?? "?";
+
+  // If R1 results exist, show the R2 matchup with actual teams
+  const r2Higher = r1Results ? r1Results.game7v8.loser : `L(${s7}/${s8})`;
+  const r2Lower = r1Results ? r1Results.game9v10.winner : `W(${s9}/${s10})`;
 
   const BOX_H = CELL_H * 2;
   const CAPTION_H = 16;
@@ -186,7 +195,9 @@ function PlayInBracket({
               className="text-center text-[9px] text-muted-foreground"
               style={{ height: CAPTION_H, lineHeight: `${CAPTION_H}px` }}
             >
-              W → 7 seed
+              {r1Results
+                ? `✓ ${r1Results.game7v8.winner} → 7 seed`
+                : "W → 7 seed"}
             </div>
           </div>
           <div>
@@ -199,7 +210,9 @@ function PlayInBracket({
               className="text-center text-[9px] text-muted-foreground"
               style={{ height: CAPTION_H, lineHeight: `${CAPTION_H}px` }}
             >
-              L eliminated
+              {r1Results
+                ? `✓ ${r1Results.game9v10.loser} eliminated`
+                : "L eliminated"}
             </div>
           </div>
         </div>
@@ -223,8 +236,8 @@ function PlayInBracket({
 
         <div style={{ paddingTop: midY - BOX_H / 2 }}>
           <MatchupBox
-            higher={{ seed: 0, team: `L(${s7}/${s8})` }}
-            lower={{ seed: 0, team: `W(${s9}/${s10})` }}
+            higher={{ seed: 0, team: r2Higher }}
+            lower={{ seed: 0, team: r2Lower }}
             fullNames={fullNames}
           />
           <div
@@ -421,6 +434,7 @@ export function BracketView({
                 seeds={simData.bracket.westSeeds}
                 playin={simData.bracket.westPlayin}
                 fullNames={fullNames}
+                r1Results={simData.bracket.playinR1?.west}
               />
             ) : null}
             {simData.bracket.eastPlayin?.length ? (
@@ -429,6 +443,7 @@ export function BracketView({
                 seeds={simData.bracket.eastSeeds}
                 playin={simData.bracket.eastPlayin}
                 fullNames={fullNames}
+                r1Results={simData.bracket.playinR1?.east}
               />
             ) : null}
           </div>
