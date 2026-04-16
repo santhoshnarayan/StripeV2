@@ -395,28 +395,21 @@ export function computeMarginalValuesWithDraftSim(
     managerMarginals.push(margMap);
   }
 
-  // ── Step 2: Convert marginals to max willingness-to-pay ─────────────
-  // lambda_m = remaining budget / remaining slots (how much a win% point is worth in $)
-  // maxBid_m,p = lambda_m × deltaWP_m,p × scaleFactor
-  // scaleFactor accounts for the fact that deltaWP is small (0-10%) but budgets are $200
-  const opponentMaxBids: Map<string, number[]> = new Map(); // playerId → bid per manager
-  for (const pid of candidateIds) {
-    const bids: number[] = [];
-    for (let m = 0; m < rosters.length; m++) {
-      const info = managerBudgets[m];
-      if (!info || info.remainingRosterSlots <= 0) {
-        bids.push(0);
-        continue;
-      }
-      const lambda = info.remainingBudget / info.remainingRosterSlots;
-      const deltaWP = managerMarginals[m].get(pid) ?? 0;
-      // Scale: if deltaWP is 5% and lambda is $20/slot, raw = $1.
-      // Multiply by numManagers to approximate auction competition pressure.
-      const rawBid = lambda * deltaWP * rosters.length * 10;
-      const maxAllowed = Math.max(0, info.remainingBudget - (info.remainingRosterSlots - 1) * minBid);
-      bids.push(Math.max(0, Math.min(maxAllowed, Math.round(rawBid))));
+  // ── Step 2: Compute opponent demand (how many managers want each player) ───
+  // For each player, count how many opponents rank it in their top-N (where N = their remaining slots)
+  const opponentDemand = new Map<string, number>();
+  for (let m = 0; m < rosters.length; m++) {
+    if (m === viewerManagerIndex) continue;
+    const slots = managerBudgets[m]?.remainingRosterSlots ?? 0;
+    if (slots <= 0) continue;
+    // Rank this manager's candidates by their marginal
+    const ranked = [...candidateIds]
+      .map((pid) => ({ pid, marg: managerMarginals[m].get(pid) ?? 0 }))
+      .sort((a, b) => b.marg - a.marg)
+      .slice(0, slots);
+    for (const { pid } of ranked) {
+      opponentDemand.set(pid, (opponentDemand.get(pid) ?? 0) + 1);
     }
-    opponentMaxBids.set(pid, bids);
   }
 
   // ── Step 3: Greedy forward draft helper ─────────────────────────────
@@ -489,21 +482,6 @@ export function computeMarginalValuesWithDraftSim(
     }
     const newWinProb = wins / numSims;
 
-    // Suggested bid: beat the highest opponent bid, but don't exceed viewer's max value
-    const oppBids = opponentMaxBids.get(candidateId) ?? [];
-    const oppBidsExViewer = oppBids.filter((_, i) => i !== viewerManagerIndex);
-    const highestOppBid = Math.max(0, ...oppBidsExViewer);
-    const viewerMaxBid = Math.max(
-      0,
-      managerBudgets[viewerManagerIndex].remainingBudget
-        - (managerBudgets[viewerManagerIndex].remainingRosterSlots - 1) * minBid,
-    );
-    // Bid = just enough to beat the highest opponent, capped by own max
-    const suggestedBid = Math.max(
-      minBid,
-      Math.min(viewerMaxBid, highestOppBid + 1),
-    );
-
     results.push({
       espnId: candidateId,
       playerName: proj?.name ?? candidateId,
@@ -512,8 +490,54 @@ export function computeMarginalValuesWithDraftSim(
       currentWinProb,
       newWinProb,
       marginalWinProb: newWinProb - currentWinProb,
-      suggestedBid,
+      suggestedBid: 0, // computed below
     });
+  }
+
+  // ── Step 5: Bid allocation ──────────────────────────────────────────
+  // Use value-above-replacement (VARP) with demand-adjusted premiums.
+  // 1. Rank by marginal, find replacement level (slots+1 th best)
+  // 2. Allocate budget proportionally to value above replacement
+  // 3. Boost bids for high-demand players (many opponents want them)
+  const viewerBudget = managerBudgets[viewerManagerIndex];
+  const viewerSlots = viewerBudget.remainingRosterSlots;
+  const budget = viewerBudget.remainingBudget;
+  const freeBudget = Math.max(0, budget - (viewerSlots - 1) * minBid);
+  const perSlotBudget = viewerSlots > 0 ? budget / viewerSlots : budget;
+
+  const ranked = [...results].sort((a, b) => b.marginalWinProb - a.marginalWinProb);
+  const replacementMarginal = ranked.length > viewerSlots
+    ? Math.max(0, ranked[viewerSlots]?.marginalWinProb ?? 0)
+    : 0;
+
+  // Only players above replacement share the budget
+  let totalVAR = 0;
+  const varMap = new Map<string, number>();
+  for (const r of results) {
+    const v = Math.max(0, r.marginalWinProb - replacementMarginal);
+    varMap.set(r.espnId, v);
+    totalVAR += v;
+  }
+
+  for (const r of results) {
+    const v = varMap.get(r.espnId) ?? 0;
+    if (totalVAR > 0 && v > 0) {
+      // Base bid from VARP share of budget
+      const share = v / totalVAR;
+      let rawBid = share * budget;
+
+      // Demand premium: if multiple opponents want this player, bid more aggressively
+      const demand = opponentDemand.get(r.espnId) ?? 0;
+      const demandMultiplier = 1 + demand * 0.15; // +15% per competing manager
+      rawBid *= demandMultiplier;
+
+      r.suggestedBid = Math.max(
+        minBid,
+        Math.min(freeBudget, Math.round(rawBid)),
+      );
+    } else {
+      r.suggestedBid = r.marginalWinProb > 0 ? minBid : 0;
+    }
   }
 
   results.sort((a, b) => b.marginalWinProb - a.marginalWinProb);
