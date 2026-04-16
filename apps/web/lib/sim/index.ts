@@ -7,6 +7,8 @@ export type {
   PlayerProjection,
   ManagerProjection,
   MarginalValue,
+  PlayerAdjustment,
+  InjuryEntry,
 } from "./types";
 export { DEFAULT_SIM_CONFIG } from "./types";
 export { RNG } from "./rng";

@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { BracketView } from "@/components/sim/bracket-view";
+import { AdjustmentsView } from "@/components/sim/adjustments-view";
 import { appApiFetch } from "@/lib/app-api";
 import {
   runTournamentSim,
@@ -21,7 +22,7 @@ import {
   type PlayerProjection,
 } from "@/lib/sim";
 
-type SimSubTab = "players" | "teams" | "bracket";
+type SimSubTab = "players" | "teams" | "bracket" | "adjustments";
 
 interface SimulatorTabProps {
   leagueId: string;
@@ -37,6 +38,14 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
   const [progress, setProgress] = useState(0);
   const [subTab, setSubTab] = useState<SimSubTab>("players");
   const [config, setConfig] = useState<SimConfig>(DEFAULT_SIM_CONFIG);
+
+  // Mutable copy of adjustments so users can edit them before re-running
+  const [localAdjustments, setLocalAdjustments] = useState<
+    import("@/lib/sim").PlayerAdjustment[] | null
+  >(null);
+
+  // Initialize local adjustments from simData once loaded
+  const adjustments = localAdjustments ?? simData?.adjustments ?? [];
 
   const playerRatingLookup = useMemo(() => {
     if (!simData) return new Map();
@@ -78,7 +87,12 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
     await new Promise((r) => setTimeout(r, 0));
 
     try {
-      const results = await runTournamentSim(simData, config, (p) => {
+      // Merge local adjustment edits into the sim data for this run
+      const simDataWithEdits = {
+        ...simData,
+        adjustments,
+      };
+      const results = await runTournamentSim(simDataWithEdits, config, (p) => {
         setProgress(p);
       });
       setSimResults(results);
@@ -122,6 +136,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
     { id: "players", label: "Players" },
     { id: "teams", label: "Teams" },
     { id: "bracket", label: "Bracket" },
+    { id: "adjustments", label: "Adjustments & Injuries" },
   ];
 
   return (
@@ -225,6 +240,41 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
 
       {subTab === "bracket" ? (
         <BracketView simData={simData} simResults={simResults} />
+      ) : null}
+
+      {subTab === "adjustments" && simData ? (
+        <AdjustmentsView
+          simData={simData}
+          adjustments={adjustments}
+          injuries={simData.injuries}
+          onUpdateAdjustment={(espnId, field, value) => {
+            setLocalAdjustments((prev) => {
+              const current = prev ?? simData.adjustments ?? [];
+              const idx = current.findIndex((a) => a.espn_id === espnId);
+              if (idx >= 0) {
+                const updated = [...current];
+                updated[idx] = { ...updated[idx], [field]: value };
+                return updated;
+              }
+              // Find the player in simData to create a new adjustment
+              const player = simData.simPlayers.find((p) => p.espn_id === espnId);
+              if (!player) return current;
+              return [
+                ...current,
+                {
+                  espn_id: espnId,
+                  name: player.name,
+                  team: player.team,
+                  o_lebron_delta: 0,
+                  d_lebron_delta: 0,
+                  minutes_override: null,
+                  [field]: value,
+                },
+              ];
+            });
+          }}
+          onResetAdjustments={() => setLocalAdjustments(null)}
+        />
       ) : null}
 
       {subTab === "teams" && simResults ? (
