@@ -504,8 +504,12 @@ export function computeMarginalValuesWithDraftSim(
   const viewerBudget = managerBudgets[viewerManagerIndex];
   const freeBudget = Math.max(0, viewerBudget.remainingBudget - (viewerBudget.remainingRosterSlots - 1) * minBid);
 
-  // Build bid matrix from suggested values for ALL available players
-  const allIds = availablePlayerIds;
+  // Auction pool: top N+15 players by suggested value, where N = total remaining
+  // roster slots. The extra buffer covers noise-driven picks beyond the cutoff
+  // (stacking correlations, budget constraints pushing teams to cheaper options).
+  const totalRemainingSlots = managerBudgets.reduce((s, b) => s + b.remainingRosterSlots, 0);
+  const auctionPoolSize = Math.min(availablePlayerIds.length, totalRemainingSlots + 15);
+  const allIds = sortedAvailable.slice(0, auctionPoolSize);
   const allBidMatrix: number[][] = [];
   for (let m = 0; m < rosters.length; m++) {
     allBidMatrix.push(allIds.map((id) => suggestedValues.get(id) ?? 0));
