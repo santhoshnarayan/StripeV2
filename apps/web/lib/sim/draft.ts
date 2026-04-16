@@ -190,17 +190,6 @@ export function computeMarginalValues(
     const proj = projByEspnId.get(espnId);
     const projectedPoints = proj?.projectedPoints ?? 0;
 
-    // Suggested bid: scale marginal win prob by budget/slots to get a dollar value.
-    // lambda = budget available above minimums / total marginal opportunity
-    const freeBudget = Math.max(0, budget - (slotsRemaining - 1) * minBid);
-    const suggestedBid = Math.max(
-      minBid,
-      Math.min(
-        freeBudget,
-        Math.round(marginal * freeBudget * 10), // scale factor tuned for visibility
-      ),
-    );
-
     results.push({
       espnId,
       playerName: proj?.name ?? espnId,
@@ -209,8 +198,32 @@ export function computeMarginalValues(
       currentWinProb,
       newWinProb,
       marginalWinProb: marginal,
-      suggestedBid,
+      suggestedBid: 0, // computed below after all marginals known
     });
+  }
+
+  // Compute suggested bids proportionally: each player's share of the total
+  // positive marginal, allocated across the per-slot budget.
+  const freeBudget = Math.max(0, budget - (slotsRemaining - 1) * minBid);
+  const perSlotBudget = slotsRemaining > 0 ? budget / slotsRemaining : budget;
+  const totalPositiveMarginal = results.reduce(
+    (sum, r) => sum + Math.max(0, r.marginalWinProb),
+    0,
+  );
+
+  for (const r of results) {
+    if (totalPositiveMarginal > 0 && r.marginalWinProb > 0) {
+      const share = r.marginalWinProb / totalPositiveMarginal;
+      // Bid = share of total marginal × per-slot budget × number of slots
+      // (top players get proportionally more, but capped at freeBudget)
+      const rawBid = share * perSlotBudget * slotsRemaining;
+      r.suggestedBid = Math.max(
+        minBid,
+        Math.min(freeBudget, Math.round(rawBid)),
+      );
+    } else {
+      r.suggestedBid = r.marginalWinProb > 0 ? minBid : 0;
+    }
   }
 
   results.sort((a, b) => b.marginalWinProb - a.marginalWinProb);
