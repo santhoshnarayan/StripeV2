@@ -27,6 +27,7 @@ import {
 
 import {
   computeManagerProjections,
+  computeManagerProjectionsWithDraftSim,
   computeMarginalValuesWithDraftSim,
   type RosterInput,
   type ManagerBudgetInfo,
@@ -223,10 +224,32 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
   }, [rosterInputs, leagueData?.viewerUserId]);
 
   // Manager projections (roster analysis)
+  // If any manager has remaining slots, simulate a greedy forward draft first
   const managerProjections = useMemo(() => {
-    if (!simResults || !rosterInputs.length) return null;
+    if (!simResults || !rosterInputs.length || !leagueData) return null;
+    const memberMap = new Map(leagueData.members.map((m) => [m.userId, m]));
+    const hasRemainingSlots = leagueData.members.some((m) => m.remainingRosterSlots > 0);
+
+    if (hasRemainingSlots) {
+      const budgetInfos: ManagerBudgetInfo[] = rosterInputs.map((r) => {
+        const m = memberMap.get(r.userId);
+        return {
+          userId: r.userId,
+          remainingBudget: m?.remainingBudget ?? leagueData.league.budgetPerTeam,
+          remainingRosterSlots: m?.remainingRosterSlots ?? leagueData.league.rosterSize,
+        };
+      });
+      return computeManagerProjectionsWithDraftSim(
+        simResults,
+        rosterInputs,
+        leagueData.availablePlayers.map((p) => p.id),
+        budgetInfos,
+        leagueData.league.minBid,
+      );
+    }
+
     return computeManagerProjections(simResults, rosterInputs);
-  }, [simResults, rosterInputs]);
+  }, [simResults, rosterInputs, leagueData]);
 
   // Marginal values (bid advisor)
   const marginalValues = useMemo(() => {

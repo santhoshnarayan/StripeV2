@@ -118,6 +118,64 @@ export function computeManagerProjections(
   });
 }
 
+/**
+ * Compute manager projections after simulating a greedy forward draft to
+ * fill all remaining roster slots. Used when the draft hasn't started or
+ * is partially complete.
+ */
+export function computeManagerProjectionsWithDraftSim(
+  simResults: SimResults,
+  rosters: RosterInput[],
+  availablePlayerIds: string[],
+  managerBudgets: ManagerBudgetInfo[],
+  minBid: number,
+): ManagerProjection[] {
+  const { simMatrix, playerIndex, numSims, players: playerProjections } = simResults;
+  const numPlayers = playerIndex.size;
+
+  const projByEspnId = new Map(
+    playerProjections.map((p) => [p.espnId, p]),
+  );
+
+  // Sort available players by projected points for greedy picking
+  const sortedAvailable = [...availablePlayerIds].sort((a, b) => {
+    const pa = projByEspnId.get(a)?.projectedPoints ?? 0;
+    const pb = projByEspnId.get(b)?.projectedPoints ?? 0;
+    return pb - pa;
+  });
+
+  // Greedy draft: fill remaining slots
+  const filledRosterIds = rosters.map((r) => [...r.playerIds]);
+  const pool = new Set(availablePlayerIds);
+  const slots = managerBudgets.map((b) => b.remainingRosterSlots);
+  const maxRounds = Math.max(...slots, 0);
+
+  for (let round = 0; round < maxRounds; round++) {
+    for (let m = 0; m < filledRosterIds.length; m++) {
+      if (slots[m] <= 0) continue;
+      let bestId: string | null = null;
+      for (const pid of sortedAvailable) {
+        if (!pool.has(pid)) continue;
+        bestId = pid;
+        break;
+      }
+      if (bestId) {
+        filledRosterIds[m].push(bestId);
+        pool.delete(bestId);
+        slots[m]--;
+      }
+    }
+  }
+
+  // Now compute projections with filled rosters
+  const filledRosters: RosterInput[] = rosters.map((r, i) => ({
+    ...r,
+    playerIds: filledRosterIds[i],
+  }));
+
+  return computeManagerProjections(simResults, filledRosters);
+}
+
 // ─── Marginal value of drafting a player ────────────────────────────
 
 /**
