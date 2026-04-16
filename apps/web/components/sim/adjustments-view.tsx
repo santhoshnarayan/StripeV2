@@ -50,7 +50,7 @@ export function AdjustmentsView({
       injury: string;
       avgAvailability: number;
     }> = [];
-    for (const [name, entry] of Object.entries(injuries)) {
+    for (const [name, entry] of Object.entries(injuries ?? {})) {
       if (name === "_meta") continue;
       const avg =
         entry.availability.length > 0

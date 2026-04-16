@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,6 +14,8 @@ import { AdjustmentsView } from "@/components/sim/adjustments-view";
 import { appApiFetch } from "@/lib/app-api";
 import {
   runTournamentSim,
+  getCachedSimResults,
+  setCachedSimResults,
   DEFAULT_SIM_CONFIG,
   type SimConfig,
   type SimData,

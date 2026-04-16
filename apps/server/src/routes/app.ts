@@ -147,7 +147,7 @@ appRouter.get("/sim-data", async (c) => {
   }
   return c.body(simDataCache, 200, {
     "content-type": "application/json",
-    "cache-control": "public, max-age=3600",
+    "cache-control": "public, max-age=300",
   });
 });
 

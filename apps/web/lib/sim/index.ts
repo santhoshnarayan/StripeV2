@@ -12,6 +12,7 @@ export type {
 } from "./types";
 export { DEFAULT_SIM_CONFIG } from "./types";
 export { RNG } from "./rng";
+export { getCachedSimResults, setCachedSimResults, clearCachedSimResults } from "./cache";
 export { runTournamentSim } from "./tournament";
 export {
   computeManagerProjections,
