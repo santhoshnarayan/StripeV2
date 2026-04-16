@@ -128,10 +128,6 @@ export async function getPlayerPoolMap() {
   return new Map(players.map((player) => [player.id, player]));
 }
 
-export function getDefaultBidFromSuggestedValue(suggestedValue: number) {
-  return Math.max(1, Math.floor(suggestedValue * 0.5));
-}
-
 // ---------- Auction value (VORP-based) ----------
 
 export type AuctionConfig = {

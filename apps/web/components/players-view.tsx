@@ -17,7 +17,6 @@ type PlayerRow = {
   minutesPerGame: number | null;
   pointsPerGame: number | null;
   suggestedValue: number;
-  defaultBid: number;
   totalPoints: number | null;
   totalGames: number | null;
 };
@@ -252,7 +251,6 @@ export function PlayersView() {
                     <th className="px-3 py-3 text-right font-medium">MPG</th>
                     <th className="px-3 py-3 text-right font-medium">PPG</th>
                     <th className="px-3 py-3 text-right font-medium">Value</th>
-                    <th className="px-3 py-3 text-right font-medium">Default</th>
                     <th className="px-3 py-3 text-right font-medium">Proj. Pts</th>
                     <th className="px-3 py-3 text-right font-medium">Proj. GP</th>
                   </tr>
@@ -284,9 +282,6 @@ export function PlayersView() {
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums font-medium text-foreground">
                         ${player.suggestedValue}
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                        ${player.defaultBid}
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {formatNullableNumber(player.totalPoints)}

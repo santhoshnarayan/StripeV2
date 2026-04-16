@@ -20,7 +20,6 @@ import { auth } from "../auth.js";
 import { decryptBidAmount, encryptBidAmount } from "../lib/bid-crypto.js";
 import {
   auctionConfigFromLeague,
-  getDefaultBidFromSuggestedValue,
   getPlayerPoolForAuction,
   getPlayerPoolMapForAuction,
   type AuctionConfig,
@@ -112,10 +111,7 @@ appRouter.get("/players", async (c) => {
 
   return c.json({
     assumption: config,
-    players: players.map((player) => ({
-      ...player,
-      defaultBid: getDefaultBidFromSuggestedValue(player.suggestedValue),
-    })),
+    players,
   });
 });
 
@@ -166,6 +162,22 @@ function computeMaxBid(
   }
 
   return Math.max(0, remainingBudget - (remainingRosterSlots - 1) * minBid);
+}
+
+function sampleGaussian(mean: number, stdDev: number) {
+  const u1 = Math.random() || Number.MIN_VALUE;
+  const u2 = Math.random();
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  return mean + z * stdDev;
+}
+
+// Default auto-bid: suggested value plus Gaussian noise with std dev = 10% of
+// suggested value, clamped to [0, maxAllowed]. Used when a member does not
+// submit an explicit bid for a player.
+function sampleDefaultAutoBid(suggestedValue: number, maxAllowed: number) {
+  const noisy = sampleGaussian(suggestedValue, Math.abs(suggestedValue) * 0.1);
+  const rounded = Math.round(noisy);
+  return Math.max(0, Math.min(maxAllowed, rounded));
 }
 
 function shuffle<T>(values: T[]) {
@@ -502,9 +514,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
               return 0;
             }
 
-            return myMaxBid
-              ? Math.min(getDefaultBidFromSuggestedValue(player.suggestedValue), myMaxBid)
-              : 0;
+            return myMaxBid ? Math.min(player.suggestedValue, myMaxBid) : 0;
           })();
           const myExplicitBid = explicitBidMap.get(player.id) ?? null;
 
@@ -1723,13 +1733,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
       } else if (maxAllowed < access.league.minBid) {
         effectiveBid = 0;
       } else {
-        effectiveBid = Math.max(
-          access.league.minBid,
-          Math.min(
-            getDefaultBidFromSuggestedValue(player.suggestedValue),
-            maxAllowed,
-          ),
-        );
+        effectiveBid = sampleDefaultAutoBid(player.suggestedValue, maxAllowed);
       }
 
       effectiveBidMap.set(player.id, effectiveBid);

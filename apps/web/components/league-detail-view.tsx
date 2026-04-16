@@ -1987,7 +1987,6 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                             <th className="px-3 py-3 text-right font-medium">MPG</th>
                             <th className="px-3 py-3 text-right font-medium">PPG</th>
                             <th className="px-3 py-3 text-right font-medium">Suggested</th>
-                            <th className="px-3 py-3 text-right font-medium">Default</th>
                             <th className="px-3 py-3 text-right font-medium">Proj. Pts</th>
                             <th className="px-3 py-3 text-right font-medium">Proj. GP</th>
                             <th className="px-3 py-3 text-right font-medium">Your Bid</th>
@@ -2013,9 +2012,6 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               </td>
                               <td className="px-3 py-3 text-right font-medium tabular-nums text-foreground">
                                 ${player.suggestedValue}
-                              </td>
-                              <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                                ${player.defaultBid}
                               </td>
                               <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                                 {formatNullableNumber(player.totalPoints)}
