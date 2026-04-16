@@ -496,44 +496,46 @@ export function computeMarginalValuesWithDraftSim(
   }
 
   // ── Step 5: Bid allocation via auction simulation ───────────────────
-  // Run 10K auctions where everyone bids suggestedValue + noise.
-  // For each auction, compute each team's win probability from sim matrix.
-  // Each team finds: "when I won player X, my avg win% was Y; when I didn't, Z."
-  // Suggested bid = suggestedValue scaled by how much winning that player helps.
+  // Run auctions where everyone bids suggestedValue ± 15% noise on ALL
+  // available players. For each auction, compute win probabilities.
+  // Track per-player: viewer's avg win% when they won vs didn't win that player.
+  // The "lift" = difference tells you how much you need that player.
+  // If you don't bid enough → you lose the player → your win% drops.
   const viewerBudget = managerBudgets[viewerManagerIndex];
   const freeBudget = Math.max(0, viewerBudget.remainingBudget - (viewerBudget.remainingRosterSlots - 1) * minBid);
 
-  // Build bid matrix from suggested values for auction sim
-  const svBidMatrix: number[][] = [];
+  // Build bid matrix from suggested values for ALL available players
+  const allIds = availablePlayerIds;
+  const allBidMatrix: number[][] = [];
   for (let m = 0; m < rosters.length; m++) {
-    svBidMatrix.push(candidateIds.map((id) => suggestedValues.get(id) ?? 0));
+    allBidMatrix.push(allIds.map((id) => suggestedValues.get(id) ?? 0));
   }
 
-  // Track: for the viewer, win prob when they won vs didn't win each player
-  const N_AUCTIONS = 2_000; // enough for stable stats, fast enough
+  // Index mapping for the candidate subset we care about
+  const candidateIdxInAll = new Map(candidateIds.map((id) => [id, allIds.indexOf(id)]));
+  const N_AUCTIONS = 2_000;
   const wonWinProb: number[] = new Array(candidateIds.length).fill(0);
   const wonCount: number[] = new Array(candidateIds.length).fill(0);
   const lostWinProb: number[] = new Array(candidateIds.length).fill(0);
   const lostCount: number[] = new Array(candidateIds.length).fill(0);
-  const candidateIdxMap = new Map(candidateIds.map((id, i) => [id, i]));
 
   for (let a = 0; a < N_AUCTIONS; a++) {
     const drafted = simulateAuction(
-      candidateIds, svBidMatrix,
+      allIds, allBidMatrix,
       managerBudgets.map((b) => b.remainingBudget),
       managerBudgets.map((b) => b.remainingRosterSlots),
       minBid,
-      0.3, // noise: ±30% of each player's suggested value
+      0.15, // ±15% noise
     );
     // Merge with existing rosters and compute win probs
     const full = drafted.map((d, m) => [...rosters[m].playerIds, ...d]);
     const wp = computeWinProbs(simMatrix, playerIndex, numSims, numPlayers, full);
     const viewerWP = wp[viewerManagerIndex];
 
-    // Record which candidates the viewer won
-    const viewerWon = new Set(drafted[viewerManagerIndex].map((id) => candidateIdxMap.get(id)).filter((i): i is number => i != null));
+    // Track which candidates the viewer won
+    const viewerWonSet = new Set(drafted[viewerManagerIndex]);
     for (let ci = 0; ci < candidateIds.length; ci++) {
-      if (viewerWon.has(ci)) {
+      if (viewerWonSet.has(candidateIds[ci])) {
         wonWinProb[ci] += viewerWP;
         wonCount[ci]++;
       } else {
@@ -543,8 +545,9 @@ export function computeMarginalValuesWithDraftSim(
     }
   }
 
-  // For each player: how much does winning them improve the viewer's win%?
-  // Suggested bid = suggestedValue × (winProbGain / avgWinProbGain), scaled to be reasonable
+  // For each player: lift = avg win% when you have them - avg win% when you don't.
+  // This captures: "if I don't bid enough and lose this player, how much does it cost me?"
+  // Suggested bid = suggestedValue × (playerLift / avgLift)
   const playerLift: number[] = candidateIds.map((_, ci) => {
     const avgWon = wonCount[ci] > 0 ? wonWinProb[ci] / wonCount[ci] : 0;
     const avgLost = lostCount[ci] > 0 ? lostWinProb[ci] / lostCount[ci] : 0;
@@ -559,7 +562,6 @@ export function computeMarginalValuesWithDraftSim(
     const baseSuggested = suggestedValues.get(r.espnId) ?? 0;
 
     if (ci >= 0 && playerLift[ci] > 0 && avgLift > 0 && baseSuggested > 0) {
-      // Scale suggested value by how much this player helps THIS team vs average
       const liftRatio = playerLift[ci] / avgLift;
       const rawBid = baseSuggested * liftRatio;
       r.suggestedBid = Math.max(minBid, Math.min(freeBudget, Math.round(rawBid)));
