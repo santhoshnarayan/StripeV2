@@ -304,8 +304,8 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
         leagueData.availablePlayers.map((p) => p.id),
         budgetInfos,
         leagueData.league.minBid,
-        5,   // iterations
-        20,  // auctions per iteration
+        5,    // iterations
+        100,  // auctions per iteration
       );
       setEquilibrium(result);
       setEqComputing(false);
