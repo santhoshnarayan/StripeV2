@@ -27,205 +27,203 @@ export function AdjustmentsView({
   onUpdateAdjustment,
   onResetAdjustments,
 }: AdjustmentsViewProps) {
-  const [searchQuery, setSearchQuery] = useState("");
+  const [teamFilter, setTeamFilter] = useState("all");
 
   const adjustmentsByEspnId = useMemo(
     () => new Map(adjustments.map((a) => [a.espn_id, a])),
     [adjustments],
   );
 
-  // Build a merged list: all playoff-team players with their adjustments + injury status
-  const playoffTeams = new Set([
-    ...simData.bracket.eastSeeds.map(([, t]) => t),
-    ...(simData.bracket.eastPlayin ?? []).map(([, t]) => t),
-    ...simData.bracket.westSeeds.map(([, t]) => t),
-    ...(simData.bracket.westPlayin ?? []).map(([, t]) => t),
-  ]);
-
-  const injuryEntries = useMemo(() => {
-    const entries: Array<{
-      name: string;
-      team: string;
-      status: string;
-      injury: string;
-      avgAvailability: number;
-    }> = [];
-    for (const [name, entry] of Object.entries(injuries ?? {})) {
-      if (name === "_meta") continue;
-      const avg =
-        entry.availability.length > 0
-          ? entry.availability.reduce((s, v) => s + v, 0) / entry.availability.length
-          : 1;
-      entries.push({
-        name,
-        team: entry.team,
-        status: entry.status,
-        injury: entry.injury,
-        avgAvailability: avg,
-      });
+  // Get all playoff teams
+  const playoffTeams = useMemo(() => {
+    const teams: Array<{ team: string; conference: string; seed: number }> = [];
+    for (const [seed, team] of simData.bracket.westSeeds) {
+      teams.push({ team, conference: "West", seed });
     }
-    entries.sort((a, b) => a.avgAvailability - b.avgAvailability);
-    return entries;
-  }, [injuries]);
+    for (const [seed, team] of simData.bracket.eastSeeds) {
+      teams.push({ team, conference: "East", seed });
+    }
+    return teams;
+  }, [simData.bracket]);
 
-  const adjustedPlayers = useMemo(() => {
-    return adjustments.filter(
-      (a) => a.o_lebron_delta !== 0 || a.d_lebron_delta !== 0 || a.minutes_override != null,
-    );
-  }, [adjustments]);
+  // Group players by team, filtered
+  const playersByTeam = useMemo(() => {
+    const grouped: Record<string, typeof simData.simPlayers> = {};
+    for (const p of simData.simPlayers) {
+      if (!grouped[p.team]) grouped[p.team] = [];
+      grouped[p.team].push(p);
+    }
+    // Sort each team's players by MPG descending
+    for (const team of Object.keys(grouped)) {
+      grouped[team].sort((a, b) => b.mpg - a.mpg);
+    }
+    return grouped;
+  }, [simData.simPlayers]);
 
-  const query = searchQuery.trim().toLowerCase();
+  const visibleTeams =
+    teamFilter === "all"
+      ? playoffTeams
+      : playoffTeams.filter((t) => t.team === teamFilter);
+
+  const activeAdjustmentCount = adjustments.filter(
+    (a) => a.o_lebron_delta !== 0 || a.d_lebron_delta !== 0 || a.minutes_override != null,
+  ).length;
 
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Rating Adjustments</CardTitle>
-            <CardDescription>
-              Playoff LEBRON rating overrides. These deltas are added to the
-              player&apos;s base LEBRON for the simulation.
-            </CardDescription>
-          </div>
-          <Button variant="outline" size="sm" onClick={onResetAdjustments}>
-            Reset to Defaults
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {adjustedPlayers.length > 0 ? (
-            <div className="overflow-x-auto rounded-xl border border-border/80">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Player</th>
-                    <th className="px-3 py-2 text-left font-medium">Team</th>
-                    <th className="px-3 py-2 text-right font-medium">O-LEB Δ</th>
-                    <th className="px-3 py-2 text-right font-medium">D-LEB Δ</th>
-                    <th className="px-3 py-2 text-right font-medium">Total Δ</th>
-                    <th className="px-3 py-2 text-right font-medium">Mins Override</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {adjustedPlayers.map((adj) => (
-                    <tr key={adj.espn_id} className="border-t border-border/60">
-                      <td className="px-3 py-2 font-medium text-foreground">
-                        {adj.name}
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground">{adj.team}</td>
-                      <td className="px-3 py-2 text-right">
-                        <Input
-                          type="number"
-                          step={0.5}
-                          value={adj.o_lebron_delta}
-                          onChange={(e) =>
-                            onUpdateAdjustment(adj.espn_id, "o_lebron_delta", Number(e.target.value))
-                          }
-                          className="h-7 w-20 text-right tabular-nums ml-auto"
-                        />
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <Input
-                          type="number"
-                          step={0.5}
-                          value={adj.d_lebron_delta}
-                          onChange={(e) =>
-                            onUpdateAdjustment(adj.espn_id, "d_lebron_delta", Number(e.target.value))
-                          }
-                          className="h-7 w-20 text-right tabular-nums ml-auto"
-                        />
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
-                        {(adj.o_lebron_delta + adj.d_lebron_delta) > 0 ? "+" : ""}
-                        {(adj.o_lebron_delta + adj.d_lebron_delta).toFixed(1)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {adj.minutes_override ?? "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No rating adjustments configured. All players use base LEBRON ratings.
-            </p>
-          )}
-        </CardContent>
-      </Card>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <select
+          className="h-8 appearance-none rounded-lg border border-input bg-background px-3 pr-8 text-sm"
+          value={teamFilter}
+          onChange={(e) => setTeamFilter(e.target.value)}
+        >
+          <option value="all">All Teams</option>
+          {playoffTeams.map((t) => (
+            <option key={t.team} value={t.team}>
+              {t.conference} {t.seed} — {t.team}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-muted-foreground">
+          {activeAdjustmentCount} active adjustments
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          onClick={onResetAdjustments}
+        >
+          Reset to Defaults
+        </Button>
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Injury Report</CardTitle>
-          <CardDescription>
-            {injuryEntries.length} players with injury designations. Availability
-            shows the average per-game probability of playing across all playoff rounds.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {injuryEntries.length > 0 ? (
-            <div className="overflow-x-auto rounded-xl border border-border/80">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Player</th>
-                    <th className="px-3 py-2 text-left font-medium">Team</th>
-                    <th className="px-3 py-2 text-left font-medium">Status</th>
-                    <th className="px-3 py-2 text-left font-medium">Injury</th>
-                    <th className="px-3 py-2 text-right font-medium">Avg Avail.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {injuryEntries.map((entry) => (
-                    <tr key={entry.name} className="border-t border-border/60">
-                      <td className="px-3 py-2 font-medium text-foreground">
-                        {entry.name}
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground">{entry.team}</td>
-                      <td className="px-3 py-2">
-                        <span
+      {visibleTeams.map((teamInfo) => {
+        const players = playersByTeam[teamInfo.team] ?? [];
+        if (players.length === 0) return null;
+
+        return (
+          <Card key={teamInfo.team}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">
+                {teamInfo.conference} {teamInfo.seed} — {teamInfo.team}{" "}
+                <span className="font-normal text-muted-foreground">
+                  {simData.bracket.teamFullNames[teamInfo.team] ?? ""}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto rounded-lg border border-border/80">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-muted/30 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-1.5 text-left font-medium">Player</th>
+                      <th className="px-3 py-1.5 text-right font-medium">MPG</th>
+                      <th className="px-3 py-1.5 text-right font-medium">PPG</th>
+                      <th className="px-3 py-1.5 text-right font-medium">LEBRON</th>
+                      <th className="px-3 py-1.5 text-right font-medium">O-LEB Δ</th>
+                      <th className="px-3 py-1.5 text-right font-medium">D-LEB Δ</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Adj Total</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Mins Override</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {players.map((player) => {
+                      const adj = adjustmentsByEspnId.get(player.espn_id);
+                      const oDelta = adj?.o_lebron_delta ?? 0;
+                      const dDelta = adj?.d_lebron_delta ?? 0;
+                      const totalDelta = oDelta + dDelta;
+                      const hasAdj = oDelta !== 0 || dDelta !== 0;
+                      const injuryInfo = (injuries ?? {})[player.name];
+
+                      return (
+                        <tr
+                          key={player.espn_id}
                           className={[
-                            "inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
-                            entry.status === "out"
-                              ? "bg-red-500/15 text-red-700 dark:text-red-300"
-                              : entry.status === "doubtful"
-                                ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                                : entry.status === "questionable"
-                                  ? "bg-yellow-500/15 text-yellow-700 dark:text-yellow-300"
-                                  : "bg-muted text-muted-foreground",
+                            "border-t border-border/60",
+                            hasAdj ? "bg-amber-500/5" : "",
+                            injuryInfo ? "opacity-70" : "",
                           ].join(" ")}
                         >
-                          {entry.status}
-                        </span>
-                      </td>
-                      <td className="max-w-xs truncate px-3 py-2 text-xs text-muted-foreground">
-                        {entry.injury}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        <span
-                          className={
-                            entry.avgAvailability < 0.3
-                              ? "font-semibold text-red-700 dark:text-red-300"
-                              : entry.avgAvailability < 0.7
-                                ? "text-amber-700 dark:text-amber-300"
-                                : "text-foreground"
-                          }
-                        >
-                          {(entry.avgAvailability * 100).toFixed(0)}%
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No injury data available.
-            </p>
-          )}
-        </CardContent>
-      </Card>
+                          <td className="px-3 py-1.5">
+                            <span className="font-medium text-foreground">
+                              {player.name}
+                            </span>
+                            {injuryInfo ? (
+                              <span className="ml-1.5 text-[10px] text-red-500">
+                                {injuryInfo.status}
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
+                            {player.mpg.toFixed(1)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
+                            {player.ppg.toFixed(1)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-foreground">
+                            {(player.lebron + totalDelta).toFixed(2)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right">
+                            <Input
+                              type="number"
+                              step={0.5}
+                              value={oDelta || ""}
+                              placeholder="0"
+                              onChange={(e) =>
+                                onUpdateAdjustment(
+                                  player.espn_id,
+                                  "o_lebron_delta",
+                                  e.target.value ? Number(e.target.value) : 0,
+                                )
+                              }
+                              className="ml-auto h-6 w-16 text-right tabular-nums text-xs"
+                            />
+                          </td>
+                          <td className="px-3 py-1.5 text-right">
+                            <Input
+                              type="number"
+                              step={0.5}
+                              value={dDelta || ""}
+                              placeholder="0"
+                              onChange={(e) =>
+                                onUpdateAdjustment(
+                                  player.espn_id,
+                                  "d_lebron_delta",
+                                  e.target.value ? Number(e.target.value) : 0,
+                                )
+                              }
+                              className="ml-auto h-6 w-16 text-right tabular-nums text-xs"
+                            />
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {totalDelta !== 0 ? (
+                              <span
+                                className={
+                                  totalDelta > 0
+                                    ? "font-medium text-emerald-700 dark:text-emerald-300"
+                                    : "font-medium text-red-700 dark:text-red-300"
+                                }
+                              >
+                                {totalDelta > 0 ? "+" : ""}
+                                {totalDelta.toFixed(1)}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground/50">—</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">
+                            {adj?.minutes_override ?? "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
     </div>
   );
 }

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { BracketView } from "@/components/sim/bracket-view";
 import { AdjustmentsView } from "@/components/sim/adjustments-view";
+import { InjuriesView } from "@/components/sim/injuries-view";
 import { appApiFetch } from "@/lib/app-api";
 import {
   runTournamentSim,
@@ -22,7 +23,7 @@ import {
   type SimResults,
 } from "@/lib/sim";
 
-type SimSubTab = "players" | "teams" | "bracket" | "adjustments";
+type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries";
 
 interface SimulatorTabProps {
   leagueId: string;
@@ -141,6 +142,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
     { id: "teams", label: "Teams" },
     { id: "bracket", label: "Bracket" },
     { id: "adjustments", label: "Adjustments" },
+    { id: "injuries", label: "Injuries" },
   ];
 
   return (
@@ -229,6 +231,10 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
           }}
           onResetAdjustments={() => setLocalAdjustments(null)}
         />
+      ) : null}
+
+      {subTab === "injuries" && simData ? (
+        <InjuriesView injuries={simData.injuries ?? {}} />
       ) : null}
 
       {subTab === "teams" && simResults ? (
