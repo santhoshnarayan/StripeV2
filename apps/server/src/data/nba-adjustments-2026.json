@@ -1,0 +1,114 @@
+[
+  {
+    "espn_id": "3917376",
+    "name": "Jaylen Brown",
+    "team": "BOS",
+    "o_lebron_delta": 1.0,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "4065648",
+    "name": "Jayson Tatum",
+    "team": "BOS",
+    "o_lebron_delta": 1.0,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "3112335",
+    "name": "Nikola Jokic",
+    "team": "DEN",
+    "o_lebron_delta": 3.0,
+    "d_lebron_delta": 1.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "3936299",
+    "name": "Jamal Murray",
+    "team": "DEN",
+    "o_lebron_delta": 1.5,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "3064290",
+    "name": "Aaron Gordon",
+    "team": "DEN",
+    "o_lebron_delta": 1.0,
+    "d_lebron_delta": 1.5,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "4594268",
+    "name": "Anthony Edwards",
+    "team": "MIN",
+    "o_lebron_delta": 3.5,
+    "d_lebron_delta": 1.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "4396971",
+    "name": "Naz Reid",
+    "team": "MIN",
+    "o_lebron_delta": 1.0,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "3064514",
+    "name": "Julius Randle",
+    "team": "MIN",
+    "o_lebron_delta": 0.5,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "3934673",
+    "name": "Donte DiVincenzo",
+    "team": "MIN",
+    "o_lebron_delta": 0.5,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "4431671",
+    "name": "Jaden McDaniels",
+    "team": "MIN",
+    "o_lebron_delta": 1.0,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "3934672",
+    "name": "Jalen Brunson",
+    "team": "NY",
+    "o_lebron_delta": 1.0,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "4278073",
+    "name": "Shai Gilgeous-Alexander",
+    "team": "OKC",
+    "o_lebron_delta": 0.5,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "5104157",
+    "name": "Victor Wembanyama",
+    "team": "SA",
+    "o_lebron_delta": 3.0,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  },
+  {
+    "espn_id": "4066259",
+    "name": "De'Aaron Fox",
+    "team": "SA",
+    "o_lebron_delta": 1.0,
+    "d_lebron_delta": 0.0,
+    "minutes_override": null
+  }
+]

@@ -38,7 +38,9 @@
   "teamAliases": {
     "NY": "NYK",
     "SA": "SAS",
-    "PHX": "PHO"
+    "PHX": "PHO",
+    "GS": "GSW",
+    "CHA": "CHO"
   },
   "teamFullNames": {
     "OKC": "Thunder",

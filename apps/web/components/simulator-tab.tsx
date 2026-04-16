@@ -21,7 +21,7 @@ import {
   type PlayerProjection,
 } from "@/lib/sim";
 
-type SimSubTab = "bracket" | "teams" | "players";
+type SimSubTab = "players" | "teams" | "bracket";
 
 interface SimulatorTabProps {
   leagueId: string;
@@ -35,8 +35,13 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
   const [simResults, setSimResults] = useState<SimResults | null>(null);
   const [simulating, setSimulating] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [subTab, setSubTab] = useState<SimSubTab>("bracket");
+  const [subTab, setSubTab] = useState<SimSubTab>("players");
   const [config, setConfig] = useState<SimConfig>(DEFAULT_SIM_CONFIG);
+
+  const playerRatingLookup = useMemo(() => {
+    if (!simData) return new Map();
+    return new Map(simData.simPlayers.map((p) => [p.espn_id, p]));
+  }, [simData]);
 
   useEffect(() => {
     let active = true;
@@ -114,9 +119,9 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
   if (!simData) return null;
 
   const subTabs: { id: SimSubTab; label: string }[] = [
-    { id: "bracket", label: "Bracket" },
-    { id: "teams", label: "Teams" },
     { id: "players", label: "Players" },
+    { id: "teams", label: "Teams" },
+    { id: "bracket", label: "Bracket" },
   ];
 
   return (
@@ -287,12 +292,14 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
         </Card>
       ) : null}
 
-      {subTab === "players" && simResults ? (
+      {subTab === "players" ? (
         <Card>
           <CardHeader>
-            <CardTitle>Player Projections</CardTitle>
+            <CardTitle>Player Ratings{simResults ? " & Projections" : ""}</CardTitle>
             <CardDescription>
-              Simulated fantasy point projections with per-round breakdown.
+              {simResults
+                ? "LEBRON offensive + defensive ratings with simulated fantasy point projections."
+                : "LEBRON offensive + defensive ratings. Run a simulation to see projected fantasy points."}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -304,57 +311,92 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                     <th className="px-3 py-2 text-left font-medium">Player</th>
                     <th className="px-3 py-2 text-left font-medium">Team</th>
                     <th className="px-3 py-2 text-right font-medium">PPG</th>
-                    <th className="px-3 py-2 text-right font-medium">Proj Pts</th>
-                    <th className="px-3 py-2 text-right font-medium">Proj GP</th>
-                    <th className="px-3 py-2 text-right font-medium">R1</th>
-                    <th className="px-3 py-2 text-right font-medium">R2</th>
-                    <th className="px-3 py-2 text-right font-medium">CF</th>
-                    <th className="px-3 py-2 text-right font-medium">Finals</th>
+                    <th className="px-3 py-2 text-right font-medium">LEBRON</th>
+                    <th className="px-3 py-2 text-right font-medium">O-LEB</th>
+                    <th className="px-3 py-2 text-right font-medium">D-LEB</th>
+                    <th className="px-3 py-2 text-right font-medium">WAR</th>
+                    {simResults ? (
+                      <>
+                        <th className="px-3 py-2 text-right font-medium">Proj Pts</th>
+                        <th className="px-3 py-2 text-right font-medium">Proj GP</th>
+                        <th className="px-3 py-2 text-right font-medium">R1</th>
+                        <th className="px-3 py-2 text-right font-medium">R2</th>
+                        <th className="px-3 py-2 text-right font-medium">CF</th>
+                        <th className="px-3 py-2 text-right font-medium">Finals</th>
+                      </>
+                    ) : null}
                   </tr>
                 </thead>
                 <tbody>
-                  {simResults.players.slice(0, 100).map((player, idx) => (
-                    <tr
-                      key={player.espnId}
-                      className="border-t border-border/60"
-                    >
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {idx + 1}
-                      </td>
-                      <td className="px-3 py-2 font-medium text-foreground">
-                        {player.name}
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground">
-                        {player.team}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {player.ppg.toFixed(1)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
-                        {player.projectedPoints.toFixed(0)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {player.projectedGames.toFixed(1)}
-                      </td>
-                      {player.projectedPointsByRound.map((pts, ri) => (
-                        <td
-                          key={ri}
-                          className="px-3 py-2 text-right tabular-nums text-muted-foreground"
-                        >
-                          {pts.toFixed(0)}
+                  {(simResults
+                    ? simResults.players.slice(0, 150)
+                    : simData!.simPlayers
+                        .slice()
+                        .sort((a, b) => b.lebron - a.lebron)
+                        .slice(0, 150)
+                  ).map((player, idx) => {
+                    const raw = playerRatingLookup.get(
+                      "espnId" in player ? player.espnId : (player as any).espn_id,
+                    );
+                    const espnId = "espnId" in player ? player.espnId : (player as any).espn_id;
+                    const proj = simResults?.players.find((p) => p.espnId === espnId);
+                    return (
+                      <tr
+                        key={espnId}
+                        className="border-t border-border/60"
+                      >
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                          {idx + 1}
                         </td>
-                      ))}
-                    </tr>
-                  ))}
+                        <td className="px-3 py-2 font-medium text-foreground">
+                          {raw?.name ?? (player as any).name}
+                        </td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {raw?.team ?? (player as any).team}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                          {(raw?.ppg ?? 0).toFixed(1)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
+                          {(raw?.lebron ?? 0).toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                          {(raw?.o_lebron ?? 0).toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                          {(raw?.d_lebron ?? 0).toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                          {(raw?.war ?? 0).toFixed(1)}
+                        </td>
+                        {simResults && proj ? (
+                          <>
+                            <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
+                              {proj.projectedPoints.toFixed(0)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {proj.projectedGames.toFixed(1)}
+                            </td>
+                            {proj.projectedPointsByRound.map((pts, ri) => (
+                              <td
+                                key={ri}
+                                className="px-3 py-2 text-right tabular-nums text-muted-foreground"
+                              >
+                                {pts.toFixed(0)}
+                              </td>
+                            ))}
+                          </>
+                        ) : simResults ? (
+                          <td colSpan={6} className="px-3 py-2 text-muted-foreground/50">
+                            —
+                          </td>
+                        ) : null}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
-          </CardContent>
-        </Card>
-      ) : subTab === "players" && !simResults ? (
-        <Card>
-          <CardContent className="py-12 text-center text-sm text-muted-foreground">
-            Run a simulation to see player projections.
           </CardContent>
         </Card>
       ) : null}

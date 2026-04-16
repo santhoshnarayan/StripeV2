@@ -127,17 +127,22 @@ let simDataCache: string | null = null;
 appRouter.get("/sim-data", async (c) => {
   if (!simDataCache) {
     const dataDir = path.resolve(process.cwd(), "src/data");
-    const [bracket, netRatings, simPlayers, playoffMinutes] = await Promise.all([
-      readFile(path.join(dataDir, "nba-bracket-2026.json"), "utf8"),
-      readFile(path.join(dataDir, "nba-net-ratings-2026.json"), "utf8"),
-      readFile(path.join(dataDir, "nba-players-2026.json"), "utf8"),
-      readFile(path.join(dataDir, "nba-playoff-minutes-2026.json"), "utf8"),
-    ]);
+    const [bracket, netRatings, simPlayers, playoffMinutes, adjustments, injuries] =
+      await Promise.all([
+        readFile(path.join(dataDir, "nba-bracket-2026.json"), "utf8"),
+        readFile(path.join(dataDir, "nba-net-ratings-2026.json"), "utf8"),
+        readFile(path.join(dataDir, "nba-players-2026.json"), "utf8"),
+        readFile(path.join(dataDir, "nba-playoff-minutes-2026.json"), "utf8"),
+        readFile(path.join(dataDir, "nba-adjustments-2026.json"), "utf8"),
+        readFile(path.join(dataDir, "nba-injuries-2026.json"), "utf8"),
+      ]);
     simDataCache = JSON.stringify({
       bracket: JSON.parse(bracket),
       netRatings: JSON.parse(netRatings),
       simPlayers: JSON.parse(simPlayers),
       playoffMinutes: JSON.parse(playoffMinutes),
+      adjustments: JSON.parse(adjustments),
+      injuries: JSON.parse(injuries),
     });
   }
   return c.body(simDataCache, 200, {

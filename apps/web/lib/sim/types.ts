@@ -15,6 +15,23 @@ export interface SimPlayer {
   war: number;
 }
 
+export interface PlayerAdjustment {
+  espn_id: string;
+  name: string;
+  team: string;
+  o_lebron_delta: number;
+  d_lebron_delta: number;
+  minutes_override: number | null;
+}
+
+export interface InjuryEntry {
+  team: string;
+  status: string;
+  injury: string;
+  /** 30 values: [P1, P2, R1G1..G7, R2G1..G7, CFG1..G7, FG1..G7] */
+  availability: number[];
+}
+
 export interface SimData {
   bracket: {
     eastSeeds: [number, string][];
@@ -28,6 +45,8 @@ export interface SimData {
   netRatings: Record<string, { net_rtg_per100: number; avg_poss: number; net_rtg_per_game: number }>;
   simPlayers: SimPlayer[];
   playoffMinutes: Record<string, Record<string, number>>;
+  adjustments: PlayerAdjustment[];
+  injuries: Record<string, InjuryEntry>;
 }
 
 // ─── Simulation configuration ──────────────────────────────────────

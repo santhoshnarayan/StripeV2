@@ -18,6 +18,8 @@ import type {
   SimResults,
   TeamSimResult,
   PlayerProjection,
+  PlayerAdjustment,
+  InjuryEntry,
 } from "./types";
 
 // ─── Helpers ───────────────────────────────────────────────────────
@@ -87,51 +89,98 @@ function simulateGame(
 }
 
 // ─── LEBRON player-based team rating ─────────────────────────────
+// Ported from explore/misc/sports/espn/nba/playoff_sim/web/src/lib/simulator.ts
+// Uses ALL rostered players with projected playoff minutes (not just top 8).
+// Minutes are scaled so the total reaches 240 (5 players × 48 mins).
 
 function calcLebronRating(
   roster: SimPlayer[],
   playoffMinutes: Record<string, number> | null,
-): number {
-  if (roster.length === 0) return -10;
-
-  const active = roster.filter((p) => p.mpg > 0);
-  if (active.length === 0) return -10;
-
-  // If we have projected playoff minutes, use them; otherwise fall back
-  // to regular-season MPG with top-5 scaling to sum to 240.
-  if (playoffMinutes) {
-    let rating = 0;
-    let totalMins = 0;
-    for (const p of active) {
-      const mins = playoffMinutes[p.nba_id] ?? 0;
-      if (mins <= 0) continue;
-      rating += (p.lebron * mins) / 48;
-      totalMins += mins;
+  adjustmentsById: Map<string, PlayerAdjustment>,
+  injuriesByName: Map<string, InjuryEntry>,
+  rng: RNG,
+  gameNum: number,
+): { rating: number; playerMinutes: Map<string, number> } {
+  // Filter to players who are "available" for this game
+  const active: SimPlayer[] = [];
+  for (const p of roster) {
+    if (p.mpg <= 0) continue;
+    const injury = injuriesByName.get(p.name);
+    if (injury) {
+      const avail = injury.availability[Math.min(gameNum, injury.availability.length - 1)] ?? 1;
+      if (rng.random() >= avail) continue; // player sits this game
     }
-    // Scale if total minutes don't match 240
-    if (totalMins > 0 && Math.abs(totalMins - 240) > 10) {
-      rating *= 240 / totalMins;
-    }
-    return rating;
+    active.push(p);
   }
 
-  // Fallback: top-5 by MPG get their minutes, rest share the remainder
+  if (active.length === 0) return { rating: -10, playerMinutes: new Map() };
+
+  const playerMinutes = new Map<string, number>();
+
+  if (playoffMinutes) {
+    // Collect base minutes + any overrides from adjustments
+    let overriddenTotal = 0;
+    let baseTotal = 0;
+    const baseMins = new Map<string, number>();
+    const overrides = new Map<string, number>();
+
+    for (const p of active) {
+      const adj = adjustmentsById.get(p.espn_id);
+      const base = playoffMinutes[p.nba_id] ?? 0;
+      if (base <= 0 && !adj?.minutes_override) continue;
+
+      if (adj?.minutes_override != null) {
+        overrides.set(p.espn_id, adj.minutes_override);
+        overriddenTotal += adj.minutes_override;
+      } else {
+        baseMins.set(p.espn_id, base);
+        baseTotal += base;
+      }
+    }
+
+    // Scale non-overridden minutes so total = 240
+    const remaining = Math.max(0, 240 - overriddenTotal);
+    const scale = baseTotal > 0 ? remaining / baseTotal : 0;
+
+    let rating = 0;
+    for (const p of active) {
+      const adj = adjustmentsById.get(p.espn_id);
+      const override = overrides.get(p.espn_id);
+      const base = baseMins.get(p.espn_id);
+      const mins = override ?? (base != null ? base * scale : 0);
+      if (mins <= 0) continue;
+
+      const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
+      rating += (lebron * mins) / 48;
+      playerMinutes.set(p.espn_id, mins);
+    }
+    return { rating, playerMinutes };
+  }
+
+  // Fallback: top-5 by MPG, rest share the remainder
   active.sort((a, b) => b.mpg - a.mpg);
   const top5 = active.slice(0, 5);
   const rest = active.slice(5);
   const top5Mins = top5.reduce((s, p) => s + p.mpg, 0);
-  const remaining = Math.max(0, 240 - top5Mins);
+  const remainingMins = Math.max(0, 240 - top5Mins);
   const restTotal = rest.reduce((s, p) => s + p.mpg, 0);
 
   let rating = 0;
   for (const p of top5) {
-    rating += (p.lebron * p.mpg) / 48;
+    const adj = adjustmentsById.get(p.espn_id);
+    const mins = adj?.minutes_override ?? p.mpg;
+    const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
+    rating += (lebron * mins) / 48;
+    playerMinutes.set(p.espn_id, mins);
   }
   for (const p of rest) {
-    const mins = restTotal > 0 ? p.mpg * (remaining / restTotal) : 0;
-    rating += (p.lebron * mins) / 48;
+    const adj = adjustmentsById.get(p.espn_id);
+    const mins = adj?.minutes_override ?? (restTotal > 0 ? p.mpg * (remainingMins / restTotal) : 0);
+    const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
+    rating += (lebron * mins) / 48;
+    playerMinutes.set(p.espn_id, mins);
   }
-  return rating;
+  return { rating, playerMinutes };
 }
 
 function getTeamRating(
@@ -139,28 +188,33 @@ function getTeamRating(
   netRatings: Record<string, number>,
   rostersByTeam: Record<string, SimPlayer[]>,
   playoffMinutes: Record<string, Record<string, number>>,
+  adjustmentsById: Map<string, PlayerAdjustment>,
+  injuriesByName: Map<string, InjuryEntry>,
   config: SimConfig,
+  rng: RNG,
+  gameNum: number,
   aliases: Record<string, string>,
   aliasesRev: Record<string, string>,
-): number {
+): { rating: number; playerMinutes: Map<string, number> } {
   const netKey = resolveTeam(team, netRatings, aliases, aliasesRev);
   const nrRating = netRatings[netKey] ?? 0;
 
   if (config.model === "netrtg") {
-    return nrRating;
+    return { rating: nrRating, playerMinutes: new Map() };
   }
 
   const rosterKey = resolveTeam(team, rostersByTeam, aliases, aliasesRev);
   const roster = rostersByTeam[rosterKey] ?? [];
   const pm = playoffMinutes[team] ?? playoffMinutes[rosterKey] ?? null;
-  const lebRating = calcLebronRating(roster, pm);
+  const result = calcLebronRating(roster, pm, adjustmentsById, injuriesByName, rng, gameNum);
 
   if (config.model === "lebron") {
-    return lebRating;
+    return result;
   }
 
   // blend
-  return config.blendWeight * lebRating + (1 - config.blendWeight) * nrRating;
+  const blended = config.blendWeight * result.rating + (1 - config.blendWeight) * nrRating;
+  return { rating: blended, playerMinutes: result.playerMinutes };
 }
 
 interface SeriesPlayerAccum {
@@ -168,23 +222,32 @@ interface SeriesPlayerAccum {
   playerPointsAccum: Map<string, number[]>;
 }
 
+interface SimContext {
+  config: SimConfig;
+  netRatings: Record<string, number>;
+  rostersByTeam: Record<string, SimPlayer[]>;
+  playoffMinutes: Record<string, Record<string, number>>;
+  adjustmentsById: Map<string, PlayerAdjustment>;
+  injuriesByName: Map<string, InjuryEntry>;
+  playerLookup: Map<string, SimPlayer>;
+  seriesPattern: boolean[];
+  aliases: Record<string, string>;
+  aliasesRev: Record<string, string>;
+}
+
 function simulateSeries(
   higher: string,
   lower: string,
-  netRatings: Record<string, number>,
-  rostersByTeam: Record<string, SimPlayer[]>,
-  playoffMinutes: Record<string, Record<string, number>>,
-  config: SimConfig,
+  ctx: SimContext,
   rng: RNG,
   roundIdx: number,
   accum: SeriesPlayerAccum,
-  playerLookup: Map<string, SimPlayer>,
-  seriesPattern: boolean[],
-  aliases: Record<string, string>,
-  aliasesRev: Record<string, string>,
+  gameOffset: number,
 ): string {
-  const hRating = getTeamRating(higher, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
-  const lRating = getTeamRating(lower, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
+  const hResult = getTeamRating(higher, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameOffset, ctx.aliases, ctx.aliasesRev);
+  const lResult = getTeamRating(lower, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameOffset, ctx.aliases, ctx.aliasesRev);
+  const hRating = hResult.rating;
+  const lRating = lResult.rating;
 
   let hWins = 0;
   let lWins = 0;
@@ -192,10 +255,10 @@ function simulateSeries(
   for (let gameNum = 0; gameNum < 7; gameNum++) {
     if (hWins === 4 || lWins === 4) break;
 
-    const higherHome = seriesPattern[gameNum];
+    const higherHome = ctx.seriesPattern[gameNum];
     const { homeWins, homeScore, awayScore } = higherHome
-      ? simulateGame(hRating, lRating, rng, config.hca, config.stdev)
-      : simulateGame(lRating, hRating, rng, config.hca, config.stdev);
+      ? simulateGame(hRating, lRating, rng, ctx.config.hca, ctx.config.stdev)
+      : simulateGame(lRating, hRating, rng, ctx.config.hca, ctx.config.stdev);
 
     const higherWon = higherHome ? homeWins : !homeWins;
     if (higherWon) hWins++;
@@ -203,16 +266,19 @@ function simulateSeries(
 
     // Distribute points to players using Dirichlet
     const trackTeam = (team: string, score: number) => {
-      const teamKey = resolveTeam(team, rostersByTeam, aliases, aliasesRev);
-      const roster = rostersByTeam[teamKey] ?? [];
-      const pm = playoffMinutes[team] ?? playoffMinutes[teamKey] ?? {};
+      const teamKey = resolveTeam(team, ctx.rostersByTeam, ctx.aliases, ctx.aliasesRev);
+      const roster = ctx.rostersByTeam[teamKey] ?? [];
+      const pm = ctx.playoffMinutes[team] ?? ctx.playoffMinutes[teamKey] ?? {};
 
       const activeIds: string[] = [];
       const weights: number[] = [];
       let totalWeight = 0;
 
       for (const p of roster) {
-        const mins = pm[p.nba_id] ?? (p.mpg > 0 ? p.mpg : 0);
+        // Only distribute points to players who have projected playoff minutes.
+        // Using regular-season MPG as fallback dilutes star shares and under-
+        // projects top scorers. Matches the explore reference behavior.
+        const mins = pm[p.nba_id] ?? 0;
         if (mins <= 0) continue;
         const ptsPerMin = p.mpg > 0 ? p.ppg / p.mpg : 1;
         const w = ptsPerMin * mins;
@@ -258,17 +324,13 @@ function simulateSeries(
 function simulatePlayInGame(
   higher: string,
   lower: string,
-  netRatings: Record<string, number>,
-  rostersByTeam: Record<string, SimPlayer[]>,
-  playoffMinutes: Record<string, Record<string, number>>,
-  config: SimConfig,
+  ctx: SimContext,
   rng: RNG,
-  aliases: Record<string, string>,
-  aliasesRev: Record<string, string>,
+  gameNum: number,
 ): { winner: string; loser: string } {
-  const hRating = getTeamRating(higher, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
-  const lRating = getTeamRating(lower, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
-  const { homeWins } = simulateGame(hRating, lRating, rng, config.hca, config.stdev);
+  const hResult = getTeamRating(higher, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameNum, ctx.aliases, ctx.aliasesRev);
+  const lResult = getTeamRating(lower, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameNum, ctx.aliases, ctx.aliasesRev);
+  const { homeWins } = simulateGame(hResult.rating, lResult.rating, rng, ctx.config.hca, ctx.config.stdev);
   return homeWins
     ? { winner: higher, loser: lower }
     : { winner: lower, loser: higher };
@@ -277,25 +339,21 @@ function simulatePlayInGame(
 function simulatePlayIn(
   seeds: [number, string][],
   playin: [number, string][],
-  netRatings: Record<string, number>,
-  rostersByTeam: Record<string, SimPlayer[]>,
-  playoffMinutes: Record<string, Record<string, number>>,
-  config: SimConfig,
+  ctx: SimContext,
   rng: RNG,
-  aliases: Record<string, string>,
-  aliasesRev: Record<string, string>,
 ): [string, string] {
   const s7 = seeds.find(([s]) => s === 7)?.[1] ?? "";
   const s8 = seeds.find(([s]) => s === 8)?.[1] ?? "";
   const s9 = playin.find(([s]) => s === 9)?.[1] ?? "";
   const s10 = playin.find(([s]) => s === 10)?.[1] ?? "";
 
-  const g1 = simulatePlayInGame(s7, s8, netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev);
+  // Play-in games — points from these do NOT count toward fantasy projections
+  const g1 = simulatePlayInGame(s7, s8, ctx, rng, 0);
   const seed7 = g1.winner;
 
-  const g2 = simulatePlayInGame(s9, s10, netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev);
+  const g2 = simulatePlayInGame(s9, s10, ctx, rng, 0);
 
-  const g3 = simulatePlayInGame(g1.loser, g2.winner, netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev);
+  const g3 = simulatePlayInGame(g1.loser, g2.winner, ctx, rng, 1);
   const seed8 = g3.winner;
 
   return [seed7, seed8];
@@ -332,6 +390,32 @@ export async function runTournamentSim(
     }
   }
 
+  // Build adjustment + injury lookup maps
+  const adjustmentsById = new Map<string, PlayerAdjustment>();
+  for (const adj of data.adjustments ?? []) {
+    adjustmentsById.set(adj.espn_id, adj);
+  }
+  const injuriesByName = new Map<string, InjuryEntry>();
+  const injuries = data.injuries ?? {};
+  for (const [name, entry] of Object.entries(injuries)) {
+    if (name === "_meta") continue;
+    injuriesByName.set(name, entry as InjuryEntry);
+  }
+
+  // Build the shared simulation context
+  const ctx: SimContext = {
+    config,
+    netRatings,
+    rostersByTeam,
+    playoffMinutes,
+    adjustmentsById,
+    injuriesByName,
+    playerLookup,
+    seriesPattern: bracket.seriesPattern,
+    aliases,
+    aliasesRev,
+  };
+
   // Build player index for the sim matrix
   const allPlayerIds = simPlayers.map((p) => p.espn_id);
   const playerIndex = new Map<string, number>();
@@ -351,14 +435,20 @@ export async function runTournamentSim(
   const champCounts: Record<string, number> = {};
   const totalPlayerGames = new Map<string, number[]>();
   const totalPlayerPoints = new Map<string, number[]>();
+  // Track how many sims each team made the main bracket (for conditioning)
+  const teamPlayoffSims: Record<string, number> = {};
 
   const allSeeds = [...bracket.eastSeeds, ...bracket.westSeeds];
   const allPlayin = [...(bracket.eastPlayin ?? []), ...(bracket.westPlayin ?? [])];
 
+  // Seeds 1-6 always make the main bracket
+  for (const [seed, team] of allSeeds) {
+    if (seed <= 6) teamPlayoffSims[team] = config.sims;
+  }
+
   for (let sim = 0; sim < config.sims; sim++) {
     if (onProgress && sim > 0 && sim % 250 === 0) {
       onProgress(sim / config.sims);
-      // Yield to the browser so the progress UI updates
       await new Promise((r) => setTimeout(r, 0));
     }
 
@@ -367,13 +457,18 @@ export async function runTournamentSim(
       playerPointsAccum: new Map(),
     };
 
-    // Play-in
+    // Play-in (points NOT tracked — play-in points don't count for fantasy)
     const [east7, east8] = simulatePlayIn(
-      bracket.eastSeeds, bracket.eastPlayin ?? [], netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev,
+      bracket.eastSeeds, bracket.eastPlayin ?? [], ctx, rng,
     );
     const [west7, west8] = simulatePlayIn(
-      bracket.westSeeds, bracket.westPlayin ?? [], netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev,
+      bracket.westSeeds, bracket.westPlayin ?? [], ctx, rng,
     );
+
+    // Track play-in advancement for conditioning
+    for (const t of [east7, east8, west7, west8]) {
+      teamPlayoffSims[t] = (teamPlayoffSims[t] ?? 0) + 1;
+    }
 
     // R1 matchups
     const eastR1: [string, string][] = [
@@ -389,16 +484,16 @@ export async function runTournamentSim(
       [bracket.westSeeds[1][1], west7],
     ];
 
-    // Round 1
+    // Round 1 (gameOffset 2 for availability indexing)
     const e1w: string[] = [];
     for (const [h, l] of eastR1) {
-      const winner = simulateSeries(h, l, netRatings, rostersByTeam, playoffMinutes, config, rng, 0, accum, playerLookup, bracket.seriesPattern, aliases, aliasesRev);
+      const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
       e1w.push(winner);
     }
     const w1w: string[] = [];
     for (const [h, l] of westR1) {
-      const winner = simulateSeries(h, l, netRatings, rostersByTeam, playoffMinutes, config, rng, 0, accum, playerLookup, bracket.seriesPattern, aliases, aliasesRev);
+      const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
       w1w.push(winner);
     }
@@ -415,29 +510,29 @@ export async function runTournamentSim(
 
     const e2w: string[] = [];
     for (const [h, l] of eastR2) {
-      const winner = simulateSeries(h, l, netRatings, rostersByTeam, playoffMinutes, config, rng, 1, accum, playerLookup, bracket.seriesPattern, aliases, aliasesRev);
+      const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
       e2w.push(winner);
     }
     const w2w: string[] = [];
     for (const [h, l] of westR2) {
-      const winner = simulateSeries(h, l, netRatings, rostersByTeam, playoffMinutes, config, rng, 1, accum, playerLookup, bracket.seriesPattern, aliases, aliasesRev);
+      const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
       w2w.push(winner);
     }
 
     // Conference Finals
     const [ecfH, ecfL] = orderMatchup(e2w[0], e2w[1], allSeeds, allPlayin);
-    const ecfWinner = simulateSeries(ecfH, ecfL, netRatings, rostersByTeam, playoffMinutes, config, rng, 2, accum, playerLookup, bracket.seriesPattern, aliases, aliasesRev);
+    const ecfWinner = simulateSeries(ecfH, ecfL, ctx, rng, 2, accum, 16);
     cfCounts[ecfWinner] = (cfCounts[ecfWinner] ?? 0) + 1;
 
     const [wcfH, wcfL] = orderMatchup(w2w[0], w2w[1], allSeeds, allPlayin);
-    const wcfWinner = simulateSeries(wcfH, wcfL, netRatings, rostersByTeam, playoffMinutes, config, rng, 2, accum, playerLookup, bracket.seriesPattern, aliases, aliasesRev);
+    const wcfWinner = simulateSeries(wcfH, wcfL, ctx, rng, 2, accum, 16);
     cfCounts[wcfWinner] = (cfCounts[wcfWinner] ?? 0) + 1;
 
     // Finals
     const [finH, finL] = orderMatchup(ecfWinner, wcfWinner, allSeeds, allPlayin);
-    const finWinner = simulateSeries(finH, finL, netRatings, rostersByTeam, playoffMinutes, config, rng, 3, accum, playerLookup, bracket.seriesPattern, aliases, aliasesRev);
+    const finWinner = simulateSeries(finH, finL, ctx, rng, 3, accum, 23);
     finalsCounts[finWinner] = (finalsCounts[finWinner] ?? 0) + 1;
     champCounts[finWinner] = (champCounts[finWinner] ?? 0) + 1;
 
@@ -473,7 +568,7 @@ export async function runTournamentSim(
   ];
 
   const teams: TeamSimResult[] = allTeamAbbrs.map((team) => {
-    const rating = getTeamRating(team, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
+    const result = getTeamRating(team, netRatings, rostersByTeam, playoffMinutes, adjustmentsById, injuriesByName, config, rng, 0, aliases, aliasesRev);
     const eastSeed = bracket.eastSeeds.find(([, t]) => t === team);
     const westSeed = bracket.westSeeds.find(([, t]) => t === team);
     const seed = eastSeed?.[0] ?? westSeed?.[0] ?? null;
@@ -492,7 +587,7 @@ export async function runTournamentSim(
       fullName: bracket.teamFullNames[team] ?? team,
       seed,
       conference,
-      rating,
+      rating: result.rating,
       r1: ((r1Counts[team] ?? 0) / n) * 100,
       r2: ((r2Counts[team] ?? 0) / n) * 100,
       cf: ((cfCounts[team] ?? 0) / n) * 100,
@@ -503,12 +598,20 @@ export async function runTournamentSim(
 
   teams.sort((a, b) => b.champ - a.champ);
 
-  // Build player projections
+  // Build player projections — CONDITIONED on team making the main bracket.
+  // For seeds 1-6, teamPlayoffSims = n (they always make it).
+  // For play-in teams, teamPlayoffSims < n (only sims where they advanced).
+  // This means play-in players don't get penalized by 0-point sims where
+  // their team was eliminated before the bracket.
   const players: PlayerProjection[] = [];
   for (const [espnId, games] of totalPlayerGames) {
     const p = playerLookup.get(espnId);
     if (!p) continue;
     const pts = totalPlayerPoints.get(espnId) ?? [0, 0, 0, 0];
+
+    // Condition on team making the main bracket
+    const divisor = teamPlayoffSims[p.team] ?? n;
+    if (divisor <= 0) continue;
 
     players.push({
       espnId,
@@ -516,10 +619,10 @@ export async function runTournamentSim(
       team: p.team,
       ppg: p.ppg,
       mpg: p.mpg,
-      projectedGames: games.reduce((s, g) => s + g, 0) / n,
-      projectedPoints: pts.reduce((s, pt) => s + pt, 0) / n,
-      projectedPointsByRound: pts.map((pt) => pt / n),
-      projectedGamesByRound: games.map((g) => g / n),
+      projectedGames: games.reduce((s, g) => s + g, 0) / divisor,
+      projectedPoints: pts.reduce((s, pt) => s + pt, 0) / divisor,
+      projectedPointsByRound: pts.map((pt) => pt / divisor),
+      projectedGamesByRound: games.map((g) => g / divisor),
     });
   }
 
