@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { appApiFetch } from "@/lib/app-api";
+import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 
 type PlayerRow = {
   rank: number;
@@ -246,6 +247,7 @@ export function PlayersView() {
                     <th className="px-3 py-3 text-right font-medium">Rank</th>
                     <th className="px-3 py-3 text-left font-medium">Player</th>
                     <th className="px-3 py-3 text-left font-medium">Team</th>
+                    <th className="px-3 py-3 text-left font-medium">Conf</th>
                     <th className="px-3 py-3 text-right font-medium">Seed</th>
                     <th className="px-3 py-3 text-right font-medium">GP</th>
                     <th className="px-3 py-3 text-right font-medium">MPG</th>
@@ -262,12 +264,18 @@ export function PlayersView() {
                         {player.rank}
                       </td>
                       <td className="px-3 py-3">
-                        <div className="font-medium text-foreground">{player.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {player.conference} Conference
+                        <div className="flex items-center gap-2 font-medium text-foreground">
+                          <PlayerAvatar espnId={player.id} team={player.team} size={28} />
+                          {player.name}
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
+                      <td className="px-3 py-3 text-muted-foreground">
+                        <div className="flex items-center gap-1.5">
+                          <TeamLogo team={player.team} size={16} />
+                          {player.team}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
                       <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                         {player.seed ?? "-"}
                       </td>

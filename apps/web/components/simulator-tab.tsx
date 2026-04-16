@@ -13,6 +13,7 @@ import { BracketView } from "@/components/sim/bracket-view";
 import { AdjustmentsView } from "@/components/sim/adjustments-view";
 import { AdjustmentsTab as ExploreAdjustmentsTab, setBracketConstants } from "@/components/sim/adjustments-tab-explore";
 import { InjuriesView } from "@/components/sim/injuries-view";
+import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { appApiFetch } from "@/lib/app-api";
 import {
   runTournamentSim,
@@ -327,12 +328,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                     <tr key={team.team} className="border-t border-border/60">
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-2">
-                          <img
-                            src={teamLogoUrl(team.team)}
-                            alt={team.team}
-                            width={20}
-                            height={20}
-                          />
+                          <TeamLogo team={team.team} size={20} />
                           <span className="font-medium text-foreground">
                             {team.team}
                           </span>
@@ -426,10 +422,16 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                           {idx + 1}
                         </td>
                         <td className="px-3 py-2 font-medium text-foreground">
-                          {raw?.name ?? (player as any).name}
+                          <div className="flex items-center gap-2">
+                            <PlayerAvatar espnId={espnId} team={raw?.team ?? (player as any).team} size={28} />
+                            {raw?.name ?? (player as any).name}
+                          </div>
                         </td>
                         <td className="px-3 py-2 text-muted-foreground">
-                          {raw?.team ?? (player as any).team}
+                          <div className="flex items-center gap-1.5">
+                            <TeamLogo team={raw?.team ?? (player as any).team} size={16} />
+                            {raw?.team ?? (player as any).team}
+                          </div>
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
                           {(raw?.ppg ?? 0).toFixed(1)}
@@ -487,16 +489,6 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
   );
 }
 
-function teamLogoUrl(team: string): string {
-  const ESPN_ABBR: Record<string, string> = {
-    NY: "nyk",
-    SA: "sa",
-    GS: "gs",
-    PHX: "phx",
-  };
-  const abbr = (ESPN_ABBR[team] ?? team).toLowerCase();
-  return `https://cdn.espn.com/combiner/i?img=/i/teamlogos/nba/500/${abbr}.png&h=40&w=40`;
-}
 
 function PctCell({ value, bold }: { value: number; bold?: boolean }) {
   const opacity = Math.min(1, value / 50);

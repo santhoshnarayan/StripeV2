@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import type { SimPlayer as Player, PlayerAdjustment } from "@/lib/sim";
+import { PlayerAvatar } from "@/components/sim/player-avatar";
 
 // Bracket constants injected by the parent via setBracketConstants()
 let EAST_SEEDS: [number, string][] = [];
@@ -209,7 +210,9 @@ function PlayerModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div>
+          <div className="flex items-center gap-3">
+            <PlayerAvatar espnId={player.espn_id} team={player.team} size={36} />
+            <div>
             <div className="font-semibold text-base">
               {player.name}
               {player.autofill && (
@@ -224,6 +227,7 @@ function PlayerModal({
             <div className="text-xs text-muted-foreground">
               {player.team} &middot; {player.pos} &middot;{" "}
               {player.ppg.toFixed(1)} PPG &middot; {player.mpg.toFixed(1)} MPG
+            </div>
             </div>
           </div>
           <button
@@ -342,11 +346,10 @@ function PlayerModal({
                                 );
                                 onUpdate({ availability: newAvail });
                               }}
-                              className={`h-7 w-full text-center text-xs tabular-nums px-0 rounded-md border ${
-                                val < 1.0
-                                  ? "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-300"
-                                  : "border-input bg-background"
-                              }`}
+                              className={`h-7 w-full text-center text-xs tabular-nums px-0 rounded-md border ${val < 1.0
+                                ? "bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-300"
+                                : "border-input bg-background"
+                                }`}
                             />
                           </td>
                         );
@@ -425,6 +428,7 @@ export function AdjustmentsTab({
 
   const [collapsedTeams, setCollapsedTeams] = useState<Set<string>>(new Set());
   const [showActiveAdj, setShowActiveAdj] = useState(false);
+  const [showTeamRatings, setShowTeamRatings] = useState(false);
   const [showZeroMin, setShowZeroMin] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [modalPlayer, setModalPlayer] = useState<{
@@ -513,6 +517,7 @@ export function AdjustmentsTab({
 
   const adjustedPlayers = useMemo(() => {
     const result: {
+      espnId: string;
       name: string;
       team: string;
       oAdj: number;
@@ -528,6 +533,7 @@ export function AdjustmentsTab({
         if (!hasUserChange(p.espn_id, a)) continue;
         const def = defaultAdjustments[p.espn_id];
         result.push({
+          espnId: p.espn_id,
           name: p.name,
           team,
           oAdj: a.o_lebron_delta,
@@ -607,7 +613,7 @@ export function AdjustmentsTab({
     }
     const lines = [
       "espn_id,name,team,o_lebron_delta,d_lebron_delta,minutes_override," +
-        Array.from({ length: 30 }, (_, i) => `g${i + 1}_avail`).join(","),
+      Array.from({ length: 30 }, (_, i) => `g${i + 1}_avail`).join(","),
     ];
     for (const [team, players] of Object.entries(teamPlayers)) {
       for (const p of players) {
@@ -733,10 +739,18 @@ export function AdjustmentsTab({
   return (
     <div className="space-y-4 mt-4">
       {/* Modal */}
-      {modalPlayer && adjustments[modalPlayer.player.espn_id] && (
+      {modalPlayer && (
         <PlayerModal
           player={modalPlayer.player}
-          adj={adjustments[modalPlayer.player.espn_id]}
+          adj={adjustments[modalPlayer.player.espn_id] ?? {
+            espn_id: modalPlayer.player.espn_id,
+            name: modalPlayer.player.name,
+            team: modalPlayer.player.team,
+            o_lebron_delta: 0,
+            d_lebron_delta: 0,
+            minutes_override: null,
+            availability: new Array(30).fill(1),
+          }}
           projMpg={playoffMpgByEspnId[modalPlayer.player.espn_id] ?? 0}
           onUpdate={(update) =>
             onUpdateAdjustment(modalPlayer.player.espn_id, update)
@@ -790,17 +804,17 @@ export function AdjustmentsTab({
 
       {/* Summary of adjustments */}
       {hasAnyChanges && (
-        <Card>
+        <Card className="hover:bg-muted/20 transition-colors">
           <CardHeader
-            className="pb-2 cursor-pointer hover:bg-muted/30"
+            className="cursor-pointer "
             onClick={() => setShowActiveAdj(!showActiveAdj)}
           >
-            <div className="flex items-center gap-2">
-              <CardTitle className="text-sm">
+            <div className="flex items-center gap-2 align-middle">
+              <CardTitle className="text-sm flex items-center gap-2">
                 Active Adjustments
                 <Badge
                   variant="secondary"
-                  className="ml-2 text-[10px] rounded-sm"
+                  className="text-[10px] rounded-sm"
                 >
                   {adjustedPlayers.length}
                 </Badge>
@@ -810,6 +824,7 @@ export function AdjustmentsTab({
               </span>
             </div>
           </CardHeader>
+
           {showActiveAdj && (
             <CardContent className="p-0">
               <div className="overflow-x-auto">
@@ -836,7 +851,10 @@ export function AdjustmentsTab({
                     {adjustedPlayers.map((ap) => (
                       <TableRow key={`${ap.team}-${ap.name}`}>
                         <TableCell className="text-sm font-medium whitespace-nowrap py-1">
-                          {ap.name}
+                          <span className="flex items-center gap-1.5">
+                            <PlayerAvatar espnId={ap.espnId} team={ap.team} size={20} />
+                            {ap.name}
+                          </span>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground py-1">
                           {ap.team}
@@ -894,61 +912,76 @@ export function AdjustmentsTab({
       )}
 
       {/* Team Ratings Summary */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Team Ratings (Adjusted)</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-xs w-8">#</TableHead>
-                  <TableHead className="text-xs">Team</TableHead>
-                  <TableHead className="text-xs text-right">O-LEB</TableHead>
-                  <TableHead className="text-xs text-right">D-LEB</TableHead>
-                  <TableHead className="text-xs text-right">
-                    Total LEB
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {teamRatings.map((tr, i) => (
-                  <TableRow key={tr.team}>
-                    <TableCell className="text-muted-foreground text-xs tabular-nums py-1">
-                      {i + 1}
-                    </TableCell>
-                    <TableCell className="text-sm font-medium py-1">
-                      {tr.team}{" "}
-                      <span className="text-muted-foreground text-xs">
-                        {TEAM_FULL_NAMES[tr.team] ?? ""}
-                      </span>
-                    </TableCell>
-                    <TableCell
-                      className={`text-right tabular-nums text-sm py-1 ${tr.oLeb > 0 ? "text-green-600" : "text-red-500"}`}
-                    >
-                      {tr.oLeb > 0 ? "+" : ""}
-                      {tr.oLeb.toFixed(2)}
-                    </TableCell>
-                    <TableCell
-                      className={`text-right tabular-nums text-sm py-1 ${tr.dLeb > 0 ? "text-green-600" : "text-red-500"}`}
-                    >
-                      {tr.dLeb > 0 ? "+" : ""}
-                      {tr.dLeb.toFixed(2)}
-                    </TableCell>
-                    <TableCell
-                      className={`text-right tabular-nums text-sm font-medium py-1 ${tr.leb > 0 ? "text-green-600" : "text-red-500"}`}
-                    >
-                      {tr.leb > 0 ? "+" : ""}
-                      {tr.leb.toFixed(2)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+      {/* <Card className="hover:bg-muted/20 transition-colors">
+        <CardHeader
+          className="cursor-pointer "
+          onClick={() => setShowTeamRatings(!showTeamRatings)}
+        >
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              Team Ratings (Adjusted)
+              <Badge variant="secondary" className="text-[10px] rounded-sm">
+                {teamRatings.length}
+              </Badge>
+            </CardTitle>
+            <span className="text-muted-foreground text-sm ml-auto">
+              {showTeamRatings ? "▼" : "▶"}
+            </span>
           </div>
-        </CardContent>
-      </Card>
+        </CardHeader>
+        {showTeamRatings && (
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs w-8">#</TableHead>
+                    <TableHead className="text-xs">Team</TableHead>
+                    <TableHead className="text-xs text-right">O-LEB</TableHead>
+                    <TableHead className="text-xs text-right">D-LEB</TableHead>
+                    <TableHead className="text-xs text-right">
+                      Total LEB
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {teamRatings.map((tr, i) => (
+                    <TableRow key={tr.team}>
+                      <TableCell className="text-muted-foreground text-xs tabular-nums py-1">
+                        {i + 1}
+                      </TableCell>
+                      <TableCell className="text-sm font-medium py-1">
+                        {tr.team}{" "}
+                        <span className="text-muted-foreground text-xs">
+                          {TEAM_FULL_NAMES[tr.team] ?? ""}
+                        </span>
+                      </TableCell>
+                      <TableCell
+                        className={`text-right tabular-nums text-sm py-1 ${tr.oLeb > 0 ? "text-green-600" : "text-red-500"}`}
+                      >
+                        {tr.oLeb > 0 ? "+" : ""}
+                        {tr.oLeb.toFixed(2)}
+                      </TableCell>
+                      <TableCell
+                        className={`text-right tabular-nums text-sm py-1 ${tr.dLeb > 0 ? "text-green-600" : "text-red-500"}`}
+                      >
+                        {tr.dLeb > 0 ? "+" : ""}
+                        {tr.dLeb.toFixed(2)}
+                      </TableCell>
+                      <TableCell
+                        className={`text-right tabular-nums text-sm font-medium py-1 ${tr.leb > 0 ? "text-green-600" : "text-red-500"}`}
+                      >
+                        {tr.leb > 0 ? "+" : ""}
+                        {tr.leb.toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        )}
+      </Card> */}
 
       {/* Quick nav + toggle */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -1123,8 +1156,15 @@ export function AdjustmentsTab({
                             return effMin > 0;
                           })
                           .map((p) => {
-                            const adj = adjustments[p.espn_id];
-                            if (!adj) return null;
+                            const adj = adjustments[p.espn_id] ?? {
+                              espn_id: p.espn_id,
+                              name: p.name,
+                              team: p.team,
+                              o_lebron_delta: 0,
+                              d_lebron_delta: 0,
+                              minutes_override: null,
+                              availability: new Array(30).fill(1),
+                            };
                             const projMpg = playoffMpgByEspnId[p.espn_id] ?? 0;
                             const hasChange = hasUserChange(p.espn_id, adj);
 
@@ -1141,7 +1181,8 @@ export function AdjustmentsTab({
                                 }
                               >
                                 <TableCell className="font-medium whitespace-nowrap text-sm sticky left-0 bg-background z-10">
-                                  <span className="flex items-center gap-1">
+                                  <span className="flex items-center gap-1.5">
+                                    <PlayerAvatar espnId={p.espn_id} team={p.team} size={22} />
                                     {p.name}
                                     {p.autofill && (
                                       <Badge
