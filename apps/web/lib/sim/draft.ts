@@ -579,6 +579,7 @@ export interface EquilibriumBidRow {
   playerName: string;
   team: string;
   projectedPoints: number;
+  suggestedValue: number;
   /** Bid per manager index (same order as rosters). */
   bids: number[];
 }
@@ -684,8 +685,9 @@ export function computeEquilibriumBids(
   availablePlayerIds: string[],
   managerBudgets: ManagerBudgetInfo[],
   minBid: number,
-  iterations: number = 5,
-  auctionsPerIteration: number = 100,
+  suggestedValues: Map<string, number>,
+  iterations: number = 2,
+  auctionsPerIteration: number = 10_000,
 ): EquilibriumResult {
   const { simMatrix, playerIndex, numSims, players: playerProjections } = simResults;
   const numPlayers = playerIndex.size;
@@ -696,8 +698,16 @@ export function computeEquilibriumBids(
     playerProjections.map((p) => [p.espnId, p]),
   );
 
-  // ── Initialize bids from single-step marginals (VARP) ──────────────
-  // Compute marginals for each manager
+  // ── Global replacement level ────────────────────────────────────────
+  // Total draft picks = sum of all remaining roster slots
+  const totalPicks = managerBudgets.reduce((s, b) => s + b.remainingRosterSlots, 0);
+  // Replacement player = the (totalPicks+1)th best by projected points
+  const allByProj = availablePlayerIds
+    .map((id) => ({ id, pp: projByEspnId.get(id)?.projectedPoints ?? 0 }))
+    .sort((a, b) => b.pp - a.pp);
+  const replacementProj = allByProj[Math.min(totalPicks, allByProj.length - 1)]?.pp ?? 0;
+
+  // ── Initialize bids from projected points above replacement ────────
   const managerTotals = rosters.map((roster) =>
     rosterSimTotals(simMatrix, playerIndex, roster.playerIds, numSims, numPlayers),
   );
@@ -746,17 +756,22 @@ export function computeEquilibriumBids(
       marginals.push(Math.max(0, (newWins / numSims) - mWP));
     }
 
-    // VARP initialization: distribute budget by marginal share
-    const sorted = [...marginals].sort((a, b) => b - a);
-    const repl = sorted[Math.min(slots, sorted.length - 1)] ?? 0;
-    let totalVAR = 0;
-    const vars = marginals.map((mg) => { const v = Math.max(0, mg - repl); totalVAR += v; return v; });
-
-    const bids = vars.map((v) => {
-      if (totalVAR <= 0 || v <= 0) return 0;
-      const maxAllowed = Math.max(0, budget - (slots - 1) * minBid);
-      return Math.max(0, Math.min(maxAllowed, Math.round((v / totalVAR) * budget)));
+    // Initialize bids from projected points above replacement.
+    // Each player's value = max(0, projectedPoints - replacementProj).
+    // Distribute budget proportionally to value above replacement.
+    const playerVARP = availablePlayerIds.map((id) => {
+      const pp = projByEspnId.get(id)?.projectedPoints ?? 0;
+      return Math.max(0, pp - replacementProj);
     });
+    const totalVARP = playerVARP.reduce((s, v) => s + v, 0);
+    const maxAllowed = Math.max(0, budget - (slots - 1) * minBid);
+
+    const bids = new Array(nPlayers).fill(0);
+    for (let p = 0; p < nPlayers; p++) {
+      if (totalVARP <= 0 || playerVARP[p] <= 0) continue;
+      const share = playerVARP[p] / totalVARP;
+      bids[p] = Math.max(minBid, Math.min(maxAllowed, Math.round(share * budget)));
+    }
     bidMatrix.push(bids);
   }
 
@@ -807,9 +822,13 @@ export function computeEquilibriumBids(
       marginals.set(p, Math.max(0, (newWins / numSims) - mWP));
     }
 
-    // VARP: distribute budget among candidates
+    // VARP: distribute budget among candidates using global replacement as floor
+    // This ensures bids spread across enough players to fill the roster
     const margVals = [...marginals.values()].sort((a, b) => b - a);
-    const repl = margVals[Math.min(slots, margVals.length - 1)] ?? 0;
+    // Use the global replacement level (totalPicks+1 th player) as a floor,
+    // but also check if per-team replacement is lower
+    const perTeamReplIdx = Math.min(Math.ceil(slots * 1.5), margVals.length - 1);
+    const repl = Math.min(margVals[perTeamReplIdx] ?? 0, margVals[Math.min(slots, margVals.length - 1)] ?? 0);
     let totalVAR = 0;
     const vars = new Map<number, number>();
     for (const [p, mg] of marginals) {
@@ -908,6 +927,7 @@ export function computeEquilibriumBids(
       playerName: proj?.name ?? id,
       team: proj?.team ?? "",
       projectedPoints: proj?.projectedPoints ?? 0,
+      suggestedValue: suggestedValues.get(id) ?? 0,
       bids: bidMatrix.map((mgr) => mgr[pi]),
     };
   });

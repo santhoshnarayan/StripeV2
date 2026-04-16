@@ -298,14 +298,16 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
           remainingRosterSlots: m?.remainingRosterSlots ?? leagueData.league.rosterSize,
         };
       });
+      const suggestedValues = new Map(
+        leagueData.availablePlayers.map((p) => [p.id, p.suggestedValue]),
+      );
       const result = computeEquilibriumBids(
         simResults,
         rosterInputs,
         leagueData.availablePlayers.map((p) => p.id),
         budgetInfos,
         leagueData.league.minBid,
-        5,    // iterations
-        100,  // auctions per iteration
+        suggestedValues,
       );
       setEquilibrium(result);
       setEqComputing(false);
@@ -905,6 +907,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                       <th className="sticky left-0 z-10 bg-muted/40 px-3 py-2 text-left font-medium min-w-[160px]">Player</th>
                       <th className="px-2 py-2 text-left font-medium">Team</th>
                       <th className="px-2 py-2 text-right font-medium">Proj</th>
+                      <th className="px-2 py-2 text-right font-medium">Value</th>
                       {equilibrium.managerNames.map((name, i) => (
                         <th key={i} className="px-2 py-2 text-right font-medium min-w-[60px]">
                           {name.split(" ")[0]}
@@ -931,6 +934,9 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                           </td>
                           <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
                             {row.projectedPoints.toFixed(0)}
+                          </td>
+                          <td className="px-2 py-1.5 text-right tabular-nums font-medium text-foreground">
+                            ${row.suggestedValue}
                           </td>
                           {row.bids.map((bid, mi) => {
                             const isViewer = leagueData.viewerUserId === rosterInputs[mi]?.userId;
