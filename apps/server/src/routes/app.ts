@@ -1,4 +1,6 @@
 import { randomInt, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { Hono } from "hono";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
@@ -114,6 +116,33 @@ appRouter.get("/players", async (c) => {
       ...player,
       defaultBid: getDefaultBidFromSuggestedValue(player.suggestedValue),
     })),
+  });
+});
+
+// Simulation data endpoint — static reference data (bracket, team ratings,
+// player stats with LEBRON/WAR, projected playoff minutes). ~120KB JSON,
+// served once per client session. No auth required.
+let simDataCache: string | null = null;
+
+appRouter.get("/sim-data", async (c) => {
+  if (!simDataCache) {
+    const dataDir = path.resolve(process.cwd(), "src/data");
+    const [bracket, netRatings, simPlayers, playoffMinutes] = await Promise.all([
+      readFile(path.join(dataDir, "nba-bracket-2026.json"), "utf8"),
+      readFile(path.join(dataDir, "nba-net-ratings-2026.json"), "utf8"),
+      readFile(path.join(dataDir, "nba-players-2026.json"), "utf8"),
+      readFile(path.join(dataDir, "nba-playoff-minutes-2026.json"), "utf8"),
+    ]);
+    simDataCache = JSON.stringify({
+      bracket: JSON.parse(bracket),
+      netRatings: JSON.parse(netRatings),
+      simPlayers: JSON.parse(simPlayers),
+      playoffMinutes: JSON.parse(playoffMinutes),
+    });
+  }
+  return c.body(simDataCache, 200, {
+    "content-type": "application/json",
+    "cache-control": "public, max-age=3600",
   });
 });
 

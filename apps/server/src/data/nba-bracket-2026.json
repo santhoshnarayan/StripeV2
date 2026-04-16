@@ -1,0 +1,65 @@
+{
+  "eastSeeds": [
+    [1, "DET"],
+    [2, "BOS"],
+    [3, "NY"],
+    [4, "CLE"],
+    [5, "TOR"],
+    [6, "ATL"],
+    [7, "PHI"],
+    [8, "ORL"]
+  ],
+  "westSeeds": [
+    [1, "OKC"],
+    [2, "SA"],
+    [3, "DEN"],
+    [4, "LAL"],
+    [5, "HOU"],
+    [6, "MIN"],
+    [7, "POR"],
+    [8, "PHX"]
+  ],
+  "eastPlayin": [
+    [9, "CHA"],
+    [10, "MIA"]
+  ],
+  "westPlayin": [
+    [9, "LAC"],
+    [10, "GS"]
+  ],
+  "playinResults": {
+    "_note": "Play-in R1: PHI beat ORL (E7v8), CHA beat MIA (E9v10), POR beat PHX (W7v8), GSW beat LAC (W9v10). R2 TBD: East 8 = ORL vs CHA, West 8 = PHX vs GSW. Update seeds once resolved.",
+    "east7": "PHI",
+    "east8": "ORL",
+    "west7": "POR",
+    "west8": "PHX"
+  },
+  "seriesPattern": [true, true, false, false, true, false, true],
+  "teamAliases": {
+    "NY": "NYK",
+    "SA": "SAS",
+    "PHX": "PHO"
+  },
+  "teamFullNames": {
+    "OKC": "Thunder",
+    "SA": "Spurs",
+    "DEN": "Nuggets",
+    "LAL": "Lakers",
+    "HOU": "Rockets",
+    "MIN": "Timberwolves",
+    "PHX": "Suns",
+    "POR": "Trail Blazers",
+    "GS": "Warriors",
+    "LAC": "Clippers",
+    "DET": "Pistons",
+    "BOS": "Celtics",
+    "NY": "Knicks",
+    "CLE": "Cavaliers",
+    "ATL": "Hawks",
+    "TOR": "Raptors",
+    "ORL": "Magic",
+    "PHI": "76ers",
+    "CHA": "Hornets",
+    "MIA": "Heat"
+  }
+}
