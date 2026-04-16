@@ -760,14 +760,70 @@ export function computeEquilibriumBids(
     bidMatrix.push(bids);
   }
 
-  // ── Iterate: simulate auction batch, adjust bids from outcomes ──────
-  for (let iter = 0; iter < iterations; iter++) {
-    const noiseLevel = Math.max(1, 4 - iter); // decrease noise over iterations
+  // Helper: compute VARP bids for one manager given their expected roster context
+  function computeVARPBids(
+    m: number,
+    expectedRosterTotals: Float64Array, // per-sim totals for manager m's expected roster
+    allTotals: Float64Array[],          // per-sim totals for all managers
+  ): number[] {
+    const info = managerBudgets[m];
+    const budget = info.remainingBudget;
+    const slots = info.remainingRosterSlots;
+    if (slots <= 0) return new Array(nPlayers).fill(0);
 
-    // Run batch of auctions with current bids + noise
-    // Track: for each manager, which players did they win, and their avg win prob
-    const playerWinCount: number[][] = Array.from({ length: nManagers }, () => new Array(nPlayers).fill(0));
-    const managerWinProbs: number[] = new Array(nManagers).fill(0);
+    // Compute current win prob for this manager
+    let mWins = 0;
+    for (let sim = 0; sim < numSims; sim++) {
+      let best = -1;
+      let bestIdx = 0;
+      for (let mm = 0; mm < nManagers; mm++) {
+        if (allTotals[mm][sim] > best) {
+          best = allTotals[mm][sim];
+          bestIdx = mm;
+        }
+      }
+      if (bestIdx === m) mWins++;
+    }
+    const mWP = mWins / numSims;
+
+    // Compute marginal for each available player
+    const marginals: number[] = [];
+    for (let p = 0; p < nPlayers; p++) {
+      const col = playerIndex.get(availablePlayerIds[p]);
+      if (col == null) { marginals.push(0); continue; }
+      let newWins = 0;
+      for (let sim = 0; sim < numSims; sim++) {
+        const withP = expectedRosterTotals[sim] + simMatrix[sim * numPlayers + col];
+        let isWin = true;
+        for (let mm = 0; mm < nManagers; mm++) {
+          if (mm === m) continue;
+          if (allTotals[mm][sim] >= withP) { isWin = false; break; }
+        }
+        if (isWin) newWins++;
+      }
+      marginals.push(Math.max(0, (newWins / numSims) - mWP));
+    }
+
+    // VARP: distribute budget by value above replacement
+    const sorted = [...marginals].sort((a, b) => b - a);
+    const repl = sorted[Math.min(slots, sorted.length - 1)] ?? 0;
+    let totalVAR = 0;
+    const vars = marginals.map((mg) => { const v = Math.max(0, mg - repl); totalVAR += v; return v; });
+    const maxAllowed = Math.max(0, budget - (slots - 1) * minBid);
+
+    return vars.map((v) => {
+      if (totalVAR <= 0 || v <= 0) return 0;
+      return Math.max(0, Math.min(maxAllowed, Math.round((v / totalVAR) * budget)));
+    });
+  }
+
+  // ── Iterate: simulate → each team recomputes strategy → repeat ─────
+  for (let iter = 0; iter < iterations; iter++) {
+    const noiseLevel = Math.max(1, 4 - iter);
+
+    // Step 1: Run a batch of auctions with current bids + noise
+    // Accumulate average drafted rosters per manager across auctions
+    const avgPlayerWins: number[][] = Array.from({ length: nManagers }, () => new Array(nPlayers).fill(0));
 
     for (let a = 0; a < auctionsPerIteration; a++) {
       const drafted = simulateAuction(
@@ -776,46 +832,53 @@ export function computeEquilibriumBids(
         managerBudgets.map((b) => b.remainingRosterSlots),
         minBid, noiseLevel,
       );
-
-      // Track who won which player
       const pidToIdx = new Map(availablePlayerIds.map((id, i) => [id, i]));
       for (let m = 0; m < nManagers; m++) {
         for (const id of drafted[m]) {
           const pi = pidToIdx.get(id);
-          if (pi != null) playerWinCount[m][pi]++;
+          if (pi != null) avgPlayerWins[m][pi]++;
         }
       }
-
-      // Compute win prob for this auction
-      const full = drafted.map((d, m) => [...rosters[m].playerIds, ...d]);
-      const wp = computeWinProbs(simMatrix, playerIndex, numSims, numPlayers, full);
-      for (let m = 0; m < nManagers; m++) managerWinProbs[m] += wp[m];
     }
 
-    for (let m = 0; m < nManagers; m++) managerWinProbs[m] /= auctionsPerIteration;
-
-    // Adjust bids based on outcomes:
-    // - Players this team rarely wins but has high marginal → increase bid
-    // - Players this team always wins → could decrease bid (save budget)
+    // Step 2: Each team recomputes optimal bids given the average outcome
+    // Build "expected roster" for each manager: their existing players +
+    // the players they won most frequently in the auction batch
     for (let m = 0; m < nManagers; m++) {
       const info = managerBudgets[m];
       if (info.remainingRosterSlots <= 0) continue;
-      const maxAllowed = Math.max(0, info.remainingBudget - (info.remainingRosterSlots - 1) * minBid);
-      const step = Math.max(1, Math.round(info.remainingBudget * 0.03));
 
-      for (let p = 0; p < nPlayers; p++) {
-        const winRate = playerWinCount[m][p] / auctionsPerIteration;
-        const currentBid = bidMatrix[m][p];
-        if (currentBid <= 0) continue; // skip players this team doesn't want
+      // Find the players this manager most often drafted (their "expected roster")
+      const winRates = avgPlayerWins[m].map((count, pi) => ({ pi, rate: count / auctionsPerIteration }));
+      winRates.sort((a, b) => b.rate - a.rate);
+      const expectedDraft = winRates
+        .slice(0, info.remainingRosterSlots)
+        .filter((w) => w.rate > 0.1) // only include players they win >10% of the time
+        .map((w) => availablePlayerIds[w.pi]);
 
-        if (winRate < 0.3 && currentBid > 0) {
-          // Rarely winning this player → bid more
-          bidMatrix[m][p] = Math.min(maxAllowed, currentBid + step);
-        } else if (winRate > 0.9 && currentBid > minBid) {
-          // Almost always winning → could save budget
-          bidMatrix[m][p] = Math.max(minBid, currentBid - step);
+      // Build expected roster totals (existing + expected draft)
+      const expectedIds = [...rosters[m].playerIds, ...expectedDraft];
+      const expectedTotals = rosterSimTotals(simMatrix, playerIndex, expectedIds, numSims, numPlayers);
+
+      // Build opponent totals similarly
+      const allExpectedTotals: Float64Array[] = [];
+      for (let mm = 0; mm < nManagers; mm++) {
+        if (mm === m) {
+          allExpectedTotals.push(expectedTotals);
+        } else {
+          const oppWinRates = avgPlayerWins[mm].map((count, pi) => ({ pi, rate: count / auctionsPerIteration }));
+          oppWinRates.sort((a, b) => b.rate - a.rate);
+          const oppDraft = oppWinRates
+            .slice(0, managerBudgets[mm].remainingRosterSlots)
+            .filter((w) => w.rate > 0.1)
+            .map((w) => availablePlayerIds[w.pi]);
+          const oppIds = [...rosters[mm].playerIds, ...oppDraft];
+          allExpectedTotals.push(rosterSimTotals(simMatrix, playerIndex, oppIds, numSims, numPlayers));
         }
       }
+
+      // Step 3: Recompute VARP bids for this manager given expected context
+      bidMatrix[m] = computeVARPBids(m, expectedTotals, allExpectedTotals);
     }
   }
 
