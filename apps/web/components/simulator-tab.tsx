@@ -29,8 +29,10 @@ import {
   computeManagerProjections,
   computeManagerProjectionsWithDraftSim,
   computeMarginalValuesWithDraftSim,
+  computeEquilibriumBids,
   type RosterInput,
   type ManagerBudgetInfo,
+  type EquilibriumResult,
 } from "@/lib/sim/draft";
 
 type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor";
@@ -278,14 +280,45 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     );
   }, [simResults, rosterInputs, leagueData, viewerIndex]);
 
+  // Equilibrium bid simulation (computed lazily when advisor tab is opened)
+  const [equilibrium, setEquilibrium] = useState<EquilibriumResult | null>(null);
+  const [eqComputing, setEqComputing] = useState(false);
+
+  const computeEq = useCallback(() => {
+    if (!simResults || !rosterInputs.length || !leagueData || eqComputing) return;
+    setEqComputing(true);
+    // Run async to avoid blocking UI
+    setTimeout(() => {
+      const memberMap = new Map(leagueData.members.map((m) => [m.userId, m]));
+      const budgetInfos: ManagerBudgetInfo[] = rosterInputs.map((r) => {
+        const m = memberMap.get(r.userId);
+        return {
+          userId: r.userId,
+          remainingBudget: m?.remainingBudget ?? leagueData.league.budgetPerTeam,
+          remainingRosterSlots: m?.remainingRosterSlots ?? leagueData.league.rosterSize,
+        };
+      });
+      const result = computeEquilibriumBids(
+        simResults,
+        rosterInputs,
+        leagueData.availablePlayers.map((p) => p.id),
+        budgetInfos,
+        leagueData.league.minBid,
+        5,   // iterations
+        20,  // auctions per iteration
+      );
+      setEquilibrium(result);
+      setEqComputing(false);
+    }, 0);
+  }, [simResults, rosterInputs, leagueData, eqComputing]);
+
   const subTabs: { id: SimSubTab; label: string }[] = [
     { id: "players", label: "Players" },
     { id: "teams", label: "Teams" },
     { id: "bracket", label: "Bracket" },
     ...(leagueData ? [
       { id: "roster" as SimSubTab, label: "Roster" },
-      // Advisor hidden on prod until bid strategy simulation is complete
-      ...(process.env.NODE_ENV === "development" ? [{ id: "advisor" as SimSubTab, label: "Advisor" }] : []),
+      { id: "advisor" as SimSubTab, label: "Advisor" },
     ] : []),
     { id: "adjustments", label: "Adjustments" },
     { id: "injuries", label: "Injuries" },
@@ -840,6 +873,103 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
         <div className="py-12 text-center text-sm text-muted-foreground">
           {simulating ? `Running simulation... ${Math.round(progress * 100)}%` : "Run a simulation to see bid advisor."}
         </div>
+      ) : null}
+
+      {/* Equilibrium Bid Matrix */}
+      {subTab === "advisor" && simResults && leagueData ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <CardTitle>Equilibrium Bid Matrix</CardTitle>
+                <CardDescription>
+                  Simulated auction bids for all teams after iterative best-response optimization.
+                  Each team adjusts bids to maximize their win probability given other teams&apos; strategies.
+                </CardDescription>
+              </div>
+              <Button
+                onClick={computeEq}
+                disabled={eqComputing || !simResults}
+                size="sm"
+              >
+                {eqComputing ? "Computing..." : equilibrium ? "Recompute" : "Compute Equilibrium"}
+              </Button>
+            </div>
+          </CardHeader>
+          {equilibrium ? (
+            <CardContent>
+              <div className="overflow-x-auto rounded-xl border border-border/80">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    <tr>
+                      <th className="sticky left-0 z-10 bg-muted/40 px-3 py-2 text-left font-medium min-w-[160px]">Player</th>
+                      <th className="px-2 py-2 text-left font-medium">Team</th>
+                      <th className="px-2 py-2 text-right font-medium">Proj</th>
+                      {equilibrium.managerNames.map((name, i) => (
+                        <th key={i} className="px-2 py-2 text-right font-medium min-w-[60px]">
+                          {name.split(" ")[0]}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {equilibrium.players.slice(0, 60).map((row) => {
+                      const maxBid = Math.max(...row.bids);
+                      return (
+                        <tr key={row.espnId} className="border-t border-border/60">
+                          <td className="sticky left-0 z-10 bg-background px-3 py-1.5 font-medium text-foreground">
+                            <div className="flex items-center gap-2">
+                              <PlayerAvatar espnId={row.espnId} team={row.team} size={22} />
+                              <span className="truncate">{row.playerName}</span>
+                            </div>
+                          </td>
+                          <td className="px-2 py-1.5 text-muted-foreground">
+                            <div className="flex items-center gap-1">
+                              <TeamLogo team={row.team} size={14} />
+                              {row.team}
+                            </div>
+                          </td>
+                          <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+                            {row.projectedPoints.toFixed(0)}
+                          </td>
+                          {row.bids.map((bid, mi) => {
+                            const isViewer = leagueData.viewerUserId === rosterInputs[mi]?.userId;
+                            const isMax = bid === maxBid && bid > 0;
+                            return (
+                              <td
+                                key={mi}
+                                className={`px-2 py-1.5 text-right tabular-nums ${
+                                  isViewer ? "font-medium" : ""
+                                } ${
+                                  bid === 0
+                                    ? "text-muted-foreground/30"
+                                    : isMax
+                                      ? "font-semibold text-foreground"
+                                      : "text-muted-foreground"
+                                }`}
+                              >
+                                {bid > 0 ? `$${bid}` : "—"}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {equilibrium.iterations} iterations × 20 auctions per iteration. Bold = highest bidder.
+              </p>
+            </CardContent>
+          ) : !eqComputing ? (
+            <CardContent>
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                Click &quot;Compute Equilibrium&quot; to simulate auction outcomes for all teams.
+              </p>
+            </CardContent>
+          ) : null}
+        </Card>
       ) : null}
     </div>
   );
