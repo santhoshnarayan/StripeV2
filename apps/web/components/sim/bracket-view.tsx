@@ -138,6 +138,109 @@ function Connectors({
   );
 }
 
+/* ── Play-In bracket (double-elimination) ── */
+
+function PlayInBracket({
+  conf,
+  seeds,
+  playin,
+  fullNames,
+}: {
+  conf: string;
+  seeds: [number, string][];
+  playin: [number, string][];
+  fullNames: Record<string, string>;
+}) {
+  const s7 = seeds.find(([s]) => s === 7)?.[1] ?? "?";
+  const s8 = seeds.find(([s]) => s === 8)?.[1] ?? "?";
+  const s9 = playin.find(([s]) => s === 9)?.[1] ?? "?";
+  const s10 = playin.find(([s]) => s === 10)?.[1] ?? "?";
+
+  const BOX_H = CELL_H * 2;
+  const CAPTION_H = 16;
+  const GAP = 16;
+  const ITEM_H = BOX_H + CAPTION_H;
+  const TOTAL_H = ITEM_H * 2 + GAP;
+
+  const box1CenterY = BOX_H / 2;
+  const box2CenterY = ITEM_H + GAP + BOX_H / 2;
+  const midY = (box1CenterY + box2CenterY) / 2;
+
+  return (
+    <div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {conf} Play-In
+      </div>
+      <div className="flex items-start">
+        <div
+          className="flex shrink-0 flex-col"
+          style={{ height: TOTAL_H, gap: GAP }}
+        >
+          <div>
+            <MatchupBox
+              higher={{ seed: 7, team: s7 }}
+              lower={{ seed: 8, team: s8 }}
+              fullNames={fullNames}
+            />
+            <div
+              className="text-center text-[9px] text-muted-foreground"
+              style={{ height: CAPTION_H, lineHeight: `${CAPTION_H}px` }}
+            >
+              W → 7 seed
+            </div>
+          </div>
+          <div>
+            <MatchupBox
+              higher={{ seed: 9, team: s9 }}
+              lower={{ seed: 10, team: s10 }}
+              fullNames={fullNames}
+            />
+            <div
+              className="text-center text-[9px] text-muted-foreground"
+              style={{ height: CAPTION_H, lineHeight: `${CAPTION_H}px` }}
+            >
+              L eliminated
+            </div>
+          </div>
+        </div>
+
+        <svg width={CONN_W * 2} height={TOTAL_H} className="shrink-0">
+          <path
+            d={`M 0 ${box1CenterY} H ${CONN_W} V ${midY} H ${CONN_W * 2}`}
+            fill="none"
+            stroke="currentColor"
+            className="text-border"
+            strokeWidth={1.5}
+          />
+          <path
+            d={`M 0 ${box2CenterY} H ${CONN_W} V ${midY}`}
+            fill="none"
+            stroke="currentColor"
+            className="text-border"
+            strokeWidth={1.5}
+          />
+        </svg>
+
+        <div style={{ paddingTop: midY - BOX_H / 2 }}>
+          <MatchupBox
+            higher={{ seed: 0, team: `L(${s7}/${s8})` }}
+            lower={{ seed: 0, team: `W(${s9}/${s10})` }}
+            fullNames={fullNames}
+          />
+          <div
+            className="text-center text-[9px] text-muted-foreground"
+            style={{ height: CAPTION_H, lineHeight: `${CAPTION_H}px` }}
+          >
+            W → 8 seed
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Conference bracket ── */
+
 function ConferenceBracket({
   conf,
   seeds,
@@ -151,8 +254,9 @@ function ConferenceBracket({
   fullNames: Record<string, string>;
   flip?: boolean;
 }) {
+  // 7-seed is confirmed from play-in R1; 8-seed is TBD until play-in R2
   const seed7: [number, string] = [7, seeds.find(([s]) => s === 7)?.[1] ?? "Play-In"];
-  const seed8: [number, string] = [8, seeds.find(([s]) => s === 8)?.[1] ?? "Play-In"];
+  const seed8: [number, string] = [8, "Play-In"];
 
   const r1 = [
     { higher: seeds[0], lower: seed8 },
@@ -303,6 +407,33 @@ export function BracketView({
           </div>
         </div>
       </div>
+
+      {/* Play-In Tournament */}
+      {(simData.bracket.eastPlayin?.length || simData.bracket.westPlayin?.length) ? (
+        <div>
+          <p className="mb-3 text-base font-semibold text-foreground">
+            Play-In Tournament
+          </p>
+          <div className="flex flex-col gap-12 md:flex-row">
+            {simData.bracket.westPlayin?.length ? (
+              <PlayInBracket
+                conf="West"
+                seeds={simData.bracket.westSeeds}
+                playin={simData.bracket.westPlayin}
+                fullNames={fullNames}
+              />
+            ) : null}
+            {simData.bracket.eastPlayin?.length ? (
+              <PlayInBracket
+                conf="East"
+                seeds={simData.bracket.eastSeeds}
+                playin={simData.bracket.eastPlayin}
+                fullNames={fullNames}
+              />
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
