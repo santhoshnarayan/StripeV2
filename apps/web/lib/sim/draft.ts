@@ -523,7 +523,7 @@ export function computeMarginalValuesWithDraftSim(
       managerBudgets.map((b) => b.remainingBudget),
       managerBudgets.map((b) => b.remainingRosterSlots),
       minBid,
-      Math.random() * 10 + 2, // noise: 2-12
+      0.3, // noise: ±30% of each player's suggested value
     );
     // Merge with existing rosters and compute win probs
     const full = drafted.map((d, m) => [...rosters[m].playerIds, ...d]);
@@ -653,8 +653,9 @@ function simulateAuction(
       if (remainSlots[m] <= 0) continue;
       const maxAllowed = remainBudget[m] - (remainSlots[m] - 1) * minBid;
       if (maxAllowed < minBid) continue;
-      // Add noise to bid for simulation variance
-      const noisyBid = bidMatrix[m][pi] + (noise > 0 ? (Math.random() - 0.5) * 2 * noise : 0);
+      // Add noise scaled to the bid size (e.g. noise=0.3 means ±30% of bid value)
+      const baseBid = bidMatrix[m][pi];
+      const noisyBid = baseBid + (noise > 0 ? (Math.random() - 0.5) * 2 * noise * baseBid : 0);
       const effectiveBid = Math.max(0, Math.min(maxAllowed, Math.round(noisyBid)));
       if (effectiveBid > bestBid) {
         bestBid = effectiveBid;
@@ -892,7 +893,7 @@ export function computeEquilibriumBids(
     const pidToIdx = new Map(availablePlayerIds.map((id, i) => [id, i]));
 
     for (let iter = 0; iter < iterations; iter++) {
-      const noiseLevel = Math.max(1, 5 - iter);
+      const noiseLevel = 0.3 - iter * 0.05; // ±30% → ±25% → ±20% as we converge
 
       // Step 1: Run ONE shared batch of auctions — all teams observe the same outcomes
       const playerWinCounts: number[][] = Array.from(
