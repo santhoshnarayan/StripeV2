@@ -66,10 +66,12 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
     return grouped;
   }, [simData]);
 
+  const DEFAULT_AVAIL = new Array(30).fill(1) as number[];
+
   const adjustmentsRecord = useMemo(() => {
     const record: Record<string, import("@/lib/sim").PlayerAdjustment> = {};
     for (const a of adjustments) {
-      record[a.espn_id] = a;
+      record[a.espn_id] = { ...a, availability: a.availability ?? DEFAULT_AVAIL };
     }
     return record;
   }, [adjustments]);
@@ -77,7 +79,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
   const defaultAdjustmentsRecord = useMemo(() => {
     const record: Record<string, import("@/lib/sim").PlayerAdjustment> = {};
     for (const a of simData?.adjustments ?? []) {
-      record[a.espn_id] = a;
+      record[a.espn_id] = { ...a, availability: a.availability ?? DEFAULT_AVAIL };
     }
     return record;
   }, [simData?.adjustments]);
