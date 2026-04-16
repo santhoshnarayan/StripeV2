@@ -206,30 +206,6 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     await doRunSim(simData, config, adjustments);
   }, [simData, config, adjustments, doRunSim]);
 
-  if (loading && !simResults) {
-    return (
-      <div className="py-12 text-center text-sm text-muted-foreground">
-        Loading simulation data...
-      </div>
-    );
-  }
-
-  if (error && !simData) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Simulator</CardTitle>
-          <CardDescription>{error}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button onClick={() => window.location.reload()}>Retry</Button>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (!simData) return null;
-
   // Build roster inputs for draft optimizer
   const rosterInputs: RosterInput[] = useMemo(() => {
     if (!leagueData) return [];
@@ -279,6 +255,30 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     { id: "adjustments", label: "Adjustments" },
     { id: "injuries", label: "Injuries" },
   ];
+
+  if (loading && !simResults) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        Loading simulation data...
+      </div>
+    );
+  }
+
+  if (error && !simData) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Simulator</CardTitle>
+          <CardDescription>{error}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button onClick={() => window.location.reload()}>Retry</Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!simData) return null;
 
   return (
     <div className="space-y-4">
