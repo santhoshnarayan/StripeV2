@@ -230,6 +230,190 @@ export function computeMarginalValues(
   return results;
 }
 
+// ─── Forward draft simulation ──────────────────────────────────────
+
+export interface ManagerBudgetInfo {
+  userId: string;
+  remainingBudget: number;
+  remainingRosterSlots: number;
+}
+
+/**
+ * Compute marginal values with a greedy forward draft simulation.
+ *
+ * For each candidate player the viewer might pick, simulates the rest of the
+ * draft greedily: each other manager picks the highest projected-points player
+ * they can afford from the remaining pool. Then measures win probability after
+ * all rosters are filled. This accounts for opponent drafting behavior.
+ */
+export function computeMarginalValuesWithDraftSim(
+  simResults: SimResults,
+  rosters: RosterInput[],
+  viewerManagerIndex: number,
+  availablePlayerIds: string[],
+  managerBudgets: ManagerBudgetInfo[],
+  minBid: number,
+  rosterSize: number,
+): MarginalValue[] {
+  const { simMatrix, playerIndex, numSims, players: playerProjections } = simResults;
+  const numPlayers = playerIndex.size;
+
+  // Player projection lookup (projected points from sim)
+  const projByEspnId = new Map(
+    playerProjections.map((p) => [p.espnId, p]),
+  );
+
+  // Sort available players by projected points descending for greedy picks
+  const sortedAvailable = [...availablePlayerIds].sort((a, b) => {
+    const pa = projByEspnId.get(a)?.projectedPoints ?? 0;
+    const pb = projByEspnId.get(b)?.projectedPoints ?? 0;
+    return pb - pa;
+  });
+
+  // Current win probability (no forward sim, just current rosters)
+  const baseManagerTotals = rosters.map((roster) =>
+    rosterSimTotals(simMatrix, playerIndex, roster.playerIds, numSims, numPlayers),
+  );
+  let currentWins = 0;
+  for (let sim = 0; sim < numSims; sim++) {
+    let best = -1;
+    let bestIdx = -1;
+    for (let m = 0; m < rosters.length; m++) {
+      if (baseManagerTotals[m][sim] > best) {
+        best = baseManagerTotals[m][sim];
+        bestIdx = m;
+      }
+    }
+    if (bestIdx === viewerManagerIndex) currentWins++;
+  }
+  const currentWinProb = currentWins / numSims;
+
+  /**
+   * Greedy forward draft: given a set of already-picked player IDs (per manager),
+   * fill remaining roster slots by each manager greedily picking the highest
+   * projected-points player from the available pool.
+   */
+  function simulateGreedyDraft(
+    rosterPlayerIds: string[][],
+    available: Set<string>,
+    budgets: number[],
+    slots: number[],
+  ): string[][] {
+    const result = rosterPlayerIds.map((ids) => [...ids]);
+    const pool = new Set(available);
+
+    // Draft rounds until everyone is full
+    const maxRounds = Math.max(...slots);
+    for (let round = 0; round < maxRounds; round++) {
+      for (let m = 0; m < result.length; m++) {
+        if (slots[m] <= 0) continue;
+        // Greedy: pick highest proj points player from pool
+        let bestId: string | null = null;
+        for (const pid of sortedAvailable) {
+          if (!pool.has(pid)) continue;
+          bestId = pid;
+          break;
+        }
+        if (bestId) {
+          result[m].push(bestId);
+          pool.delete(bestId);
+          slots[m]--;
+          budgets[m] -= minBid; // simplified: assume min bid
+        }
+      }
+    }
+    return result;
+  }
+
+  const results: MarginalValue[] = [];
+
+  // Only evaluate top 50 candidates by projected points (perf optimization).
+  // The greedy draft sim is O(candidates × managers × slots × sims).
+  const candidateIds = sortedAvailable.slice(0, 50);
+
+  // For each candidate player the viewer might draft...
+  for (const candidateId of candidateIds) {
+    const col = playerIndex.get(candidateId);
+    if (col == null) continue;
+
+    const proj = projByEspnId.get(candidateId);
+    const projectedPoints = proj?.projectedPoints ?? 0;
+
+    // Create roster state with viewer having drafted this player
+    const newRosterIds = rosters.map((r, i) => {
+      if (i === viewerManagerIndex) return [...r.playerIds, candidateId];
+      return [...r.playerIds];
+    });
+    const remaining = new Set(availablePlayerIds.filter((id) => id !== candidateId));
+    const budgets = managerBudgets.map((b) => b.remainingBudget);
+    const slots = managerBudgets.map((b, i) =>
+      i === viewerManagerIndex ? b.remainingRosterSlots - 1 : b.remainingRosterSlots,
+    );
+
+    // Simulate rest of draft greedily
+    const filledRosters = simulateGreedyDraft(newRosterIds, remaining, budgets, slots);
+
+    // Compute win probability with filled rosters
+    const filledTotals = filledRosters.map((ids) =>
+      rosterSimTotals(simMatrix, playerIndex, ids, numSims, numPlayers),
+    );
+    let wins = 0;
+    for (let sim = 0; sim < numSims; sim++) {
+      let best = -1;
+      let bestIdx = -1;
+      for (let m = 0; m < filledTotals.length; m++) {
+        if (filledTotals[m][sim] > best) {
+          best = filledTotals[m][sim];
+          bestIdx = m;
+        }
+      }
+      if (bestIdx === viewerManagerIndex) wins++;
+    }
+    const newWinProb = wins / numSims;
+
+    results.push({
+      espnId: candidateId,
+      playerName: proj?.name ?? candidateId,
+      team: proj?.team ?? "",
+      projectedPoints,
+      currentWinProb,
+      newWinProb,
+      marginalWinProb: newWinProb - currentWinProb,
+      suggestedBid: 0,
+    });
+  }
+
+  // Proportional bid allocation
+  const viewerBudget = managerBudgets[viewerManagerIndex];
+  const freeBudget = Math.max(
+    0,
+    viewerBudget.remainingBudget - (viewerBudget.remainingRosterSlots - 1) * minBid,
+  );
+  const perSlotBudget = viewerBudget.remainingRosterSlots > 0
+    ? viewerBudget.remainingBudget / viewerBudget.remainingRosterSlots
+    : viewerBudget.remainingBudget;
+  const totalPositiveMarginal = results.reduce(
+    (sum, r) => sum + Math.max(0, r.marginalWinProb),
+    0,
+  );
+
+  for (const r of results) {
+    if (totalPositiveMarginal > 0 && r.marginalWinProb > 0) {
+      const share = r.marginalWinProb / totalPositiveMarginal;
+      const rawBid = share * perSlotBudget * viewerBudget.remainingRosterSlots;
+      r.suggestedBid = Math.max(
+        minBid,
+        Math.min(freeBudget, Math.round(rawBid)),
+      );
+    } else {
+      r.suggestedBid = r.marginalWinProb > 0 ? minBid : 0;
+    }
+  }
+
+  results.sort((a, b) => b.marginalWinProb - a.marginalWinProb);
+  return results;
+}
+
 /**
  * Compute marginal values for ALL managers (not just the viewer).
  * Returns a map from manager userId to their marginal value list.

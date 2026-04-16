@@ -27,8 +27,9 @@ import {
 
 import {
   computeManagerProjections,
-  computeMarginalValues,
+  computeMarginalValuesWithDraftSim,
   type RosterInput,
+  type ManagerBudgetInfo,
 } from "@/lib/sim/draft";
 
 type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor";
@@ -233,14 +234,24 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     const viewer = leagueData.members.find((m) => m.userId === leagueData.viewerUserId);
     if (!viewer) return null;
     const availableIds = leagueData.availablePlayers.map((p) => p.id);
-    return computeMarginalValues(
+    // Budget infos must be in the same order as rosterInputs
+    const memberMap = new Map(leagueData.members.map((m) => [m.userId, m]));
+    const budgetInfos: ManagerBudgetInfo[] = rosterInputs.map((r) => {
+      const m = memberMap.get(r.userId);
+      return {
+        userId: r.userId,
+        remainingBudget: m?.remainingBudget ?? leagueData.league.budgetPerTeam,
+        remainingRosterSlots: m?.remainingRosterSlots ?? leagueData.league.rosterSize,
+      };
+    });
+    return computeMarginalValuesWithDraftSim(
       simResults,
       rosterInputs,
       viewerIndex >= 0 ? viewerIndex : 0,
       availableIds,
-      viewer.remainingBudget,
-      viewer.remainingRosterSlots,
+      budgetInfos,
       leagueData.league.minBid,
+      leagueData.league.rosterSize,
     );
   }, [simResults, rosterInputs, leagueData, viewerIndex]);
 
