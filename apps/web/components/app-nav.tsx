@@ -153,6 +153,36 @@ const playersItem: NavItem = {
   isActive: (pathname) => pathname.startsWith("/players"),
 };
 
+function BracketIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M3 5v4h4" />
+      <path d="M3 19v-4h4" />
+      <path d="M7 9h3v6H7" />
+      <path d="M14 9h3v6h-3" />
+      <path d="M17 5v4h4" />
+      <path d="M17 19v-4h4" />
+      <path d="M10 12h4" />
+    </svg>
+  );
+}
+
+const bracketItem: NavItem = {
+  href: "/bracket",
+  label: "Bracket",
+  icon: BracketIcon,
+  isActive: (pathname) => pathname.startsWith("/bracket"),
+};
+
 const accountItem: NavItem = {
   href: "/account",
   label: "Account",
@@ -185,6 +215,7 @@ export function AppNav() {
   const mobileItems: NavItem[] = [
     leaguesItem,
     playersItem,
+    bracketItem,
     isSignedIn ? accountItem : signInItem,
   ];
 
@@ -213,6 +244,15 @@ export function AppNav() {
                 })}
               >
                 Players
+              </Link>
+              <Link
+                href="/bracket"
+                className={buttonVariants({
+                  variant: bracketItem.isActive(pathname) ? "default" : "ghost",
+                  size: "sm",
+                })}
+              >
+                Bracket
               </Link>
               {showAuthNav && !isSignedIn ? (
                 <>

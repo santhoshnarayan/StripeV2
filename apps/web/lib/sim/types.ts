@@ -41,7 +41,7 @@ export interface SimConfig {
 }
 
 export const DEFAULT_SIM_CONFIG: SimConfig = {
-  model: "netrtg",
+  model: "lebron",
   sims: 10_000,
   stdev: 10,
   hca: 3,

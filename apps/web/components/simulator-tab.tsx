@@ -36,7 +36,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
   const [simulating, setSimulating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [subTab, setSubTab] = useState<SimSubTab>("bracket");
-  const [config] = useState<SimConfig>(DEFAULT_SIM_CONFIG);
+  const [config, setConfig] = useState<SimConfig>(DEFAULT_SIM_CONFIG);
 
   useEffect(() => {
     let active = true;
@@ -73,7 +73,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
     await new Promise((r) => setTimeout(r, 0));
 
     try {
-      const results = runTournamentSim(simData, config, (p) => {
+      const results = await runTournamentSim(simData, config, (p) => {
         setProgress(p);
       });
       setSimResults(results);
@@ -130,17 +130,33 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
               ratings and Dirichlet-distributed player scoring.
             </CardDescription>
           </div>
-          <Button
-            onClick={() => void handleRunSim()}
-            disabled={simulating}
-            className="shrink-0"
-          >
-            {simulating
-              ? `Simulating... ${Math.round(progress * 100)}%`
-              : simResults
-                ? `Re-run (${config.sims.toLocaleString()} sims)`
-                : `Run Simulation (${config.sims.toLocaleString()})`}
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              className="h-9 appearance-none rounded-lg border border-input bg-background px-3 pr-8 text-sm"
+              value={config.model}
+              onChange={(e) =>
+                setConfig((prev) => ({
+                  ...prev,
+                  model: e.target.value as SimConfig["model"],
+                }))
+              }
+            >
+              <option value="lebron">Player Ratings (LEBRON)</option>
+              <option value="netrtg">Team Net Rating</option>
+              <option value="blend">Blend (50/50)</option>
+            </select>
+            <Button
+              onClick={() => void handleRunSim()}
+              disabled={simulating}
+              className="shrink-0"
+            >
+              {simulating
+                ? `Simulating... ${Math.round(progress * 100)}%`
+                : simResults
+                  ? `Re-run (${config.sims.toLocaleString()} sims)`
+                  : `Run Simulation (${config.sims.toLocaleString()})`}
+            </Button>
+          </div>
         </CardHeader>
         {simResults ? (
           <CardContent>

@@ -86,14 +86,81 @@ function simulateGame(
   return { homeWins: margin > 0, homeScore, awayScore };
 }
 
+// ─── LEBRON player-based team rating ─────────────────────────────
+
+function calcLebronRating(
+  roster: SimPlayer[],
+  playoffMinutes: Record<string, number> | null,
+): number {
+  if (roster.length === 0) return -10;
+
+  const active = roster.filter((p) => p.mpg > 0);
+  if (active.length === 0) return -10;
+
+  // If we have projected playoff minutes, use them; otherwise fall back
+  // to regular-season MPG with top-5 scaling to sum to 240.
+  if (playoffMinutes) {
+    let rating = 0;
+    let totalMins = 0;
+    for (const p of active) {
+      const mins = playoffMinutes[p.nba_id] ?? 0;
+      if (mins <= 0) continue;
+      rating += (p.lebron * mins) / 48;
+      totalMins += mins;
+    }
+    // Scale if total minutes don't match 240
+    if (totalMins > 0 && Math.abs(totalMins - 240) > 10) {
+      rating *= 240 / totalMins;
+    }
+    return rating;
+  }
+
+  // Fallback: top-5 by MPG get their minutes, rest share the remainder
+  active.sort((a, b) => b.mpg - a.mpg);
+  const top5 = active.slice(0, 5);
+  const rest = active.slice(5);
+  const top5Mins = top5.reduce((s, p) => s + p.mpg, 0);
+  const remaining = Math.max(0, 240 - top5Mins);
+  const restTotal = rest.reduce((s, p) => s + p.mpg, 0);
+
+  let rating = 0;
+  for (const p of top5) {
+    rating += (p.lebron * p.mpg) / 48;
+  }
+  for (const p of rest) {
+    const mins = restTotal > 0 ? p.mpg * (remaining / restTotal) : 0;
+    rating += (p.lebron * mins) / 48;
+  }
+  return rating;
+}
+
 function getTeamRating(
   team: string,
   netRatings: Record<string, number>,
+  rostersByTeam: Record<string, SimPlayer[]>,
+  playoffMinutes: Record<string, Record<string, number>>,
+  config: SimConfig,
   aliases: Record<string, string>,
   aliasesRev: Record<string, string>,
 ): number {
-  const key = resolveTeam(team, netRatings, aliases, aliasesRev);
-  return netRatings[key] ?? 0;
+  const netKey = resolveTeam(team, netRatings, aliases, aliasesRev);
+  const nrRating = netRatings[netKey] ?? 0;
+
+  if (config.model === "netrtg") {
+    return nrRating;
+  }
+
+  const rosterKey = resolveTeam(team, rostersByTeam, aliases, aliasesRev);
+  const roster = rostersByTeam[rosterKey] ?? [];
+  const pm = playoffMinutes[team] ?? playoffMinutes[rosterKey] ?? null;
+  const lebRating = calcLebronRating(roster, pm);
+
+  if (config.model === "lebron") {
+    return lebRating;
+  }
+
+  // blend
+  return config.blendWeight * lebRating + (1 - config.blendWeight) * nrRating;
 }
 
 interface SeriesPlayerAccum {
@@ -116,8 +183,8 @@ function simulateSeries(
   aliases: Record<string, string>,
   aliasesRev: Record<string, string>,
 ): string {
-  const hRating = getTeamRating(higher, netRatings, aliases, aliasesRev);
-  const lRating = getTeamRating(lower, netRatings, aliases, aliasesRev);
+  const hRating = getTeamRating(higher, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
+  const lRating = getTeamRating(lower, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
 
   let hWins = 0;
   let lWins = 0;
@@ -192,13 +259,15 @@ function simulatePlayInGame(
   higher: string,
   lower: string,
   netRatings: Record<string, number>,
+  rostersByTeam: Record<string, SimPlayer[]>,
+  playoffMinutes: Record<string, Record<string, number>>,
   config: SimConfig,
   rng: RNG,
   aliases: Record<string, string>,
   aliasesRev: Record<string, string>,
 ): { winner: string; loser: string } {
-  const hRating = getTeamRating(higher, netRatings, aliases, aliasesRev);
-  const lRating = getTeamRating(lower, netRatings, aliases, aliasesRev);
+  const hRating = getTeamRating(higher, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
+  const lRating = getTeamRating(lower, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
   const { homeWins } = simulateGame(hRating, lRating, rng, config.hca, config.stdev);
   return homeWins
     ? { winner: higher, loser: lower }
@@ -209,6 +278,8 @@ function simulatePlayIn(
   seeds: [number, string][],
   playin: [number, string][],
   netRatings: Record<string, number>,
+  rostersByTeam: Record<string, SimPlayer[]>,
+  playoffMinutes: Record<string, Record<string, number>>,
   config: SimConfig,
   rng: RNG,
   aliases: Record<string, string>,
@@ -219,12 +290,12 @@ function simulatePlayIn(
   const s9 = playin.find(([s]) => s === 9)?.[1] ?? "";
   const s10 = playin.find(([s]) => s === 10)?.[1] ?? "";
 
-  const g1 = simulatePlayInGame(s7, s8, netRatings, config, rng, aliases, aliasesRev);
+  const g1 = simulatePlayInGame(s7, s8, netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev);
   const seed7 = g1.winner;
 
-  const g2 = simulatePlayInGame(s9, s10, netRatings, config, rng, aliases, aliasesRev);
+  const g2 = simulatePlayInGame(s9, s10, netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev);
 
-  const g3 = simulatePlayInGame(g1.loser, g2.winner, netRatings, config, rng, aliases, aliasesRev);
+  const g3 = simulatePlayInGame(g1.loser, g2.winner, netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev);
   const seed8 = g3.winner;
 
   return [seed7, seed8];
@@ -232,11 +303,11 @@ function simulatePlayIn(
 
 // ─── Main simulation ───────────────────────────────────────────────
 
-export function runTournamentSim(
+export async function runTournamentSim(
   data: SimData,
   config: SimConfig,
   onProgress?: (fraction: number) => void,
-): SimResults {
+): Promise<SimResults> {
   const { bracket, netRatings: netRatingsRaw, simPlayers, playoffMinutes } = data;
   const aliases = bracket.teamAliases;
   const aliasesRev = buildAliasMap(aliases);
@@ -285,8 +356,10 @@ export function runTournamentSim(
   const allPlayin = [...(bracket.eastPlayin ?? []), ...(bracket.westPlayin ?? [])];
 
   for (let sim = 0; sim < config.sims; sim++) {
-    if (onProgress && sim > 0 && sim % 500 === 0) {
+    if (onProgress && sim > 0 && sim % 250 === 0) {
       onProgress(sim / config.sims);
+      // Yield to the browser so the progress UI updates
+      await new Promise((r) => setTimeout(r, 0));
     }
 
     const accum: SeriesPlayerAccum = {
@@ -296,10 +369,10 @@ export function runTournamentSim(
 
     // Play-in
     const [east7, east8] = simulatePlayIn(
-      bracket.eastSeeds, bracket.eastPlayin ?? [], netRatings, config, rng, aliases, aliasesRev,
+      bracket.eastSeeds, bracket.eastPlayin ?? [], netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev,
     );
     const [west7, west8] = simulatePlayIn(
-      bracket.westSeeds, bracket.westPlayin ?? [], netRatings, config, rng, aliases, aliasesRev,
+      bracket.westSeeds, bracket.westPlayin ?? [], netRatings, rostersByTeam, playoffMinutes, config, rng, aliases, aliasesRev,
     );
 
     // R1 matchups
@@ -400,7 +473,7 @@ export function runTournamentSim(
   ];
 
   const teams: TeamSimResult[] = allTeamAbbrs.map((team) => {
-    const rating = getTeamRating(team, netRatings, aliases, aliasesRev);
+    const rating = getTeamRating(team, netRatings, rostersByTeam, playoffMinutes, config, aliases, aliasesRev);
     const eastSeed = bracket.eastSeeds.find(([, t]) => t === team);
     const westSeed = bracket.westSeeds.find(([, t]) => t === team);
     const seed = eastSeed?.[0] ?? westSeed?.[0] ?? null;
