@@ -261,7 +261,8 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     { id: "bracket", label: "Bracket" },
     ...(leagueData ? [
       { id: "roster" as SimSubTab, label: "Roster" },
-      { id: "advisor" as SimSubTab, label: "Advisor" },
+      // Advisor hidden on prod until bid strategy simulation is complete
+      ...(process.env.NODE_ENV === "development" ? [{ id: "advisor" as SimSubTab, label: "Advisor" }] : []),
     ] : []),
     { id: "adjustments", label: "Adjustments" },
     { id: "injuries", label: "Injuries" },
