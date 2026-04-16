@@ -269,6 +269,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
         remainingRosterSlots: m?.remainingRosterSlots ?? leagueData.league.rosterSize,
       };
     });
+    const sugValues = new Map(leagueData.availablePlayers.map((p) => [p.id, p.suggestedValue]));
     return computeMarginalValuesWithDraftSim(
       simResults,
       rosterInputs,
@@ -277,6 +278,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
       budgetInfos,
       leagueData.league.minBid,
       leagueData.league.rosterSize,
+      sugValues,
     );
   }, [simResults, rosterInputs, leagueData, viewerIndex]);
 

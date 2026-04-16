@@ -315,6 +315,7 @@ export function computeMarginalValuesWithDraftSim(
   managerBudgets: ManagerBudgetInfo[],
   minBid: number,
   rosterSize: number,
+  suggestedValues: Map<string, number>,
 ): MarginalValue[] {
   const { simMatrix, playerIndex, numSims, players: playerProjections } = simResults;
   const numPlayers = playerIndex.size;
@@ -495,35 +496,46 @@ export function computeMarginalValuesWithDraftSim(
   }
 
   // ── Step 5: Bid allocation ──────────────────────────────────────────
-  // Scale bids proportionally to marginal win probability.
-  // The top player gets up to freeBudget, others scale linearly.
-  // This avoids the VARP cliff where players just below a cutoff get $1.
+  // Use the VORP-based suggested values as the baseline (they already capture
+  // correct auction dynamics — top-heavy distribution, replacement level, etc.)
+  // Then adjust up/down based on how much this player helps THIS specific team
+  // relative to the average player at the same price point.
   const viewerBudget = managerBudgets[viewerManagerIndex];
-  const viewerSlots = viewerBudget.remainingRosterSlots;
-  const budget = viewerBudget.remainingBudget;
-  const freeBudget = Math.max(0, budget - (viewerSlots - 1) * minBid);
-  const perSlotBudget = viewerSlots > 0 ? budget / viewerSlots : budget;
+  const freeBudget = Math.max(0, viewerBudget.remainingBudget - (viewerBudget.remainingRosterSlots - 1) * minBid);
 
-  const ranked = [...results].sort((a, b) => b.marginalWinProb - a.marginalWinProb);
-  const topMarginal = ranked[0]?.marginalWinProb ?? 0;
+  // Compute average marginal per dollar of suggested value (the "efficiency" baseline)
+  let totalMarginal = 0;
+  let totalSugValue = 0;
+  for (const r of results) {
+    if (r.marginalWinProb > 0) {
+      const sv = suggestedValues.get(r.espnId) ?? 0;
+      totalMarginal += r.marginalWinProb;
+      totalSugValue += sv;
+    }
+  }
+  const avgEfficiency = totalSugValue > 0 ? totalMarginal / totalSugValue : 0;
 
   for (const r of results) {
-    if (topMarginal > 0 && r.marginalWinProb > 0) {
-      // Linear scale: bid proportional to marginal relative to best player
-      const ratio = r.marginalWinProb / topMarginal;
-      let rawBid = ratio * perSlotBudget;
+    const baseSuggested = suggestedValues.get(r.espnId) ?? 0;
+    if (r.marginalWinProb > 0 && baseSuggested > 0 && avgEfficiency > 0) {
+      // Player's efficiency = marginal per dollar of suggested value
+      const playerEfficiency = r.marginalWinProb / baseSuggested;
+      // Adjustment ratio: how much more/less efficient this player is for THIS team
+      const adjustRatio = playerEfficiency / avgEfficiency;
+      let rawBid = baseSuggested * adjustRatio;
 
-      // Demand premium: if multiple opponents want this player, bid more
+      // Demand premium
       const demand = opponentDemand.get(r.espnId) ?? 0;
-      const demandMultiplier = 1 + demand * 0.15;
-      rawBid *= demandMultiplier;
+      rawBid *= 1 + demand * 0.1;
 
       r.suggestedBid = Math.max(
         minBid,
         Math.min(freeBudget, Math.round(rawBid)),
       );
+    } else if (r.marginalWinProb > 0) {
+      r.suggestedBid = Math.max(minBid, baseSuggested);
     } else {
-      r.suggestedBid = r.marginalWinProb > 0 ? minBid : 0;
+      r.suggestedBid = 0;
     }
   }
 
