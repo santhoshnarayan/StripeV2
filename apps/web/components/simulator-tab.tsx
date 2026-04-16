@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { BracketView } from "@/components/sim/bracket-view";
 import { AdjustmentsView } from "@/components/sim/adjustments-view";
+import { AdjustmentsTab as ExploreAdjustmentsTab, setBracketConstants } from "@/components/sim/adjustments-tab-explore";
 import { InjuriesView } from "@/components/sim/injuries-view";
 import { appApiFetch } from "@/lib/app-api";
 import {
@@ -52,6 +53,55 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
   const playerRatingLookup = useMemo(() => {
     if (!simData) return new Map();
     return new Map(simData.simPlayers.map((p) => [p.espn_id, p]));
+  }, [simData]);
+
+  // Transform data for the explore-style adjustments component
+  const teamPlayers = useMemo(() => {
+    if (!simData) return {};
+    const grouped: Record<string, typeof simData.simPlayers> = {};
+    for (const p of simData.simPlayers) {
+      if (!grouped[p.team]) grouped[p.team] = [];
+      grouped[p.team].push(p);
+    }
+    return grouped;
+  }, [simData]);
+
+  const adjustmentsRecord = useMemo(() => {
+    const record: Record<string, import("@/lib/sim").PlayerAdjustment> = {};
+    for (const a of adjustments) {
+      record[a.espn_id] = a;
+    }
+    return record;
+  }, [adjustments]);
+
+  const defaultAdjustmentsRecord = useMemo(() => {
+    const record: Record<string, import("@/lib/sim").PlayerAdjustment> = {};
+    for (const a of simData?.adjustments ?? []) {
+      record[a.espn_id] = a;
+    }
+    return record;
+  }, [simData?.adjustments]);
+
+  const playoffMpgByEspnId = useMemo(() => {
+    if (!simData) return {};
+    const lookup: Record<string, number> = {};
+    const nbaIdToEspnId = new Map(
+      simData.simPlayers.map((p) => [p.nba_id, p.espn_id]),
+    );
+    for (const [, teamMinutes] of Object.entries(simData.playoffMinutes)) {
+      for (const [nbaId, mpg] of Object.entries(teamMinutes)) {
+        const espnId = nbaIdToEspnId.get(nbaId);
+        if (espnId) lookup[espnId] = mpg;
+      }
+    }
+    return lookup;
+  }, [simData]);
+
+  // Set bracket constants for the explore adjustments component
+  useEffect(() => {
+    if (simData) {
+      setBracketConstants(simData.bracket);
+    }
   }, [simData]);
 
   // Core sim runner — used by auto-run and manual button
@@ -200,17 +250,19 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
       ) : null}
 
       {subTab === "adjustments" && simData ? (
-        <AdjustmentsView
-          simData={simData}
-          adjustments={adjustments}
-          injuries={simData.injuries}
-          onUpdateAdjustment={(espnId, field, value) => {
+        <ExploreAdjustmentsTab
+          teamPlayers={teamPlayers}
+          adjustments={adjustmentsRecord}
+          defaultAdjustments={defaultAdjustmentsRecord}
+          playoffMinutes={simData.playoffMinutes}
+          playoffMpgByEspnId={playoffMpgByEspnId}
+          onUpdateAdjustment={(espnId, update) => {
             setLocalAdjustments((prev) => {
               const current = prev ?? simData.adjustments ?? [];
               const idx = current.findIndex((a) => a.espn_id === espnId);
               if (idx >= 0) {
                 const updated = [...current];
-                updated[idx] = { ...updated[idx], [field]: value };
+                updated[idx] = { ...updated[idx], ...update };
                 return updated;
               }
               const player = simData.simPlayers.find((p) => p.espn_id === espnId);
@@ -225,10 +277,20 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                   d_lebron_delta: 0,
                   minutes_override: null,
                   availability: new Array(30).fill(1),
-                  [field]: value,
+                  ...update,
                 },
               ];
             });
+          }}
+          onLoadAdjustments={(adjs) => {
+            const arr = Object.entries(adjs).map(([espnId, adj]) => ({
+              ...adj,
+              espn_id: espnId,
+              name: adj.name ?? espnId,
+              team: adj.team ?? "",
+              availability: adj.availability ?? new Array(30).fill(1),
+            }));
+            setLocalAdjustments(arr);
           }}
           onResetAdjustments={() => setLocalAdjustments(null)}
         />
