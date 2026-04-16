@@ -122,9 +122,14 @@ appRouter.get("/players", async (c) => {
 // Simulation data endpoint — static reference data (bracket, team ratings,
 // player stats with LEBRON/WAR, projected playoff minutes). ~120KB JSON,
 // served once per client session. No auth required.
+// Invalidate cache on every deploy by keying on a build-time constant
 let simDataCache: string | null = null;
 
 appRouter.get("/sim-data", async (c) => {
+  // Allow ?bust= param to force rebuild (for dev)
+  if (c.req.query("bust") || !simDataCache) {
+    simDataCache = null;
+  }
   if (!simDataCache) {
     const dataDir = path.resolve(process.cwd(), "src/data");
     const [bracket, netRatings, simPlayers, playoffMinutes, adjustments, injuries] =

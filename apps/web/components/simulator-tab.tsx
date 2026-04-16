@@ -84,7 +84,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
       setLoading(true);
       setError("");
       try {
-        const data = await appApiFetch<SimData>("/sim-data");
+        const data = await appApiFetch<SimData>(`/sim-data?v=${Date.now()}`);
         if (!active) return;
         setSimData(data);
         if (!getCachedSimResults(cacheKey) && !autoRanRef.current) {
