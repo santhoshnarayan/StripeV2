@@ -383,24 +383,36 @@ export function computeMarginalValuesWithDraftSim(
     });
   }
 
-  // Proportional bid allocation
+  // Bid allocation: distribute budget across top-N candidates (N = remaining slots).
+  // Players ranked by marginal win probability get budget proportional to their
+  // marginal relative to the replacement-level player (the N+1th best).
   const viewerBudget = managerBudgets[viewerManagerIndex];
-  const freeBudget = Math.max(
-    0,
-    viewerBudget.remainingBudget - (viewerBudget.remainingRosterSlots - 1) * minBid,
-  );
-  const perSlotBudget = viewerBudget.remainingRosterSlots > 0
-    ? viewerBudget.remainingBudget / viewerBudget.remainingRosterSlots
-    : viewerBudget.remainingBudget;
-  const totalPositiveMarginal = results.reduce(
-    (sum, r) => sum + Math.max(0, r.marginalWinProb),
-    0,
-  );
+  const slots = viewerBudget.remainingRosterSlots;
+  const budget = viewerBudget.remainingBudget;
+  const freeBudget = Math.max(0, budget - (slots - 1) * minBid);
+
+  // Sort by marginal descending for ranking
+  const ranked = [...results].sort((a, b) => b.marginalWinProb - a.marginalWinProb);
+  // Replacement level = the (slots+1)th player's marginal, or 0 if not enough
+  const replacementMarginal = ranked.length > slots
+    ? Math.max(0, ranked[slots]?.marginalWinProb ?? 0)
+    : 0;
+
+  // Compute value above replacement for each player
+  const valuesAboveReplacement = new Map<string, number>();
+  let totalVAR = 0;
+  for (const r of results) {
+    const var_ = Math.max(0, r.marginalWinProb - replacementMarginal);
+    valuesAboveReplacement.set(r.espnId, var_);
+    totalVAR += var_;
+  }
 
   for (const r of results) {
-    if (totalPositiveMarginal > 0 && r.marginalWinProb > 0) {
-      const share = r.marginalWinProb / totalPositiveMarginal;
-      const rawBid = share * perSlotBudget * viewerBudget.remainingRosterSlots;
+    const var_ = valuesAboveReplacement.get(r.espnId) ?? 0;
+    if (totalVAR > 0 && var_ > 0) {
+      // Allocate total budget proportionally to value above replacement
+      const share = var_ / totalVAR;
+      const rawBid = share * budget;
       r.suggestedBid = Math.max(
         minBid,
         Math.min(freeBudget, Math.round(rawBid)),
