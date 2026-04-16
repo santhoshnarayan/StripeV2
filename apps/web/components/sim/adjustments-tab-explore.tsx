@@ -54,12 +54,14 @@ interface Props {
   onResetAdjustments: () => void;
 }
 
-const TEAM_ORDER = [
-  ...WEST_SEEDS.map(([s, t]) => ({ seed: s, team: t, conf: "West" })),
-  ...WEST_PLAYIN.map(([s, t]) => ({ seed: s, team: t, conf: "West Play-In" })),
-  ...EAST_SEEDS.map(([s, t]) => ({ seed: s, team: t, conf: "East" })),
-  ...EAST_PLAYIN.map(([s, t]) => ({ seed: s, team: t, conf: "East Play-In" })),
-];
+function getTeamOrder() {
+  return [
+    ...WEST_SEEDS.map(([s, t]) => ({ seed: s, team: t, conf: "West" })),
+    ...WEST_PLAYIN.map(([s, t]) => ({ seed: s, team: t, conf: "West Play-In" })),
+    ...EAST_SEEDS.map(([s, t]) => ({ seed: s, team: t, conf: "East" })),
+    ...EAST_PLAYIN.map(([s, t]) => ({ seed: s, team: t, conf: "East Play-In" })),
+  ];
+}
 
 /* ── Stepper for the modal ── */
 function Stepper({
@@ -467,7 +469,7 @@ export function AdjustmentsTab({
       dLeb: number;
       leb: number;
     }[] = [];
-    for (const { team } of TEAM_ORDER) {
+    for (const { team } of getTeamOrder()) {
       const players = teamPlayers[team];
       if (!players) continue;
       const pm = playoffMinutes[team] ?? {};
@@ -951,7 +953,7 @@ export function AdjustmentsTab({
       {/* Quick nav + toggle */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex gap-1 flex-wrap">
-          {TEAM_ORDER.map(({ team }) => {
+          {getTeamOrder().map(({ team }) => {
             if (!teamPlayers[team]) return null;
             return (
               <button
@@ -976,7 +978,7 @@ export function AdjustmentsTab({
       </div>
 
       {/* Team sections */}
-      {TEAM_ORDER.map(({ seed, team, conf }) => {
+      {getTeamOrder().map(({ seed, team, conf }) => {
         const players = teamPlayers[team];
         if (!players) return null;
         const isCollapsed = collapsedTeams.has(team);
