@@ -495,10 +495,9 @@ export function computeMarginalValuesWithDraftSim(
   }
 
   // ── Step 5: Bid allocation ──────────────────────────────────────────
-  // Use value-above-replacement (VARP) with demand-adjusted premiums.
-  // 1. Rank by marginal, find replacement level (slots+1 th best)
-  // 2. Allocate budget proportionally to value above replacement
-  // 3. Boost bids for high-demand players (many opponents want them)
+  // Scale bids proportionally to marginal win probability.
+  // The top player gets up to freeBudget, others scale linearly.
+  // This avoids the VARP cliff where players just below a cutoff get $1.
   const viewerBudget = managerBudgets[viewerManagerIndex];
   const viewerSlots = viewerBudget.remainingRosterSlots;
   const budget = viewerBudget.remainingBudget;
@@ -506,29 +505,17 @@ export function computeMarginalValuesWithDraftSim(
   const perSlotBudget = viewerSlots > 0 ? budget / viewerSlots : budget;
 
   const ranked = [...results].sort((a, b) => b.marginalWinProb - a.marginalWinProb);
-  const replacementMarginal = ranked.length > viewerSlots
-    ? Math.max(0, ranked[viewerSlots]?.marginalWinProb ?? 0)
-    : 0;
-
-  // Only players above replacement share the budget
-  let totalVAR = 0;
-  const varMap = new Map<string, number>();
-  for (const r of results) {
-    const v = Math.max(0, r.marginalWinProb - replacementMarginal);
-    varMap.set(r.espnId, v);
-    totalVAR += v;
-  }
+  const topMarginal = ranked[0]?.marginalWinProb ?? 0;
 
   for (const r of results) {
-    const v = varMap.get(r.espnId) ?? 0;
-    if (totalVAR > 0 && v > 0) {
-      // Base bid from VARP share of budget
-      const share = v / totalVAR;
-      let rawBid = share * budget;
+    if (topMarginal > 0 && r.marginalWinProb > 0) {
+      // Linear scale: bid proportional to marginal relative to best player
+      const ratio = r.marginalWinProb / topMarginal;
+      let rawBid = ratio * perSlotBudget;
 
-      // Demand premium: if multiple opponents want this player, bid more aggressively
+      // Demand premium: if multiple opponents want this player, bid more
       const demand = opponentDemand.get(r.espnId) ?? 0;
-      const demandMultiplier = 1 + demand * 0.15; // +15% per competing manager
+      const demandMultiplier = 1 + demand * 0.15;
       rawBid *= demandMultiplier;
 
       r.suggestedBid = Math.max(
@@ -845,77 +832,80 @@ export function computeEquilibriumBids(
     return bids;
   }
 
-  // ── Iterate: one shared batch of auctions → all teams learn → repeat ─
-  const pidToIdx = new Map(availablePlayerIds.map((id, i) => [id, i]));
+  // ── Check if teams are asymmetric (different rosters, budgets, or slots) ─
+  // If all teams are identical, the initial projection-based bids ARE the
+  // equilibrium — no need to iterate. Only optimize when teams differ.
+  const teamsAreSymmetric = (() => {
+    const b0 = managerBudgets[0];
+    const r0 = rosters[0].playerIds.length;
+    return managerBudgets.every((b) =>
+      b.remainingBudget === b0.remainingBudget &&
+      b.remainingRosterSlots === b0.remainingRosterSlots,
+    ) && rosters.every((r) => r.playerIds.length === r0);
+  })();
 
-  for (let iter = 0; iter < iterations; iter++) {
-    const noiseLevel = Math.max(1, 5 - iter); // decrease noise as we converge
+  if (!teamsAreSymmetric) {
+    // ── Iterate: one shared batch of auctions → all teams learn → repeat ─
+    const pidToIdx = new Map(availablePlayerIds.map((id, i) => [id, i]));
 
-    // Step 1: Run ONE shared batch of auctions — all teams observe the same outcomes
-    const playerWinCounts: number[][] = Array.from(
-      { length: nManagers },
-      () => new Array(nPlayers).fill(0),
-    );
+    for (let iter = 0; iter < iterations; iter++) {
+      const noiseLevel = Math.max(1, 5 - iter);
 
-    for (let a = 0; a < auctionsPerIteration; a++) {
-      const drafted = simulateAuction(
-        availablePlayerIds, bidMatrix,
-        managerBudgets.map((b) => b.remainingBudget),
-        managerBudgets.map((b) => b.remainingRosterSlots),
-        minBid, noiseLevel,
+      // Step 1: Run ONE shared batch of auctions — all teams observe the same outcomes
+      const playerWinCounts: number[][] = Array.from(
+        { length: nManagers },
+        () => new Array(nPlayers).fill(0),
       );
-      for (let m = 0; m < nManagers; m++) {
-        for (const id of drafted[m]) {
-          const pi = pidToIdx.get(id);
-          if (pi != null) playerWinCounts[m][pi]++;
+
+      for (let a = 0; a < auctionsPerIteration; a++) {
+        const drafted = simulateAuction(
+          availablePlayerIds, bidMatrix,
+          managerBudgets.map((b) => b.remainingBudget),
+          managerBudgets.map((b) => b.remainingRosterSlots),
+          minBid, noiseLevel,
+        );
+        for (let m = 0; m < nManagers; m++) {
+          for (const id of drafted[m]) {
+            const pi = pidToIdx.get(id);
+            if (pi != null) playerWinCounts[m][pi]++;
+          }
         }
       }
-    }
 
-    // Step 2: Build expected rosters for ALL managers from auction outcomes
-    // (one shared view — every team sees what typically happens)
-    const expectedDraftIds: string[][] = [];
-    const expectedTotals: Float64Array[] = [];
+      // Step 2: Build expected rosters from auction outcomes
+      const expectedTotals: Float64Array[] = [];
 
-    for (let m = 0; m < nManagers; m++) {
-      const info = managerBudgets[m];
-      const winRates = playerWinCounts[m]
-        .map((count, pi) => ({ pi, rate: count / auctionsPerIteration }))
-        .sort((a, b) => b.rate - a.rate);
-      const draft = winRates
-        .slice(0, info.remainingRosterSlots)
-        .filter((w) => w.rate > 0.05)
-        .map((w) => availablePlayerIds[w.pi]);
-      expectedDraftIds.push(draft);
+      for (let m = 0; m < nManagers; m++) {
+        const info = managerBudgets[m];
+        const winRates = playerWinCounts[m]
+          .map((count, pi) => ({ pi, rate: count / auctionsPerIteration }))
+          .sort((a, b) => b.rate - a.rate);
+        const draft = winRates
+          .slice(0, info.remainingRosterSlots)
+          .filter((w) => w.rate > 0.05)
+          .map((w) => availablePlayerIds[w.pi]);
 
-      const fullIds = [...rosters[m].playerIds, ...draft];
-      expectedTotals.push(rosterSimTotals(simMatrix, playerIndex, fullIds, numSims, numPlayers));
-    }
-
-    // Step 3: ALL teams simultaneously recompute their optimal bids
-    // Each team sees the same expected landscape and re-optimizes
-    for (let m = 0; m < nManagers; m++) {
-      if (managerBudgets[m].remainingRosterSlots <= 0) continue;
-
-      // Candidates: players this team previously bid on OR won in the batch
-      // (limit to ~top 30 for speed — skip players this team has no interest in)
-      const candidateSet = new Set<number>();
-      for (let p = 0; p < nPlayers; p++) {
-        if (bidMatrix[m][p] > 0 || playerWinCounts[m][p] > 0) candidateSet.add(p);
+        const fullIds = [...rosters[m].playerIds, ...draft];
+        expectedTotals.push(rosterSimTotals(simMatrix, playerIndex, fullIds, numSims, numPlayers));
       }
-      // Always include top projected players in case team should pivot
-      const topByProj = [...availablePlayerIds]
-        .map((_, i) => i)
-        .sort((a, b) => {
-          const pa = projByEspnId.get(availablePlayerIds[a])?.projectedPoints ?? 0;
-          const pb = projByEspnId.get(availablePlayerIds[b])?.projectedPoints ?? 0;
-          return pb - pa;
-        })
-        .slice(0, 25);
-      for (const p of topByProj) candidateSet.add(p);
 
-      const candidates = [...candidateSet];
-      bidMatrix[m] = recomputeVARPBids(m, candidates, expectedTotals[m], expectedTotals);
+      // Step 3: Only teams with unique situations recompute
+      for (let m = 0; m < nManagers; m++) {
+        if (managerBudgets[m].remainingRosterSlots <= 0) continue;
+
+        const candidateSet = new Set<number>();
+        for (let p = 0; p < nPlayers; p++) {
+          if (bidMatrix[m][p] > 0 || playerWinCounts[m][p] > 0) candidateSet.add(p);
+        }
+        const topByProj = allByProj.slice(0, 25).map((x) => {
+          const idx = availablePlayerIds.indexOf(x.id);
+          return idx;
+        }).filter((i) => i >= 0);
+        for (const p of topByProj) candidateSet.add(p);
+
+        const candidates = [...candidateSet];
+        bidMatrix[m] = recomputeVARPBids(m, candidates, expectedTotals[m], expectedTotals);
+      }
     }
   }
 
