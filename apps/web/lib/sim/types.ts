@@ -13,6 +13,7 @@ export interface SimPlayer {
   o_lebron: number;
   d_lebron: number;
   war: number;
+  autofill?: boolean;
 }
 
 export interface PlayerAdjustment {
@@ -22,6 +23,9 @@ export interface PlayerAdjustment {
   o_lebron_delta: number;
   d_lebron_delta: number;
   minutes_override: number | null;
+  /** Per-game availability probabilities: 30 values [P1, P2, R1G1..G7, R2G1..G7, CFG1..G7, FG1..G7].
+   *  Default: all 1.0 (fully available). */
+  availability: number[];
 }
 
 export interface InjuryEntry {

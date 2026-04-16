@@ -224,6 +224,7 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                   o_lebron_delta: 0,
                   d_lebron_delta: 0,
                   minutes_override: null,
+                  availability: new Array(30).fill(1),
                   [field]: value,
                 },
               ];
