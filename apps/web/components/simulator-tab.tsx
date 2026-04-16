@@ -23,6 +23,7 @@ import {
   type SimConfig,
   type SimData,
   type SimResults,
+  type MarginalValue,
 } from "@/lib/sim";
 
 import {
@@ -254,33 +255,47 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
   }, [simResults, rosterInputs, leagueData]);
 
   // Marginal values (bid advisor)
-  const marginalValues = useMemo(() => {
-    if (!simResults || !rosterInputs.length || !leagueData) return null;
-    const viewer = leagueData.members.find((m) => m.userId === leagueData.viewerUserId);
-    if (!viewer) return null;
-    const availableIds = leagueData.availablePlayers.map((p) => p.id);
-    // Budget infos must be in the same order as rosterInputs
-    const memberMap = new Map(leagueData.members.map((m) => [m.userId, m]));
-    const budgetInfos: ManagerBudgetInfo[] = rosterInputs.map((r) => {
-      const m = memberMap.get(r.userId);
-      return {
-        userId: r.userId,
-        remainingBudget: m?.remainingBudget ?? leagueData.league.budgetPerTeam,
-        remainingRosterSlots: m?.remainingRosterSlots ?? leagueData.league.rosterSize,
-      };
-    });
-    const sugValues = new Map(leagueData.availablePlayers.map((p) => [p.id, p.suggestedValue]));
-    return computeMarginalValuesWithDraftSim(
-      simResults,
-      rosterInputs,
-      viewerIndex >= 0 ? viewerIndex : 0,
-      availableIds,
-      budgetInfos,
-      leagueData.league.minBid,
-      leagueData.league.rosterSize,
-      sugValues,
-    );
-  }, [simResults, rosterInputs, leagueData, viewerIndex]);
+  // Advisor is computed lazily — only when the user opens the tab
+  const [marginalValues, setMarginalValues] = useState<MarginalValue[] | null>(null);
+  const [advisorComputing, setAdvisorComputing] = useState(false);
+  // Reset advisor when sim results change
+  const simResultsRef = useRef(simResults);
+  if (simResults !== simResultsRef.current) {
+    simResultsRef.current = simResults;
+    setMarginalValues(null);
+  }
+
+  const computeAdvisor = useCallback(() => {
+    if (!simResults || !rosterInputs.length || !leagueData || advisorComputing) return;
+    setAdvisorComputing(true);
+    setTimeout(() => {
+      const viewer = leagueData.members.find((m) => m.userId === leagueData.viewerUserId);
+      if (!viewer) { setAdvisorComputing(false); return; }
+      const availableIds = leagueData.availablePlayers.map((p) => p.id);
+      const memberMap = new Map(leagueData.members.map((m) => [m.userId, m]));
+      const budgetInfos: ManagerBudgetInfo[] = rosterInputs.map((r) => {
+        const m = memberMap.get(r.userId);
+        return {
+          userId: r.userId,
+          remainingBudget: m?.remainingBudget ?? leagueData.league.budgetPerTeam,
+          remainingRosterSlots: m?.remainingRosterSlots ?? leagueData.league.rosterSize,
+        };
+      });
+      const sugValues = new Map(leagueData.availablePlayers.map((p) => [p.id, p.suggestedValue]));
+      const result = computeMarginalValuesWithDraftSim(
+        simResults,
+        rosterInputs,
+        viewerIndex >= 0 ? viewerIndex : 0,
+        availableIds,
+        budgetInfos,
+        leagueData.league.minBid,
+        leagueData.league.rosterSize,
+        sugValues,
+      );
+      setMarginalValues(result);
+      setAdvisorComputing(false);
+    }, 0);
+  }, [simResults, rosterInputs, leagueData, viewerIndex, advisorComputing]);
 
   // Equilibrium bid simulation (computed lazily when advisor tab is opened)
   const [equilibrium, setEquilibrium] = useState<EquilibriumResult | null>(null);
@@ -808,14 +823,26 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
       ) : null}
 
       {/* Bid Advisor */}
-      {subTab === "advisor" && marginalValues ? (
+      {subTab === "advisor" && simResults && leagueData ? (
         <Card>
           <CardHeader>
-            <CardTitle>Bid Advisor</CardTitle>
-            <CardDescription>
-              Marginal win probability if you draft each remaining player. Higher delta = more valuable to your roster.
-            </CardDescription>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <CardTitle>Bid Advisor</CardTitle>
+                <CardDescription>
+                  Simulates 2K full drafts to measure how much each player improves your win probability.
+                </CardDescription>
+              </div>
+              <Button
+                onClick={computeAdvisor}
+                disabled={advisorComputing}
+                size="sm"
+              >
+                {advisorComputing ? "Computing..." : marginalValues ? "Recompute" : "Compute Advisor"}
+              </Button>
+            </div>
           </CardHeader>
+          {marginalValues ? (
           <CardContent>
             <div className="overflow-x-auto rounded-xl border border-border/80">
               <table className="w-full text-left text-sm">
@@ -872,6 +899,13 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
               </table>
             </div>
           </CardContent>
+          ) : !advisorComputing ? (
+            <CardContent>
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                Click &quot;Compute Advisor&quot; to run 2K draft simulations and find optimal bids.
+              </p>
+            </CardContent>
+          ) : null}
         </Card>
       ) : subTab === "advisor" && !simResults ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
