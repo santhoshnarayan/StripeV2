@@ -613,6 +613,31 @@ export async function runTournamentSim(
     const divisor = teamPlayoffSims[p.team] ?? n;
     if (divisor <= 0) continue;
 
+    const meanPts = pts.reduce((s, pt) => s + pt, 0) / divisor;
+
+    // Compute stddev, p10, p90 from sim matrix
+    const col = playerIndex.get(espnId);
+    let stddev = 0;
+    let p10 = 0;
+    let p90 = 0;
+    if (col != null) {
+      const vals = new Float64Array(n);
+      for (let sim = 0; sim < n; sim++) {
+        vals[sim] = simMatrix[sim * numPlayers + col];
+      }
+      // Stddev
+      let sumSq = 0;
+      for (let sim = 0; sim < n; sim++) {
+        const diff = vals[sim] - meanPts;
+        sumSq += diff * diff;
+      }
+      stddev = Math.sqrt(sumSq / n);
+      // Percentiles
+      const sorted = Float64Array.from(vals).sort();
+      p10 = sorted[Math.floor(0.1 * n)];
+      p90 = sorted[Math.floor(0.9 * n)];
+    }
+
     players.push({
       espnId,
       name: p.name,
@@ -620,9 +645,12 @@ export async function runTournamentSim(
       ppg: p.ppg,
       mpg: p.mpg,
       projectedGames: games.reduce((s, g) => s + g, 0) / divisor,
-      projectedPoints: pts.reduce((s, pt) => s + pt, 0) / divisor,
+      projectedPoints: meanPts,
       projectedPointsByRound: pts.map((pt) => pt / divisor),
       projectedGamesByRound: games.map((g) => g / divisor),
+      stddev,
+      p10,
+      p90,
     });
   }
 

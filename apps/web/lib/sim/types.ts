@@ -106,6 +106,9 @@ export interface PlayerProjection {
   projectedGames: number;
   projectedPointsByRound: number[];  // [R1, R2, CF, Finals]
   projectedGamesByRound: number[];
+  stddev: number;
+  p10: number;
+  p90: number;
 }
 
 export interface SimResults {

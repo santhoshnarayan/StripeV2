@@ -64,11 +64,13 @@ function MatchupBox({
   lower,
   fullNames,
   simResults,
+  round = "r1",
 }: {
   higher: { seed: number; team: string };
   lower: { seed: number; team: string };
   fullNames: Record<string, string>;
   simResults?: SimResults | null;
+  round?: "r1" | "r2" | "cf" | "finals";
 }) {
   const hAdv = simResults?.teams.find((t) => t.team === higher.team);
   const lAdv = simResults?.teams.find((t) => t.team === lower.team);
@@ -81,14 +83,14 @@ function MatchupBox({
         seed={higher.seed}
         team={higher.team}
         fullNames={fullNames}
-        advPct={hAdv?.r1}
+        advPct={hAdv?.[round]}
       />
       <div className="border-t border-border" />
       <CompetitorRow
         seed={lower.seed}
         team={lower.team}
         fullNames={fullNames}
-        advPct={lAdv?.r1}
+        advPct={lAdv?.[round]}
       />
     </div>
   );
@@ -272,27 +274,39 @@ function ConferenceBracket({
   const seed8: [number, string] = [8, "Play-In"];
 
   const r1 = [
-    { higher: seeds[0], lower: seed8 },
-    { higher: seeds[3], lower: seeds[4] },
-    { higher: seeds[2], lower: seeds[5] },
-    { higher: seeds[1], lower: seed7 },
+    { higher: seeds[0], lower: seed8 },      // 1v8
+    { higher: seeds[3], lower: seeds[4] },    // 4v5
+    { higher: seeds[2], lower: seeds[5] },    // 3v6
+    { higher: seeds[1], lower: seed7 },       // 2v7
   ];
 
+  // Flow-through: pick the team with higher advancement probability for later rounds
+  function pickWinner(a: [number, string], b: [number, string], round: "r1" | "r2" | "cf"): [number, string] {
+    if (!simResults) return [0, "TBD"];
+    const aTeam = simResults.teams.find((t) => t.team === a[1]);
+    const bTeam = simResults.teams.find((t) => t.team === b[1]);
+    const aVal = aTeam?.[round] ?? 0;
+    const bVal = bTeam?.[round] ?? 0;
+    if (aVal === 0 && bVal === 0) return [0, "TBD"];
+    return aVal >= bVal ? a : b;
+  }
+
   const r2 = [
-    { higher: [0, "TBD"] as [number, string], lower: [0, "TBD"] as [number, string] },
-    { higher: [0, "TBD"] as [number, string], lower: [0, "TBD"] as [number, string] },
+    { higher: pickWinner(r1[0].higher, r1[0].lower, "r2"), lower: pickWinner(r1[1].higher, r1[1].lower, "r2") },
+    { higher: pickWinner(r1[2].higher, r1[2].lower, "r2"), lower: pickWinner(r1[3].higher, r1[3].lower, "r2") },
   ];
 
   const cf = [
-    { higher: [0, "TBD"] as [number, string], lower: [0, "TBD"] as [number, string] },
+    { higher: pickWinner(r2[0].higher, r2[0].lower, "cf"), lower: pickWinner(r2[1].higher, r2[1].lower, "cf") },
   ];
 
   const totalH = r1.length * SLOT_H;
 
+  const roundKeys: ("r1" | "r2" | "cf")[] = ["r1", "r2", "cf"];
   const rounds = [
-    { matchups: r1, slotH: SLOT_H },
-    { matchups: r2, slotH: SLOT_H * 2 },
-    { matchups: cf, slotH: SLOT_H * 4 },
+    { matchups: r1, slotH: SLOT_H, round: "r1" as const },
+    { matchups: r2, slotH: SLOT_H * 2, round: "r2" as const },
+    { matchups: cf, slotH: SLOT_H * 4, round: "cf" as const },
   ];
 
   const content = rounds.map((round, ri) => {
@@ -313,6 +327,7 @@ function ConferenceBracket({
               lower={{ seed: m.lower[0], team: m.lower[1] }}
               fullNames={fullNames}
               simResults={simResults}
+              round={round.round}
             />
           </div>
         ))}
@@ -364,6 +379,16 @@ export function BracketView({
   const fullNames = simData.bracket.teamFullNames;
   const champion = simResults?.teams[0];
 
+  // Most likely finalists from each conference
+  const westTeams = new Set(simData.bracket.westSeeds.map(([, t]) => t));
+  const eastTeams = new Set(simData.bracket.eastSeeds.map(([, t]) => t));
+  const westFinalist = simResults?.teams
+    .filter((t) => westTeams.has(t.team))
+    .sort((a, b) => b.finals - a.finals)[0] ?? null;
+  const eastFinalist = simResults?.teams
+    .filter((t) => eastTeams.has(t.team))
+    .sort((a, b) => b.finals - a.finals)[0] ?? null;
+
   return (
     <div className="space-y-8">
       <div>
@@ -391,10 +416,11 @@ export function BracketView({
                 Finals
               </div>
               <MatchupBox
-                higher={{ seed: 0, team: "TBD" }}
-                lower={{ seed: 0, team: "TBD" }}
+                higher={{ seed: 0, team: westFinalist?.team ?? "TBD" }}
+                lower={{ seed: 0, team: eastFinalist?.team ?? "TBD" }}
                 fullNames={fullNames}
                 simResults={simResults}
+                round="finals"
               />
               <div className="mt-3 text-center">
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">

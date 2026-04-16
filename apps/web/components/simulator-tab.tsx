@@ -414,11 +414,17 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                     <th className="px-3 py-2 text-right font-medium">R2%</th>
                     <th className="px-3 py-2 text-right font-medium">CF%</th>
                     <th className="px-3 py-2 text-right font-medium">Finals%</th>
-                    <th className="px-3 py-2 text-right font-medium">Champ%</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {simResults.teams.map((team) => (
+                  {[...simResults.teams]
+                    .sort((a, b) =>
+                      b.finals - a.finals
+                      || b.cf - a.cf
+                      || b.r2 - a.r2
+                      || b.r1 - a.r1
+                    )
+                    .map((team) => (
                     <tr key={team.team} className="border-t border-border/60">
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-2">
@@ -440,8 +446,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                       <PctCell value={team.r1} />
                       <PctCell value={team.r2} />
                       <PctCell value={team.cf} />
-                      <PctCell value={team.finals} />
-                      <PctCell value={team.champ} bold />
+                      <PctCell value={team.finals} bold />
                     </tr>
                   ))}
                 </tbody>
@@ -483,6 +488,9 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                     {simResults ? (
                       <>
                         <th className="px-3 py-2 text-right font-medium">Proj Pts</th>
+                        <th className="px-3 py-2 text-right font-medium">σ</th>
+                        <th className="px-3 py-2 text-right font-medium">p10</th>
+                        <th className="px-3 py-2 text-right font-medium">p90</th>
                         <th className="px-3 py-2 text-right font-medium">Proj GP</th>
                         <th className="px-3 py-2 text-right font-medium">R1 Pts</th>
                         <th className="px-3 py-2 text-right font-medium">R1 GP</th>
@@ -548,6 +556,15 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                               {proj.projectedPoints.toFixed(0)}
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {proj.stddev.toFixed(0)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {proj.p10.toFixed(0)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {proj.p90.toFixed(0)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
                               {proj.projectedGames.toFixed(1)}
                             </td>
                             {proj.projectedPointsByRound.map((pts, ri) => (
@@ -566,7 +583,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                             ))}
                           </>
                         ) : simResults ? (
-                          <td colSpan={10} className="px-3 py-2 text-muted-foreground/50">
+                          <td colSpan={13} className="px-3 py-2 text-muted-foreground/50">
                             —
                           </td>
                         ) : null}
@@ -665,6 +682,58 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
                         <span className="w-14 text-right text-sm tabular-nums font-medium">
                           {(mp.winProbability * 100).toFixed(1)}%
                         </span>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+
+            {/* Per-manager roster breakdown */}
+            {leagueData && (
+              <div className="mt-6 grid gap-4 lg:grid-cols-2">
+                {[...managerProjections]
+                  .sort((a, b) => b.winProbability - a.winProbability)
+                  .map((mp) => {
+                    const roster = leagueData.rosters.find((r) => r.userId === mp.userId);
+                    const isViewer = mp.userId === leagueData.viewerUserId;
+                    const member = leagueData.members.find((m) => m.userId === mp.userId);
+                    if (!roster) return null;
+                    return (
+                      <div
+                        key={mp.userId}
+                        className={`rounded-xl border px-4 py-3 ${isViewer ? "border-amber-400/50 bg-amber-50/30 dark:bg-amber-900/10" : "border-border/80"}`}
+                      >
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                          <div>
+                            <p className="font-medium text-foreground text-sm">
+                              {mp.name}{isViewer ? " (you)" : ""}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {(mp.winProbability * 100).toFixed(1)}% win · {mp.mean.toFixed(0)} avg pts · ${member?.remainingBudget ?? 0} left
+                            </p>
+                          </div>
+                          <p className="text-xs text-muted-foreground">{roster.players.length} players</p>
+                        </div>
+                        <div className="space-y-1.5">
+                          {roster.players
+                            .slice()
+                            .sort((a, b) => b.totalPoints - a.totalPoints)
+                            .map((p) => {
+                              const proj = simResults?.players.find((sp) => sp.espnId === p.playerId);
+                              return (
+                                <div key={p.playerId} className="flex items-center gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5 text-sm">
+                                  <PlayerAvatar espnId={p.playerId} team={p.playerTeam} size={24} />
+                                  <span className="font-medium text-foreground flex-1 truncate">{p.playerName}</span>
+                                  <span className="text-xs text-muted-foreground tabular-nums">
+                                    {proj ? `${proj.projectedPoints.toFixed(0)} pts` : `${p.totalPoints} pts`}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          {roster.players.length === 0 && (
+                            <p className="text-xs text-muted-foreground py-2">No drafted players yet.</p>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
