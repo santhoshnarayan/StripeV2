@@ -20,8 +20,6 @@ import {
   type SimConfig,
   type SimData,
   type SimResults,
-  type TeamSimResult,
-  type PlayerProjection,
 } from "@/lib/sim";
 
 type SimSubTab = "players" | "teams" | "bracket" | "adjustments";
@@ -32,21 +30,22 @@ interface SimulatorTabProps {
 }
 
 export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
+  const cacheKey = `league:${leagueId}`;
   const [simData, setSimData] = useState<SimData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [simResults, setSimResults] = useState<SimResults | null>(null);
+  const [simResults, setSimResults] = useState<SimResults | null>(
+    () => getCachedSimResults(cacheKey),
+  );
   const [simulating, setSimulating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [subTab, setSubTab] = useState<SimSubTab>("players");
   const [config, setConfig] = useState<SimConfig>(DEFAULT_SIM_CONFIG);
+  const autoRanRef = useRef(false);
 
-  // Mutable copy of adjustments so users can edit them before re-running
   const [localAdjustments, setLocalAdjustments] = useState<
     import("@/lib/sim").PlayerAdjustment[] | null
   >(null);
-
-  // Initialize local adjustments from simData once loaded
   const adjustments = localAdjustments ?? simData?.adjustments ?? [];
 
   const playerRatingLookup = useMemo(() => {
@@ -54,6 +53,31 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
     return new Map(simData.simPlayers.map((p) => [p.espn_id, p]));
   }, [simData]);
 
+  // Core sim runner — used by auto-run and manual button
+  const doRunSim = useCallback(
+    async (data: SimData, cfg: SimConfig, adjs: typeof adjustments) => {
+      setSimulating(true);
+      setProgress(0);
+      await new Promise((r) => setTimeout(r, 0));
+      try {
+        const results = await runTournamentSim(
+          { ...data, adjustments: adjs },
+          cfg,
+          (p) => setProgress(p),
+        );
+        setSimResults(results);
+        setCachedSimResults(cacheKey, results);
+      } catch (simError) {
+        setError(simError instanceof Error ? simError.message : "Simulation failed");
+      } finally {
+        setSimulating(false);
+        setProgress(1);
+      }
+    },
+    [cacheKey],
+  );
+
+  // Fetch sim data + auto-run if no cached results
   useEffect(() => {
     let active = true;
     async function load() {
@@ -61,7 +85,12 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
       setError("");
       try {
         const data = await appApiFetch<SimData>("/sim-data");
-        if (active) setSimData(data);
+        if (!active) return;
+        setSimData(data);
+        if (!getCachedSimResults(cacheKey) && !autoRanRef.current) {
+          autoRanRef.current = true;
+          void doRunSim(data, DEFAULT_SIM_CONFIG, data.adjustments ?? []);
+        }
       } catch (loadError) {
         if (active) {
           setError(
@@ -75,46 +104,19 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
       }
     }
     void load();
-    return () => {
-      active = false;
-    };
-  }, []);
+    return () => { active = false; };
+  }, [cacheKey, doRunSim]);
 
   const handleRunSim = useCallback(async () => {
     if (!simData) return;
-    setSimulating(true);
-    setProgress(0);
+    await doRunSim(simData, config, adjustments);
+  }, [simData, config, adjustments, doRunSim]);
 
-    // Yield to the browser before starting so the UI updates
-    await new Promise((r) => setTimeout(r, 0));
-
-    try {
-      // Merge local adjustment edits into the sim data for this run
-      const simDataWithEdits = {
-        ...simData,
-        adjustments,
-      };
-      const results = await runTournamentSim(simDataWithEdits, config, (p) => {
-        setProgress(p);
-      });
-      setSimResults(results);
-    } catch (simError) {
-      setError(
-        simError instanceof Error ? simError.message : "Simulation failed",
-      );
-    } finally {
-      setSimulating(false);
-      setProgress(1);
-    }
-  }, [simData, config]);
-
-  if (loading) {
+  if (loading && !simResults) {
     return (
-      <Card>
-        <CardContent className="py-12 text-center text-sm text-muted-foreground">
-          Loading simulation data...
-        </CardContent>
-      </Card>
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        Loading simulation data...
+      </div>
     );
   }
 
@@ -138,106 +140,57 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
     { id: "players", label: "Players" },
     { id: "teams", label: "Teams" },
     { id: "bracket", label: "Bracket" },
-    { id: "adjustments", label: "Adjustments & Injuries" },
+    { id: "adjustments", label: "Adjustments" },
   ];
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Playoff Simulator</CardTitle>
-            <CardDescription>
-              Monte Carlo simulation of the NBA playoff bracket using team net
-              ratings and Dirichlet-distributed player scoring.
-            </CardDescription>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              className="h-9 appearance-none rounded-lg border border-input bg-background px-3 pr-8 text-sm"
-              value={config.model}
-              onChange={(e) =>
-                setConfig((prev) => ({
-                  ...prev,
-                  model: e.target.value as SimConfig["model"],
-                }))
-              }
+      {/* Single combined row: tabs left, controls right */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-nowrap gap-1 overflow-x-auto">
+          {subTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={[
+                "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                subTab === tab.id
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+              onClick={() => setSubTab(tab.id)}
             >
-              <option value="lebron">Player Ratings (LEBRON)</option>
-              <option value="netrtg">Team Net Rating</option>
-              <option value="blend">Blend (50/50)</option>
-            </select>
-            <Button
-              onClick={() => void handleRunSim()}
-              disabled={simulating}
-              className="shrink-0"
-            >
-              {simulating
-                ? `Simulating... ${Math.round(progress * 100)}%`
-                : simResults
-                  ? `Re-run (${config.sims.toLocaleString()} sims)`
-                  : `Run Simulation (${config.sims.toLocaleString()})`}
-            </Button>
-          </div>
-        </CardHeader>
-        {simResults ? (
-          <CardContent>
-            <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
-              <span>
-                Model:{" "}
-                <span className="font-medium text-foreground">
-                  {config.model === "netrtg"
-                    ? "Net Rating"
-                    : config.model === "lebron"
-                      ? "LEBRON"
-                      : "Blend"}
-                </span>
-              </span>
-              <span>
-                Sims:{" "}
-                <span className="tabular-nums font-medium text-foreground">
-                  {config.sims.toLocaleString()}
-                </span>
-              </span>
-              <span>
-                Stdev:{" "}
-                <span className="tabular-nums font-medium text-foreground">
-                  {config.stdev}
-                </span>
-              </span>
-              <span>
-                HCA:{" "}
-                <span className="tabular-nums font-medium text-foreground">
-                  {config.hca}
-                </span>
-              </span>
-              <span>
-                Players tracked:{" "}
-                <span className="tabular-nums font-medium text-foreground">
-                  {simResults.players.length}
-                </span>
-              </span>
-            </div>
-          </CardContent>
-        ) : null}
-      </Card>
-
-      <div className="flex flex-nowrap gap-1 overflow-x-auto rounded-2xl border border-border/80 bg-background/90 p-2 sm:gap-2">
-        {subTabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={[
-              "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-              subTab === tab.id
-                ? "bg-foreground text-background"
-                : "text-muted-foreground hover:text-foreground",
-            ].join(" ")}
-            onClick={() => setSubTab(tab.id)}
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <select
+            className="h-8 appearance-none rounded-lg border border-input bg-background px-3 pr-8 text-sm"
+            value={config.model}
+            onChange={(e) =>
+              setConfig((prev) => ({
+                ...prev,
+                model: e.target.value as SimConfig["model"],
+              }))
+            }
           >
-            {tab.label}
-          </button>
-        ))}
+            <option value="lebron">Player Ratings (LEBRON)</option>
+            <option value="netrtg">Team Net Rating</option>
+            <option value="blend">Blend (50/50)</option>
+          </select>
+          <Button
+            onClick={() => void handleRunSim()}
+            disabled={simulating}
+            size="sm"
+          >
+            {simulating
+              ? `${Math.round(progress * 100)}%`
+              : simResults
+                ? `Re-run (${(config.sims / 1000).toFixed(0)}K)`
+                : `Run (${(config.sims / 1000).toFixed(0)}K)`}
+          </Button>
+        </div>
       </div>
 
       {subTab === "bracket" ? (
@@ -258,7 +211,6 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                 updated[idx] = { ...updated[idx], [field]: value };
                 return updated;
               }
-              // Find the player in simData to create a new adjustment
               const player = simData.simPlayers.find((p) => p.espn_id === espnId);
               if (!player) return current;
               return [
@@ -337,11 +289,9 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
           </CardContent>
         </Card>
       ) : subTab === "teams" && !simResults ? (
-        <Card>
-          <CardContent className="py-12 text-center text-sm text-muted-foreground">
-            Run a simulation to see team advancement probabilities.
-          </CardContent>
-        </Card>
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          {simulating ? `Running simulation... ${Math.round(progress * 100)}%` : "Run a simulation to see team advancement probabilities."}
+        </div>
       ) : null}
 
       {subTab === "players" ? (
@@ -350,8 +300,10 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
             <CardTitle>Player Ratings{simResults ? " & Projections" : ""}</CardTitle>
             <CardDescription>
               {simResults
-                ? "LEBRON offensive + defensive ratings with simulated fantasy point projections."
-                : "LEBRON offensive + defensive ratings. Run a simulation to see projected fantasy points."}
+                ? "LEBRON ratings with simulated fantasy point projections and per-round breakdown."
+                : simulating
+                  ? `Running simulation... ${Math.round(progress * 100)}%`
+                  : "LEBRON ratings. Run a simulation to see projected fantasy points."}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -371,10 +323,14 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                       <>
                         <th className="px-3 py-2 text-right font-medium">Proj Pts</th>
                         <th className="px-3 py-2 text-right font-medium">Proj GP</th>
-                        <th className="px-3 py-2 text-right font-medium">R1</th>
-                        <th className="px-3 py-2 text-right font-medium">R2</th>
-                        <th className="px-3 py-2 text-right font-medium">CF</th>
-                        <th className="px-3 py-2 text-right font-medium">Finals</th>
+                        <th className="px-3 py-2 text-right font-medium">R1 Pts</th>
+                        <th className="px-3 py-2 text-right font-medium">R1 GP</th>
+                        <th className="px-3 py-2 text-right font-medium">R2 Pts</th>
+                        <th className="px-3 py-2 text-right font-medium">R2 GP</th>
+                        <th className="px-3 py-2 text-right font-medium">CF Pts</th>
+                        <th className="px-3 py-2 text-right font-medium">CF GP</th>
+                        <th className="px-3 py-2 text-right font-medium">F Pts</th>
+                        <th className="px-3 py-2 text-right font-medium">F GP</th>
                       </>
                     ) : null}
                   </tr>
@@ -382,15 +338,13 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                 <tbody>
                   {(simResults
                     ? simResults.players.slice(0, 150)
-                    : simData!.simPlayers
+                    : simData.simPlayers
                         .slice()
                         .sort((a, b) => b.lebron - a.lebron)
                         .slice(0, 150)
                   ).map((player, idx) => {
-                    const raw = playerRatingLookup.get(
-                      "espnId" in player ? player.espnId : (player as any).espn_id,
-                    );
                     const espnId = "espnId" in player ? player.espnId : (player as any).espn_id;
+                    const raw = playerRatingLookup.get(espnId);
                     const proj = simResults?.players.find((p) => p.espnId === espnId);
                     return (
                       <tr
@@ -430,16 +384,24 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                               {proj.projectedGames.toFixed(1)}
                             </td>
                             {proj.projectedPointsByRound.map((pts, ri) => (
-                              <td
-                                key={ri}
-                                className="px-3 py-2 text-right tabular-nums text-muted-foreground"
-                              >
-                                {pts.toFixed(0)}
-                              </td>
+                              <>
+                                <td
+                                  key={`pts-${ri}`}
+                                  className="px-3 py-2 text-right tabular-nums text-muted-foreground"
+                                >
+                                  {pts.toFixed(0)}
+                                </td>
+                                <td
+                                  key={`gp-${ri}`}
+                                  className="px-3 py-2 text-right tabular-nums text-muted-foreground"
+                                >
+                                  {proj.projectedGamesByRound[ri]?.toFixed(1) ?? "—"}
+                                </td>
+                              </>
                             ))}
                           </>
                         ) : simResults ? (
-                          <td colSpan={6} className="px-3 py-2 text-muted-foreground/50">
+                          <td colSpan={10} className="px-3 py-2 text-muted-foreground/50">
                             —
                           </td>
                         ) : null}
@@ -475,9 +437,7 @@ function PctCell({ value, bold }: { value: number; bold?: boolean }) {
         className={[
           "inline-block min-w-[3rem] rounded-md px-1.5 py-0.5",
           bold ? "font-semibold" : "font-normal",
-          value > 0
-            ? "text-foreground"
-            : "text-muted-foreground/50",
+          value > 0 ? "text-foreground" : "text-muted-foreground/50",
         ].join(" ")}
         style={
           value > 0
