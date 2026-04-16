@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -453,20 +453,18 @@ export function SimulatorTab({ leagueId, leagueName }: SimulatorTabProps) {
                               {proj.projectedGames.toFixed(1)}
                             </td>
                             {proj.projectedPointsByRound.map((pts, ri) => (
-                              <>
+                              <React.Fragment key={ri}>
                                 <td
-                                  key={`pts-${ri}`}
                                   className="px-3 py-2 text-right tabular-nums text-muted-foreground"
                                 >
                                   {pts.toFixed(0)}
                                 </td>
                                 <td
-                                  key={`gp-${ri}`}
                                   className="px-3 py-2 text-right tabular-nums text-muted-foreground"
                                 >
                                   {proj.projectedGamesByRound[ri]?.toFixed(1) ?? "—"}
                                 </td>
-                              </>
+                              </React.Fragment>
                             ))}
                           </>
                         ) : simResults ? (
