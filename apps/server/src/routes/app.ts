@@ -627,6 +627,35 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     awardsByRoundId.set(roundId, [...(awardsByRoundId.get(roundId) ?? []), rosterEntryRow]);
   }
 
+  // Replay budget state across resolved rounds to compute max allowed bids.
+  // budgetStateByRound[roundId][rowIndex] = Map<userId, maxAllowed>
+  const budgetReplay = new Map<string, number>(
+    members.map((m) => [m.userId, access.league.budgetPerTeam]),
+  );
+  const slotsReplay = new Map<string, number>(
+    members.map((m) => [m.userId, access.league.rosterSize]),
+  );
+  const maxBidByRoundRow = new Map<string, Map<string, number>>(); // key: `${roundId}:${rowIdx}`
+
+  for (const round of resolvedRounds) {
+    const awardsForReplay = [...(awardsByRoundId.get(round.id) ?? [])].sort(
+      (a, b) => a.acquisitionOrder - b.acquisitionOrder,
+    );
+    for (let ri = 0; ri < awardsForReplay.length; ri++) {
+      const snapshot = new Map<string, number>();
+      for (const [uid, budget] of budgetReplay) {
+        const slots = slotsReplay.get(uid) ?? 0;
+        snapshot.set(uid, slots > 0 ? Math.max(0, budget - (slots - 1) * access.league.minBid) : 0);
+      }
+      maxBidByRoundRow.set(`${round.id}:${ri}`, snapshot);
+      // Deduct this award
+      const award = awardsForReplay[ri];
+      const prevBudget = budgetReplay.get(award.userId) ?? 0;
+      budgetReplay.set(award.userId, prevBudget - award.acquisitionBid);
+      slotsReplay.set(award.userId, (slotsReplay.get(award.userId) ?? 1) - 1);
+    }
+  }
+
   const draftHistory = resolvedRounds.map((round) => {
     const roundSubmissionsForHistory = submissionsByRoundId.get(round.id) ?? [];
     const roundParticipantIds = Array.from(
@@ -679,8 +708,10 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       roundNumber: round.roundNumber,
       resolvedAt: round.resolvedAt,
       participants: roundParticipants,
-      rows: playersForRound.map((player) => {
+      rows: playersForRound.map((player, playerRowIndex) => {
         const award = awardByPlayerId.get(player.id) ?? null;
+        // Max allowed bid per user at this row position
+        const rowMaxBids = maxBidByRoundRow.get(`${round.id}:${playerRowIndex}`);
         const bids = roundParticipants.map((participant) => {
           const submission = submissionByUserId.get(participant.userId);
           const bidAmount = submission
@@ -697,8 +728,13 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
             isAutoDefault: bidAmount?.isAutoDefault ?? false,
           };
         });
-        const rankedBids = [...bids]
-          .filter((bid) => bid.amount !== null)
+        // Filter to only VALID bids for ranking (bid <= max allowed for that user)
+        const validBids = bids.filter((bid) => {
+          if (bid.amount === null || bid.amount <= 0) return false;
+          const maxAllowed = rowMaxBids?.get(bid.userId) ?? Infinity;
+          return bid.amount <= maxAllowed;
+        });
+        const rankedBids = [...validBids]
           .sort((left, right) => {
             if ((right.amount ?? -1) !== (left.amount ?? -1)) {
               return (right.amount ?? -1) - (left.amount ?? -1);
@@ -732,14 +768,19 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
           winningBid: winnerBid,
           runnerUpName: runnerUpNames.length ? runnerUpNames.join(", ") : null,
           runnerUpBid: runnerUpAmount,
-          bids: bids.map((bid) => ({
-            ...bid,
-            isWinningBid: bid.userId === award?.userId && bid.amount !== null,
-            isSecondPlaceBid:
-              bid.userId !== award?.userId &&
-              runnerUpAmount !== null &&
-              bid.amount === runnerUpAmount,
-          })),
+          bids: bids.map((bid) => {
+            const bidMaxAllowed = rowMaxBids?.get(bid.userId) ?? Infinity;
+            const isValid = bid.amount !== null && bid.amount > 0 && bid.amount <= bidMaxAllowed;
+            return {
+              ...bid,
+              isWinningBid: bid.userId === award?.userId && bid.amount !== null,
+              isSecondPlaceBid:
+                isValid &&
+                bid.userId !== award?.userId &&
+                runnerUpAmount !== null &&
+                bid.amount === runnerUpAmount,
+            };
+          }),
         };
       }),
     };
