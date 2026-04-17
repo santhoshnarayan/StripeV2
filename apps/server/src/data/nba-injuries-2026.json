@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "lastUpdated": "2026-04-12",
+    "lastUpdated": "2026-04-17",
     "source": "ESPN/NBA official injury reports, CBS Sports, various sportsbook injury trackers",
     "note": "availability = 30 values: P1, P2, R1G1..G7, R2G1..G7, CFG1..G7, FG1..G7"
   },
@@ -19,14 +19,14 @@
   "Joel Embiid": {
     "team": "PHI",
     "status": "out",
-    "injury": "Emergency appendectomy (Apr 9) — no timeline, comparable cases ~1 month",
-    "availability": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.9, 0.95, 0.95, 1, 1, 1, 1, 1]
+    "injury": "Appendectomy (Apr 9) — out R1, targeting return mid-R2 (~3 weeks post-op)",
+    "availability": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.1, 0.3, 0.5, 0.7, 0.85, 0.9, 0.95, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
   },
   "Devin Booker": {
     "team": "PHX",
-    "status": "out",
-    "injury": "Right ankle sprain (Apr 10) — re-eval in 1 week, may miss play-in",
-    "availability": [0, 0, 0, 0.2, 0.5, 0.7, 0.85, 0.9, 0.95, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    "status": "probable",
+    "injury": "Right ankle — load managed end of season, fully available for playoffs",
+    "availability": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
   },
   "Anthony Edwards": {
     "team": "MIN",
@@ -187,8 +187,8 @@
   "Grayson Allen": {
     "team": "PHX",
     "status": "questionable",
-    "injury": "Left hamstring soreness — day-to-day",
-    "availability": [0.8, 0.8, 0.8, 0.85, 0.9, 0.95, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    "injury": "Left hamstring strain — questionable for play-in, may miss early R1",
+    "availability": [0.5, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
   },
   "Dillon Brooks": {
     "team": "PHX",
