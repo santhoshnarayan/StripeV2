@@ -759,7 +759,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       }]),
     );
 
-    for (const round of data.draftHistory) {
+    // draftHistory is desc by roundNumber — replay in ascending order
+    const historyAsc = [...data.draftHistory].sort((a, b) => a.roundNumber - b.roundNumber);
+    for (const round of historyAsc) {
       for (let ri = 0; ri < round.rows.length; ri++) {
         const row = round.rows[ri];
         // Snapshot max bid for each user BEFORE this row resolves

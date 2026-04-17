@@ -637,10 +637,13 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
   );
   const maxBidByRoundRow = new Map<string, Map<string, number>>(); // key: `${roundId}:${rowIdx}`
 
-  for (const round of resolvedRounds) {
+  // resolvedRounds is desc by roundNumber — replay in ascending order
+  const roundsAsc = [...resolvedRounds].sort((a, b) => a.roundNumber - b.roundNumber);
+  for (const round of roundsAsc) {
     const awardsForReplay = [...(awardsByRoundId.get(round.id) ?? [])].sort(
       (a, b) => a.acquisitionOrder - b.acquisitionOrder,
     );
+
     for (let ri = 0; ri < awardsForReplay.length; ri++) {
       const snapshot = new Map<string, number>();
       for (const [uid, budget] of budgetReplay) {
@@ -648,7 +651,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         snapshot.set(uid, slots > 0 ? Math.max(0, budget - (slots - 1) * access.league.minBid) : 0);
       }
       maxBidByRoundRow.set(`${round.id}:${ri}`, snapshot);
-      // Deduct this award
+      // Deduct this award — winner's budget decreases for subsequent rows
       const award = awardsForReplay[ri];
       const prevBudget = budgetReplay.get(award.userId) ?? 0;
       budgetReplay.set(award.userId, prevBudget - award.acquisitionBid);
