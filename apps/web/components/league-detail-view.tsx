@@ -534,6 +534,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [memberActionId, setMemberActionId] = useState<string | null>(null);
   const [bidValues, setBidValues] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<LeagueTab>("overview");
+  const [showDraftedPlayers, setShowDraftedPlayers] = useState(false);
   const [draftQuery, setDraftQuery] = useState("");
   const [draftConferenceFilter, setDraftConferenceFilter] = useState("all");
   const [draftTeamFilter, setDraftTeamFilter] = useState("all");
@@ -1634,6 +1635,15 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showDraftedPlayers}
+                onChange={(e) => setShowDraftedPlayers(e.target.checked)}
+                className="rounded"
+              />
+              Show drafted players
+            </label>
             <div className="overflow-auto rounded-xl border border-border/80">
               <table className="w-full text-left text-sm">
                 <thead className="bg-muted/60 text-xs tracking-[0.18em] text-muted-foreground uppercase">
@@ -1649,6 +1659,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     <th className="px-3 py-3 text-right font-medium">Value</th>
                     <th className="px-3 py-3 text-right font-medium">Proj. Pts</th>
                     <th className="px-3 py-3 text-right font-medium">Proj. GP</th>
+                    {showDraftedPlayers ? <th className="px-3 py-3 text-left font-medium">Owner</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -1687,8 +1698,31 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
                           {formatNullableNumber(player.totalGames)}
                         </td>
+                        {showDraftedPlayers ? <td className="px-3 py-3 text-muted-foreground/50">—</td> : null}
                       </tr>
                     ),
+                  )}
+                  {showDraftedPlayers && data.rosters.flatMap((roster) =>
+                    roster.players.map((p) => (
+                      <tr key={p.playerId} className="border-t border-border/70 opacity-60">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
+                        <td className="px-3 py-3 font-medium text-foreground">
+                          <div className="flex items-center gap-2">
+                            <PlayerAvatar espnId={p.playerId} team={p.playerTeam} size={28} />
+                            {p.playerName}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">{p.playerTeam}</td>
+                        <td className="px-3 py-3 text-muted-foreground" colSpan={2}>—</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">${p.acquisitionBid}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{p.totalPoints}</td>
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
+                        <td className="px-3 py-3 text-sm text-muted-foreground">{roster.name}</td>
+                      </tr>
+                    )),
                   )}
                 </tbody>
               </table>
