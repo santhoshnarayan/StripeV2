@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export type PlayerPoolEntry = {
   rank: number;
@@ -14,6 +15,11 @@ export type PlayerPoolEntry = {
   suggestedValue: number;
   totalPoints: number | null;
   totalGames: number | null;
+  // Per-round projected points (used for injury discounting)
+  r1Pts: number;
+  r2Pts: number;
+  cfPts: number;
+  finalsPts: number;
 };
 
 const PLAYER_FILE_CANDIDATES = [
@@ -110,6 +116,10 @@ export async function getPlayerPool() {
         suggestedValue: toNullableNumber(row["$"]) ?? 0,
         totalPoints: toNullableNumber(row["Total Pts"]),
         totalGames: toNullableNumber(row["Total GP"]),
+        r1Pts: toNullableNumber(row["R1 Pts"]) ?? 0,
+        r2Pts: toNullableNumber(row["R2 Pts"]) ?? 0,
+        cfPts: toNullableNumber(row["CF Pts"]) ?? 0,
+        finalsPts: toNullableNumber(row["Finals Pts"]) ?? 0,
       } satisfies PlayerPoolEntry;
     })
     .sort((left, right) => {
@@ -126,6 +136,68 @@ export async function getPlayerPool() {
 export async function getPlayerPoolMap() {
   const players = await getPlayerPool();
   return new Map(players.map((player) => [player.id, player]));
+}
+
+// ---------- Injury-adjusted projections ----------
+
+interface InjuryEntry {
+  team: string;
+  status: string;
+  injury: string;
+  availability: number[];
+}
+
+const INJURY_FILE_CANDIDATES = [
+  path.resolve(process.cwd(), "src/data/nba-injuries-2026.json"),
+  path.resolve(process.cwd(), "apps/server/src/data/nba-injuries-2026.json"),
+];
+
+let cachedInjuries: Record<string, InjuryEntry> | null = null;
+
+async function loadInjuries(): Promise<Record<string, InjuryEntry>> {
+  if (cachedInjuries) return cachedInjuries;
+  for (const candidate of INJURY_FILE_CANDIDATES) {
+    try {
+      await access(candidate);
+      const raw = JSON.parse(await readFile(candidate, "utf8"));
+      delete raw._meta;
+      cachedInjuries = raw as Record<string, InjuryEntry>;
+      return cachedInjuries;
+    } catch {
+      continue;
+    }
+  }
+  return {};
+}
+
+/**
+ * Discount a player's per-round projected points by their injury availability.
+ *
+ * Availability array: [P1, P2, R1G1..G7, R2G1..G7, CFG1..G7, FG1..G7]
+ * CSV rounds: R1 Pts (games 2-8), R2 Pts (games 9-15), CF Pts (games 16-22), Finals Pts (games 23-29)
+ *
+ * For each round, the discount = average availability across that round's games.
+ * Adjusted totalPoints = R1Pts × avgAvailR1 + R2Pts × avgAvailR2 + ...
+ */
+function discountByInjury(
+  r1Pts: number,
+  r2Pts: number,
+  cfPts: number,
+  fPts: number,
+  availability: number[],
+): number {
+  function avgSlice(arr: number[], start: number, end: number): number {
+    const slice = arr.slice(start, end);
+    if (slice.length === 0) return 1;
+    return slice.reduce((s, v) => s + v, 0) / slice.length;
+  }
+
+  const avgR1 = avgSlice(availability, 2, 9);
+  const avgR2 = avgSlice(availability, 9, 16);
+  const avgCF = avgSlice(availability, 16, 23);
+  const avgF = avgSlice(availability, 23, 30);
+
+  return r1Pts * avgR1 + r2Pts * avgR2 + cfPts * avgCF + fPts * avgF;
 }
 
 // ---------- Auction value (VORP-based) ----------
@@ -235,7 +307,28 @@ export async function getPlayerPoolForAuction(
   config: AuctionConfig = DEFAULT_AUCTION_CONFIG,
 ) {
   const players = await getPlayerPool();
-  return computeAuctionValues(players, config);
+  const injuries = await loadInjuries();
+
+  // Discount totalPoints by injury availability before computing VORP
+  const adjusted = players.map((player) => {
+    const injury = injuries[player.name];
+    if (!injury || !injury.availability) return player;
+
+    const adjustedTotal = discountByInjury(
+      player.r1Pts,
+      player.r2Pts,
+      player.cfPts,
+      player.finalsPts,
+      injury.availability,
+    );
+
+    return {
+      ...player,
+      totalPoints: Math.round(adjustedTotal * 10) / 10,
+    };
+  });
+
+  return computeAuctionValues(adjusted, config);
 }
 
 export async function getPlayerPoolMapForAuction(
