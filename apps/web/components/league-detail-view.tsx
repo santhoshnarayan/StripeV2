@@ -556,6 +556,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [activeTab, setActiveTab] = useState<LeagueTab>("overview");
   const [showDraftedPlayers, setShowDraftedPlayers] = useState(false);
   const [showOnlySelected, setShowOnlySelected] = useState(false);
+  const [showAddPlayers, setShowAddPlayers] = useState(false);
+  const [addPlayerQuery, setAddPlayerQuery] = useState("");
   const [draftQuery, setDraftQuery] = useState("");
   const [draftConferenceFilter, setDraftConferenceFilter] = useState("all");
   const [draftTeamFilter, setDraftTeamFilter] = useState("all");
@@ -2225,6 +2227,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         {submitPending ? "Saving..." : "Submit Bids"}
                       </Button>
                       {data.league.isCommissioner ? (
+                        <>
                         <Button
                           variant="outline"
                           onClick={() => setShowCloseConfirm(true)}
@@ -2233,8 +2236,68 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         >
                           {closePending ? "Closing..." : "Close Round and Reveal"}
                         </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setShowAddPlayers((v) => !v)}
+                          className="text-xs"
+                        >
+                          + Add Players to Round
+                        </Button>
+                        </>
                       ) : null}
                     </div>
+                    {showAddPlayers && data.league.isCommissioner ? (
+                      <div className="rounded-lg border border-border/70 p-3 space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground">Add undrafted players to this round</p>
+                        <Input
+                          placeholder="Search players to add..."
+                          value={addPlayerQuery}
+                          onChange={(e) => setAddPlayerQuery(e.target.value)}
+                          className="h-8 text-sm"
+                        />
+                        <div className="max-h-48 overflow-y-auto space-y-1">
+                          {data.availablePlayers
+                            .filter((p) => {
+                              // Exclude players already in this round
+                              const inRound = new Set(data.currentRound?.players.map((rp) => rp.id) ?? []);
+                              if (inRound.has(p.id)) return false;
+                              if (!addPlayerQuery.trim()) return false;
+                              return [p.name, p.team].join(" ").toLowerCase().includes(addPlayerQuery.trim().toLowerCase());
+                            })
+                            .slice(0, 20)
+                            .map((p) => (
+                              <div key={p.id} className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/50">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <PlayerAvatar espnId={p.id} team={p.team} size={22} />
+                                  <span className="truncate font-medium">{p.name}</span>
+                                  <span className="text-xs text-muted-foreground">{p.team}</span>
+                                  <InjuryBadge status={p.injuryStatus} />
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 text-xs shrink-0"
+                                  onClick={async () => {
+                                    try {
+                                      await appApiFetch(
+                                        `/leagues/${leagueId}/draft/rounds/${data.currentRound!.id}/add-players`,
+                                        { method: "POST", body: JSON.stringify({ playerIds: [p.id] }) },
+                                      );
+                                      toast.success(`Added ${p.name}`);
+                                      void loadLeague();
+                                    } catch (err) {
+                                      toast.error(err instanceof Error ? err.message : "Failed to add player");
+                                    }
+                                  }}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </CardContent>

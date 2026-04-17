@@ -1655,6 +1655,66 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
   return c.json({ ok: true });
 });
 
+// Commissioner can add players to an existing open round
+appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/add-players", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+
+  if (!access || !access.isCommissioner) {
+    return c.json({ error: "Only the commissioner can add players" }, 403);
+  }
+
+  const round = await db
+    .select()
+    .from(draftRound)
+    .where(
+      and(
+        eq(draftRound.id, c.req.param("roundId")),
+        eq(draftRound.leagueId, access.league.id),
+      ),
+    )
+    .then((rows) => rows[0]);
+
+  if (!round || round.status !== "open") {
+    return c.json({ error: "Round is not open" }, 400);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const playerIds: string[] = body?.playerIds;
+
+  if (!Array.isArray(playerIds) || !playerIds.length) {
+    return c.json({ error: "Provide playerIds array" }, 400);
+  }
+
+  // Validate: players must exist and not already be rostered or in this round
+  const players = await getPlayerPoolForAuction(
+    auctionConfigFromLeague(access.league, (await getLeagueMembers(access.league.id)).length),
+  );
+  const playerMap = new Map(players.map((p) => [p.id, p]));
+  const rosterRows = await db.select().from(rosterEntry).where(eq(rosterEntry.leagueId, access.league.id));
+  const rosteredIds = new Set(rosterRows.map((r) => r.playerId));
+  const existingRoundPlayers = await db.select().from(draftRoundPlayer).where(eq(draftRoundPlayer.roundId, round.id));
+  const existingIds = new Set(existingRoundPlayers.map((p) => p.playerId));
+
+  const toAdd = playerIds.filter((id) => playerMap.has(id) && !rosteredIds.has(id) && !existingIds.has(id));
+
+  if (!toAdd.length) {
+    return c.json({ error: "No eligible players to add" }, 400);
+  }
+
+  for (const playerId of toAdd) {
+    await db.insert(draftRoundPlayer).values({
+      id: randomUUID(),
+      leagueId: access.league.id,
+      roundId: round.id,
+      playerId,
+    });
+  }
+
+  return c.json({ ok: true, added: toAdd.length });
+});
+
 appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
   const session = getRequiredSession(c);
 
