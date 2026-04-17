@@ -1,6 +1,8 @@
 import {
   boolean,
+  index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -167,6 +169,47 @@ export const draftBid = pgTable(
     submissionPlayerUnique: uniqueIndex("draft_bid_submission_player_unique").on(
       table.submissionId,
       table.playerId,
+    ),
+  }),
+);
+
+export const leagueAction = pgTable(
+  "league_action",
+  {
+    id: text("id").primaryKey(),
+    leagueId: text("league_id")
+      .notNull()
+      .references(() => league.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+    playerId: text("player_id"),
+    amount: integer("amount"),
+    actorUserId: text("actor_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    roundId: text("round_id").references(() => draftRound.id, {
+      onDelete: "set null",
+    }),
+    sequenceNumber: integer("sequence_number").notNull(),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    leagueSeqUnique: uniqueIndex("league_action_league_seq_unique").on(
+      table.leagueId,
+      table.sequenceNumber,
+    ),
+    leagueUserIdx: index("league_action_league_user_idx").on(
+      table.leagueId,
+      table.userId,
+    ),
+    leaguePlayerIdx: index("league_action_league_player_idx").on(
+      table.leagueId,
+      table.playerId,
+    ),
+    leagueTypeIdx: index("league_action_league_type_idx").on(
+      table.leagueId,
+      table.type,
     ),
   }),
 );

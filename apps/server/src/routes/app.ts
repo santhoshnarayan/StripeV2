@@ -2,7 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Hono } from "hono";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
@@ -12,6 +12,7 @@ import {
   draftSubmission,
   league,
   leagueInvite,
+  leagueAction,
   leagueMember,
   rosterEntry,
   user,
@@ -200,6 +201,46 @@ function moveWinnerToEnd(priorityOrder: string[], winnerUserId: string) {
   ];
 }
 
+// ---------- League action helpers ----------
+
+async function nextSequenceNumber(
+  tx: TransactionClient,
+  leagueId: string,
+): Promise<number> {
+  const result = await tx
+    .select({
+      maxSeq: sql<number>`COALESCE(MAX(${leagueAction.sequenceNumber}), 0)`,
+    })
+    .from(leagueAction)
+    .where(eq(leagueAction.leagueId, leagueId));
+
+  return (result[0]?.maxSeq ?? 0) + 1;
+}
+
+async function getBudgetAdjustments(
+  leagueId: string,
+): Promise<Map<string, number>> {
+  const rows = await db
+    .select({
+      userId: leagueAction.userId,
+      total: sql<number>`COALESCE(SUM(${leagueAction.amount}), 0)`,
+    })
+    .from(leagueAction)
+    .where(
+      and(
+        eq(leagueAction.leagueId, leagueId),
+        eq(leagueAction.type, "budget_adjust"),
+      ),
+    )
+    .groupBy(leagueAction.userId);
+
+  return new Map(
+    rows
+      .filter((r): r is typeof r & { userId: string } => r.userId !== null)
+      .map((r) => [r.userId, r.total]),
+  );
+}
+
 async function getLeagueAccess(userId: string, leagueId: string) {
   const membershipRows = await db
     .select()
@@ -278,12 +319,14 @@ function buildMemberStates(
   members: MemberRow[],
   rosterRows: Array<typeof rosterEntry.$inferSelect>,
   playerMap: Map<string, PlayerPoolEntry>,
+  budgetAdjustments?: Map<string, number>,
 ) {
   return new Map<string, MemberState>(
     members.map((member) => {
       const roster = rosterRows.filter((entry) => entry.userId === member.userId);
       const rosterCount = roster.length;
       const spentBudget = roster.reduce((sum, entry) => sum + entry.acquisitionBid, 0);
+      const adjustment = budgetAdjustments?.get(member.userId) ?? 0;
       const totalPoints = roster.reduce((sum, entry) => {
         return sum + (playerMap.get(entry.playerId)?.totalPoints ?? 0);
       }, 0);
@@ -293,7 +336,7 @@ function buildMemberStates(
         {
           userId: member.userId,
           rosterCount,
-          remainingBudget: leagueRow.budgetPerTeam - spentBudget,
+          remainingBudget: leagueRow.budgetPerTeam + adjustment - spentBudget,
           remainingRosterSlots: leagueRow.rosterSize - rosterCount,
           totalPoints,
         },
@@ -377,7 +420,8 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     .select()
     .from(rosterEntry)
     .where(eq(rosterEntry.leagueId, leagueId));
-  const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap);
+  const budgetAdj = await getBudgetAdjustments(leagueId);
+  const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
   const rosteredPlayerIds = new Set(rosterRows.map((entry) => entry.playerId));
   const rosterByPlayerId = new Map(rosterRows.map((entry) => [entry.playerId, entry]));
   const memberByUserId = new Map(members.map((member) => [member.userId, member]));
@@ -875,6 +919,14 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         };
       })
       .sort((left, right) => right.totalPoints - left.totalPoints || left.name.localeCompare(right.name)),
+    actions: access.isCommissioner
+      ? await db
+          .select()
+          .from(leagueAction)
+          .where(eq(leagueAction.leagueId, leagueId))
+          .orderBy(desc(leagueAction.sequenceNumber))
+          .limit(100)
+      : [],
   };
 }
 
@@ -1241,6 +1293,7 @@ appRouter.post("/leagues/:leagueId/members/:userId/remove", async (c) => {
     .select()
     .from(rosterEntry)
     .where(eq(rosterEntry.leagueId, access.league.id));
+  const budgetAdj = await getBudgetAdjustments(access.league.id);
   const now = new Date();
   const remainingRosterRows = rosterRows.filter((entry) => entry.userId !== memberUserId);
   const remainingStates = buildMemberStates(
@@ -1248,6 +1301,7 @@ appRouter.post("/leagues/:leagueId/members/:userId/remove", async (c) => {
     remainingMembers,
     remainingRosterRows,
     playerMap,
+    budgetAdj,
   );
   const nextPriorityOrder = remainingMembers
     .sort((left, right) => (left.draftPriority ?? 999) - (right.draftPriority ?? 999))
@@ -1268,6 +1322,8 @@ appRouter.post("/leagues/:leagueId/members/:userId/remove", async (c) => {
       : "draft"
     : "invite";
 
+  const memberRosterRows = rosterRows.filter((entry) => entry.userId === memberUserId);
+
   await db.transaction(async (tx) => {
     await tx
       .delete(draftSubmission)
@@ -1283,6 +1339,31 @@ appRouter.post("/leagues/:leagueId/members/:userId/remove", async (c) => {
       .where(
         and(eq(rosterEntry.leagueId, access.league.id), eq(rosterEntry.userId, memberUserId)),
       );
+
+    // Log a roster_remove action for each player on the removed member's roster
+    if (memberRosterRows.length > 0) {
+      const baseSeq = await nextSequenceNumber(tx, access.league.id);
+      await tx.insert(leagueAction).values(
+        memberRosterRows.map((entry, i) => ({
+          id: randomUUID(),
+          leagueId: access.league.id,
+          type: "roster_remove" as const,
+          userId: entry.userId,
+          playerId: entry.playerId,
+          amount: -entry.acquisitionBid,
+          actorUserId: session.user.id,
+          roundId: entry.acquisitionRoundId,
+          sequenceNumber: baseSeq + i,
+          metadata: {
+            playerName: entry.playerName,
+            playerTeam: entry.playerTeam,
+            originalAcquisitionBid: entry.acquisitionBid,
+            reason: "member_removed",
+          },
+          createdAt: now,
+        })),
+      );
+    }
 
     await tx
       .update(leagueMember)
@@ -1302,6 +1383,224 @@ appRouter.post("/leagues/:leagueId/members/:userId/remove", async (c) => {
         updatedAt: now,
       })
       .where(eq(league.id, access.league.id));
+  });
+
+  return c.json({ ok: true });
+});
+
+// --- Commissioner: remove a single player from a roster ---
+appRouter.post("/leagues/:leagueId/roster/:playerId/remove", async (c) => {
+  const session = getRequiredSession(c);
+
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+
+  if (!access) {
+    return c.json({ error: "League not found" }, 404);
+  }
+
+  if (!access.isCommissioner) {
+    return c.json({ error: "Only the commissioner can remove players from rosters" }, 403);
+  }
+
+  const playerId = c.req.param("playerId");
+
+  const existingEntries = await db
+    .select()
+    .from(rosterEntry)
+    .where(
+      and(
+        eq(rosterEntry.leagueId, access.league.id),
+        eq(rosterEntry.playerId, playerId),
+      ),
+    )
+    .limit(1);
+
+  const entry = existingEntries[0];
+
+  if (!entry) {
+    return c.json({ error: "Player not found on any roster in this league" }, 404);
+  }
+
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(rosterEntry)
+      .where(eq(rosterEntry.id, entry.id));
+
+    const seq = await nextSequenceNumber(tx, access.league.id);
+    await tx.insert(leagueAction).values({
+      id: randomUUID(),
+      leagueId: access.league.id,
+      type: "roster_remove",
+      userId: entry.userId,
+      playerId: entry.playerId,
+      amount: -entry.acquisitionBid,
+      actorUserId: session.user.id,
+      roundId: entry.acquisitionRoundId,
+      sequenceNumber: seq,
+      metadata: {
+        playerName: entry.playerName,
+        playerTeam: entry.playerTeam,
+        originalAcquisitionBid: entry.acquisitionBid,
+        reason: "commissioner_override",
+      },
+      createdAt: now,
+    });
+
+    if (access.league.phase === "scoring") {
+      await tx
+        .update(league)
+        .set({ phase: "draft", updatedAt: now })
+        .where(eq(league.id, access.league.id));
+    }
+  });
+
+  return c.json({ ok: true });
+});
+
+// --- Commissioner: add a player to a roster ---
+appRouter.post("/leagues/:leagueId/roster/add", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+  if (!access.isCommissioner) {
+    return c.json({ error: "Only the commissioner can add players to rosters" }, 403);
+  }
+
+  const body = z
+    .object({ userId: z.string(), playerId: z.string(), amount: z.number().int().min(0) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "Invalid request body" }, 400);
+
+  // Check player is not already rostered
+  const existing = await db
+    .select()
+    .from(rosterEntry)
+    .where(
+      and(eq(rosterEntry.leagueId, access.league.id), eq(rosterEntry.playerId, body.data.playerId)),
+    )
+    .limit(1);
+  if (existing.length > 0) {
+    return c.json({ error: "Player is already on a roster in this league" }, 400);
+  }
+
+  // Check target user is a member
+  const members = await getLeagueMembers(access.league.id);
+  const targetMember = members.find((m) => m.userId === body.data.userId);
+  if (!targetMember) return c.json({ error: "Target user is not a member of this league" }, 404);
+
+  // Resolve player info from pool
+  const playerMap = await getPlayerPoolMapForAuction(
+    auctionConfigFromLeague(access.league, members.length),
+  );
+  const player = playerMap.get(body.data.playerId);
+  if (!player) return c.json({ error: "Player not found in pool" }, 404);
+
+  // Check budget + slots
+  const rosterRows = await db
+    .select()
+    .from(rosterEntry)
+    .where(eq(rosterEntry.leagueId, access.league.id));
+  const budgetAdj = await getBudgetAdjustments(access.league.id);
+  const states = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
+  const state = states.get(body.data.userId);
+  if (!state || state.remainingRosterSlots <= 0) {
+    return c.json({ error: "Target user's roster is full" }, 400);
+  }
+  if (state.remainingBudget < body.data.amount) {
+    return c.json({ error: "Target user does not have enough budget" }, 400);
+  }
+
+  const now = new Date();
+  const maxOrder = rosterRows
+    .filter((r) => r.userId === body.data.userId)
+    .reduce((max, r) => Math.max(max, r.acquisitionOrder), 0);
+
+  await db.transaction(async (tx) => {
+    await tx.insert(rosterEntry).values({
+      id: randomUUID(),
+      leagueId: access.league.id,
+      userId: body.data.userId,
+      playerId: body.data.playerId,
+      playerName: player.name,
+      playerTeam: player.team,
+      acquisitionRoundId: null,
+      acquisitionOrder: maxOrder + 1,
+      acquisitionBid: body.data.amount,
+      wonByTiebreak: false,
+      isAutoAssigned: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const seq = await nextSequenceNumber(tx, access.league.id);
+    await tx.insert(leagueAction).values({
+      id: randomUUID(),
+      leagueId: access.league.id,
+      type: "roster_add",
+      userId: body.data.userId,
+      playerId: body.data.playerId,
+      amount: body.data.amount,
+      actorUserId: session.user.id,
+      roundId: null,
+      sequenceNumber: seq,
+      metadata: {
+        playerName: player.name,
+        playerTeam: player.team,
+      },
+      createdAt: now,
+    });
+  });
+
+  return c.json({ ok: true });
+});
+
+// --- Commissioner: adjust a member's budget ---
+appRouter.post("/leagues/:leagueId/members/:userId/budget", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+  if (!access.isCommissioner) {
+    return c.json({ error: "Only the commissioner can adjust budgets" }, 403);
+  }
+
+  const body = z
+    .object({ amount: z.number().int(), reason: z.string().min(1).max(200) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "Invalid request body" }, 400);
+
+  const targetUserId = c.req.param("userId");
+  const members = await getLeagueMembers(access.league.id);
+  if (!members.find((m) => m.userId === targetUserId)) {
+    return c.json({ error: "Target user is not a member of this league" }, 404);
+  }
+
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    const seq = await nextSequenceNumber(tx, access.league.id);
+    await tx.insert(leagueAction).values({
+      id: randomUUID(),
+      leagueId: access.league.id,
+      type: "budget_adjust",
+      userId: targetUserId,
+      playerId: null,
+      amount: body.data.amount,
+      actorUserId: session.user.id,
+      roundId: null,
+      sequenceNumber: seq,
+      metadata: { reason: body.data.reason },
+      createdAt: now,
+    });
   });
 
   return c.json({ ok: true });
@@ -1514,6 +1813,26 @@ appRouter.post("/leagues/:leagueId/draft/rounds", async (c) => {
         updatedAt: now,
       })
       .where(eq(league.id, access.league.id));
+
+    const seq = await nextSequenceNumber(tx, access.league.id);
+    await tx.insert(leagueAction).values({
+      id: randomUUID(),
+      leagueId: access.league.id,
+      type: "round_opened",
+      userId: null,
+      playerId: null,
+      amount: null,
+      actorUserId: session.user.id,
+      roundId,
+      sequenceNumber: seq,
+      metadata: {
+        roundNumber,
+        eligiblePlayerMode: body.data.mode,
+        playerCount: selectedPlayerIds.length,
+        deadlineAt: deadlineAt?.toISOString() ?? null,
+      },
+      createdAt: now,
+    });
   });
 
   return c.json({ ok: true, roundId });
@@ -1568,7 +1887,8 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
     .select()
     .from(rosterEntry)
     .where(eq(rosterEntry.leagueId, access.league.id));
-  const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap);
+  const budgetAdj = await getBudgetAdjustments(access.league.id);
+  const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
   const viewerState = memberStates.get(session.user.id);
 
   if (!viewerState || viewerState.remainingRosterSlots <= 0) {
@@ -1757,7 +2077,8 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
     .select()
     .from(rosterEntry)
     .where(eq(rosterEntry.leagueId, access.league.id));
-  const startingStates = buildMemberStates(access.league, members, rosterRows, playerMap);
+  const budgetAdj = await getBudgetAdjustments(access.league.id);
+  const startingStates = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
   const roundPlayers = await db
     .select()
     .from(draftRoundPlayer)
@@ -2132,6 +2453,51 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
         updatedAt: now,
       })
       .where(eq(league.id, access.league.id));
+
+    // Log actions: round_closed + draft_award per awarded player
+    const baseSeq = await nextSequenceNumber(tx, access.league.id);
+    const actionValues: Array<typeof leagueAction.$inferInsert> = [
+      {
+        id: randomUUID(),
+        leagueId: access.league.id,
+        type: "round_closed",
+        userId: null,
+        playerId: null,
+        amount: null,
+        actorUserId: session.user.id,
+        roundId: round.id,
+        sequenceNumber: baseSeq,
+        metadata: {
+          roundNumber: round.roundNumber,
+          awardCount: awards.length,
+        },
+        createdAt: now,
+      },
+      ...awards.map((award, i) => ({
+        id: randomUUID(),
+        leagueId: access.league.id,
+        type: "draft_award" as const,
+        userId: award.winnerUserId,
+        playerId: award.playerId,
+        amount: award.acquisitionBid,
+        actorUserId: session.user.id,
+        roundId: round.id,
+        sequenceNumber: baseSeq + 1 + i,
+        metadata: {
+          playerName: award.playerName,
+          playerTeam: award.playerTeam,
+          roundNumber: round.roundNumber,
+          acquisitionOrder: award.acquisitionOrder,
+          wonByTiebreak: award.wonByTiebreak,
+          isAutoAssigned: award.isAutoAssigned,
+        },
+        createdAt: now,
+      })),
+    ];
+
+    if (actionValues.length > 0) {
+      await tx.insert(leagueAction).values(actionValues);
+    }
   });
 
   return c.json({

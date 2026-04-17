@@ -183,6 +183,18 @@ type LeagueDetail = {
       totalPoints: number;
     }>;
   }>;
+  actions: Array<{
+    id: string;
+    type: string;
+    userId: string | null;
+    playerId: string | null;
+    amount: number | null;
+    actorUserId: string | null;
+    roundId: string | null;
+    sequenceNumber: number;
+    metadata: Record<string, unknown> | null;
+    createdAt: string;
+  }>;
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -191,7 +203,16 @@ const PHASE_LABELS: Record<string, string> = {
   scoring: "Scoring",
 };
 
-type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator";
+const ACTION_TYPE_LABELS: Record<string, string> = {
+  draft_award: "Draft Award",
+  roster_remove: "Remove & Refund",
+  roster_add: "Commissioner Add",
+  budget_adjust: "Budget Adjustment",
+  round_opened: "Round Opened",
+  round_closed: "Round Closed",
+};
+
+type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator" | "commissioner";
 type DraftSortOption =
   | "suggested_desc"
   | "projected_desc"
@@ -222,13 +243,15 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
   simulator: { label: "Simulator", shortLabel: "Sim" },
   results: { label: "Reveal", shortLabel: "Reveal" },
   standings: { label: "Standings", shortLabel: "Standings" },
+  commissioner: { label: "Commissioner", shortLabel: "Commish" },
 };
 
-function getLeagueTabOrder(phase: string): LeagueTab[] {
-  if (phase === "draft" || phase === "invite") {
-    return ["draft", "simulator", "overview", "managers", "players", "results", "standings"];
-  }
-  return ["standings", "simulator", "overview", "managers", "players", "draft", "results"];
+function getLeagueTabOrder(phase: string, isCommissioner?: boolean): LeagueTab[] {
+  const base: LeagueTab[] = phase === "draft" || phase === "invite"
+    ? ["draft", "simulator", "overview", "managers", "players", "results", "standings"]
+    : ["standings", "simulator", "overview", "managers", "players", "draft", "results"];
+  if (isCommissioner) base.push("commissioner");
+  return base;
 }
 
 function formatNullableNumber(value: number | null, digits = 1) {
@@ -582,6 +605,13 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [expandedHistoryRows, setExpandedHistoryRows] = useState<Set<string>>(
     () => new Set(),
   );
+  const [removePlayerTarget, setRemovePlayerTarget] = useState<{
+    playerId: string;
+    playerName: string;
+    ownerName: string;
+    acquisitionBid: number;
+  } | null>(null);
+  const [removePlayerPending, setRemovePlayerPending] = useState(false);
   const dataRef = useRef<LeagueDetail | null>(null);
   const bidValuesRef = useRef<Record<string, string>>({});
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -686,7 +716,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
   useEffect(() => {
     if (data?.league.phase) {
-      const order = getLeagueTabOrder(data.league.phase);
+      const order = getLeagueTabOrder(data.league.phase, data.league.isCommissioner);
       setActiveTab(order[0] ?? "overview");
     }
   }, [leagueId, data?.league.phase]);
@@ -1218,6 +1248,26 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     }
   }
 
+  async function removePlayerFromRoster() {
+    if (!removePlayerTarget) return;
+    setRemovePlayerPending(true);
+    try {
+      await appApiFetch(
+        `/leagues/${leagueId}/roster/${removePlayerTarget.playerId}/remove`,
+        { method: "POST" },
+      );
+      toast.success(
+        `Removed ${removePlayerTarget.playerName} and refunded $${removePlayerTarget.acquisitionBid} to ${removePlayerTarget.ownerName}`,
+      );
+      await loadLeague();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to remove player");
+    } finally {
+      setRemovePlayerPending(false);
+      setRemovePlayerTarget(null);
+    }
+  }
+
   // Push the current bidValues onto the undo stack. This is for *user-driven*
   // mutations (typing, reset, $0, bulk) — it also clears the redo stack,
   // since the user has branched away from whatever redo timeline existed.
@@ -1489,7 +1539,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
       <section className="rounded-2xl border border-border/80 bg-background/90 p-2">
         <div className="flex flex-nowrap gap-1 overflow-x-auto sm:gap-2">
-          {getLeagueTabOrder(data.league.phase).map((tabId) => {
+          {getLeagueTabOrder(data.league.phase, data.league.isCommissioner).map((tabId) => {
             const def = LEAGUE_TAB_DEFS[tabId];
             return (
             <button
@@ -3250,6 +3300,225 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           </Card>
         </div>
       ) : null}
+
+      {activeTab === "commissioner" && data.league.isCommissioner ? (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Commissioner Tools</CardTitle>
+              <CardDescription>
+                Manage rosters and budgets. Actions here override normal draft rules.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Remove Player from Roster */}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-3">Remove Player from Roster</h3>
+                <p className="text-xs text-muted-foreground mb-4">
+                  Remove a player and refund the acquisition cost. The player returns to the available pool.
+                </p>
+                {data.rosters.filter((r) => r.players.length > 0).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No players have been drafted yet.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {data.rosters
+                      .filter((r) => r.players.length > 0)
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((roster) => (
+                        <div key={roster.userId} className="rounded-xl border border-border/80 px-4 py-3">
+                          <p className="font-medium text-foreground mb-2">{roster.name}</p>
+                          <div className="space-y-1.5">
+                            {roster.players
+                              .slice()
+                              .sort((a, b) => b.acquisitionBid - a.acquisitionBid)
+                              .map((player) => (
+                                <div
+                                  key={player.playerId}
+                                  className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-3 py-2 text-sm"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <PlayerAvatar espnId={player.playerId} team={player.playerTeam} size={28} />
+                                    <div className="min-w-0">
+                                      <p className="font-medium text-foreground truncate">{player.playerName}</p>
+                                      <p className="text-xs text-muted-foreground">{player.playerTeam} &middot; ${player.acquisitionBid}</p>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className={buttonVariants({ variant: "destructive", size: "sm" })}
+                                    onClick={() =>
+                                      setRemovePlayerTarget({
+                                        playerId: player.playerId,
+                                        playerName: player.playerName,
+                                        ownerName: roster.name,
+                                        acquisitionBid: player.acquisitionBid,
+                                      })
+                                    }
+                                  >
+                                    Remove &amp; Refund
+                                  </button>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Budget Adjustment */}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground mb-3">Adjust Budget</h3>
+                <p className="text-xs text-muted-foreground mb-4">
+                  Add or remove money from a manager&apos;s budget. Positive = add money, negative = deduct.
+                </p>
+                <form
+                  className="flex flex-col gap-3 sm:flex-row sm:items-end"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const form = e.currentTarget;
+                    const fd = new FormData(form);
+                    const userId = fd.get("userId") as string;
+                    const amount = Number(fd.get("amount"));
+                    const reason = (fd.get("reason") as string).trim();
+                    if (!userId || !amount || !reason) {
+                      toast.error("All fields are required and amount must be non-zero");
+                      return;
+                    }
+                    try {
+                      await appApiFetch(`/leagues/${leagueId}/members/${userId}/budget`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ amount, reason }),
+                      });
+                      const memberName = data.members.find((m) => m.userId === userId)?.name ?? "Member";
+                      toast.success(`${amount > 0 ? "Added" : "Deducted"} $${Math.abs(amount)} ${amount > 0 ? "to" : "from"} ${memberName}'s budget`);
+                      form.reset();
+                      await loadLeague();
+                    } catch (err) {
+                      toast.error(err instanceof Error ? err.message : "Failed to adjust budget");
+                    }
+                  }}
+                >
+                  <div className="flex-1">
+                    <Label htmlFor="budget-member">Manager</Label>
+                    <select
+                      id="budget-member"
+                      name="userId"
+                      className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                    >
+                      <option value="">Select...</option>
+                      {data.members.map((m) => (
+                        <option key={m.userId} value={m.userId}>
+                          {m.name} (${m.remainingBudget} remaining)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="w-24">
+                    <Label htmlFor="budget-amount">Amount</Label>
+                    <Input id="budget-amount" name="amount" type="number" placeholder="e.g. 10" className="mt-1" required />
+                  </div>
+                  <div className="flex-1">
+                    <Label htmlFor="budget-reason">Reason</Label>
+                    <Input id="budget-reason" name="reason" type="text" placeholder="e.g. Luka refund" className="mt-1" required />
+                  </div>
+                  <Button type="submit" size="sm">Apply</Button>
+                </form>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Action Log */}
+          {data.actions && data.actions.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Action Log</CardTitle>
+                <CardDescription>Audit trail of all league actions.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto rounded-xl border border-border/80">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">#</th>
+                        <th className="px-3 py-2 font-medium">Type</th>
+                        <th className="px-3 py-2 font-medium">Details</th>
+                        <th className="px-3 py-2 text-right font-medium">Amount</th>
+                        <th className="px-3 py-2 font-medium">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.actions.map((action) => {
+                        const meta = action.metadata as Record<string, unknown> | null;
+                        const memberName = action.userId
+                          ? data.members.find((m) => m.userId === action.userId)?.name ?? "Unknown"
+                          : null;
+                        const playerName = (meta?.playerName as string) ?? action.playerId;
+                        let details = "";
+                        if (action.type === "draft_award") {
+                          details = `${playerName} → ${memberName}`;
+                        } else if (action.type === "roster_remove") {
+                          details = `${playerName} removed from ${memberName}`;
+                        } else if (action.type === "roster_add") {
+                          details = `${playerName} added to ${memberName}`;
+                        } else if (action.type === "budget_adjust") {
+                          details = `${memberName}: ${(meta?.reason as string) ?? ""}`;
+                        } else if (action.type === "round_opened" || action.type === "round_closed") {
+                          details = `Round ${(meta?.roundNumber as number) ?? "?"}`;
+                        }
+
+                        return (
+                          <tr key={action.id} className="border-t border-border/60">
+                            <td className="px-3 py-2 tabular-nums text-muted-foreground">{action.sequenceNumber}</td>
+                            <td className="px-3 py-2">
+                              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+                                {ACTION_TYPE_LABELS[action.type] ?? action.type}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-foreground">{details}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              {action.amount !== null ? (
+                                <span className={action.amount < 0 ? "text-green-600" : "text-red-600"}>
+                                  {action.amount < 0 ? "+" : "-"}${Math.abs(action.amount)}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground">-</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-muted-foreground">
+                              {new Date(action.createdAt).toLocaleDateString()}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+        </div>
+      ) : null}
+
+      <ConfirmDialog
+        open={removePlayerTarget !== null}
+        title={`Remove ${removePlayerTarget?.playerName} and refund $${removePlayerTarget?.acquisitionBid}?`}
+        description={
+          <p>
+            This will remove {removePlayerTarget?.playerName} from {removePlayerTarget?.ownerName}&apos;s roster
+            and refund ${removePlayerTarget?.acquisitionBid} to their budget. The player will be available for future draft rounds.
+          </p>
+        }
+        confirmLabel="Remove & Refund"
+        destructive
+        loading={removePlayerPending}
+        onCancel={() => {
+          if (!removePlayerPending) setRemovePlayerTarget(null);
+        }}
+        onConfirm={() => void removePlayerFromRoster()}
+      />
 
       <ConfirmDialog
         open={showCloseConfirm}

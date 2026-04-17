@@ -8,7 +8,7 @@
     "team": "LAL",
     "status": "out",
     "injury": "Left hamstring strain (Grade 2) — seeking treatment in Europe, 4-6 week recovery from Apr 2",
-    "availability": [0, 0, 0, 0, 0.1, 0.2, 0.35, 0.5, 0.6, 0.75, 0.85, 0.9, 0.95, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    "availability": [0, 0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
   },
   "Austin Reaves": {
     "team": "LAL",
