@@ -583,6 +583,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const bidValuesRef = useRef<Record<string, string>>({});
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const submitAbortRef = useRef<AbortController | null>(null);
+  const hasSubmittedOnceRef = useRef(false);
   // While the user types in a single field, we only want one snapshot for
   // that whole run of keystrokes. `lastContinuousBidField` tracks the field
   // the most recent snapshot is tied to; a new snapshot gets pushed when the
@@ -1116,6 +1117,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         },
       );
 
+      hasSubmittedOnceRef.current = true;
+
       // Optimistically mark our own submission row as submitted so the UI
       // updates instantly. Polling will reconcile if anything drifts.
       const submittedAtIso = new Date().toISOString();
@@ -1167,6 +1170,15 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   }
 
   function scheduleAutoSaveBids() {
+    // Only auto-save after the user has submitted at least once.
+    // Check server data for prior submission, or the local flag.
+    const viewerSubmission = data?.currentRound?.submissionStatuses.find(
+      (s) => s.userId === viewerUserId,
+    );
+    if (!hasSubmittedOnceRef.current && !viewerSubmission?.submittedAt) {
+      return; // don't auto-save before first manual submit
+    }
+
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
