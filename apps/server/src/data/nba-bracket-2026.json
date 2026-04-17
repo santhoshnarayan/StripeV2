@@ -38,6 +38,7 @@
       "game9v10": { "winner": "GS", "loser": "LAC" }
     }
   },
+  "eliminatedTeams": ["MIA", "LAC"],
   "seriesPattern": [true, true, false, false, true, false, true],
   "teamAliases": {
     "NY": "NYK",

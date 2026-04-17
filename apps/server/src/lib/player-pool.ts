@@ -203,6 +203,30 @@ function discountByInjury(
   return r1Pts * avgR1 + r2Pts * avgR2 + cfPts * avgCF + fPts * avgF;
 }
 
+// ---------- Eliminated teams ----------
+
+const BRACKET_FILE_CANDIDATES = [
+  path.resolve(process.cwd(), "src/data/nba-bracket-2026.json"),
+  path.resolve(process.cwd(), "apps/server/src/data/nba-bracket-2026.json"),
+];
+
+let cachedEliminatedTeams: Set<string> | null = null;
+
+export async function getEliminatedTeams(): Promise<Set<string>> {
+  if (cachedEliminatedTeams) return cachedEliminatedTeams;
+  for (const candidate of BRACKET_FILE_CANDIDATES) {
+    try {
+      await access(candidate);
+      const raw = JSON.parse(await readFile(candidate, "utf8"));
+      cachedEliminatedTeams = new Set(raw.eliminatedTeams ?? []);
+      return cachedEliminatedTeams;
+    } catch {
+      continue;
+    }
+  }
+  return new Set();
+}
+
 // ---------- Auction value (VORP-based) ----------
 
 export type AuctionConfig = {
@@ -311,9 +335,12 @@ export async function getPlayerPoolForAuction(
 ) {
   const players = await getPlayerPool();
   const injuries = await loadInjuries();
+  const eliminatedTeams = await getEliminatedTeams();
 
-  // Discount totalPoints by injury availability and add injury status
-  const adjusted = players.map((player) => {
+  // Filter out players on eliminated teams and discount by injury availability
+  const adjusted = players
+    .filter((player) => !eliminatedTeams.has(player.team))
+    .map((player) => {
     const injury = injuries[player.name];
     if (!injury || !injury.availability) {
       return player;
