@@ -2394,13 +2394,49 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               </div>
                             </div>
                             <div className="space-y-2">
-                              <Label htmlFor="preset-teams">Team Codes</Label>
-                              <Input
-                                id="preset-teams"
-                                value={presetTeams}
-                                onChange={(event) => setPresetTeams(event.target.value)}
-                                placeholder="OKC, BOS, CLE"
-                              />
+                              <Label>Teams</Label>
+                              <div className="max-h-48 overflow-y-auto rounded-lg border border-border px-1 py-1">
+                                {(() => {
+                                  const teamSet = new Map<string, { conf: string; seed: number | null; count: number }>();
+                                  for (const p of data.availablePlayers) {
+                                    const existing = teamSet.get(p.team);
+                                    if (existing) { existing.count++; }
+                                    else { teamSet.set(p.team, { conf: p.conference, seed: p.seed, count: 1 }); }
+                                  }
+                                  const selectedTeams = new Set(parseTeamsInput(presetTeams));
+                                  return [...teamSet.entries()]
+                                    .sort((a, b) => {
+                                      const confCmp = a[1].conf.localeCompare(b[1].conf);
+                                      if (confCmp !== 0) return confCmp;
+                                      return (a[1].seed ?? 99) - (b[1].seed ?? 99);
+                                    })
+                                    .map(([team, info]) => (
+                                      <label
+                                        key={team}
+                                        className="flex items-center gap-2 rounded px-2 py-1 text-sm cursor-pointer hover:bg-muted/50"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className="rounded"
+                                          checked={selectedTeams.has(team.toUpperCase())}
+                                          onChange={(e) => {
+                                            const current = parseTeamsInput(presetTeams);
+                                            const upper = team.toUpperCase();
+                                            if (e.target.checked) {
+                                              setPresetTeams([...current, upper].join(", "));
+                                            } else {
+                                              setPresetTeams(current.filter((t) => t !== upper).join(", "));
+                                            }
+                                          }}
+                                        />
+                                        <span className="font-medium">{team}</span>
+                                        <span className="text-xs text-muted-foreground">
+                                          {info.conf} {info.seed ? `#${info.seed}` : ""} · {info.count} players
+                                        </span>
+                                      </label>
+                                    ));
+                                })()}
+                              </div>
                             </div>
                             {presetError ? (
                               <p className="text-sm text-destructive">{presetError}</p>
