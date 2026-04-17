@@ -71,6 +71,7 @@ type LeagueDetail = {
     suggestedValue: number;
     totalPoints: number | null;
     totalGames: number | null;
+    injuryStatus?: string | null;
   }>;
   currentRound: null | {
     id: string;
@@ -100,6 +101,7 @@ type LeagueDetail = {
       defaultBid: number;
       myExplicitBid: number | null;
       myEffectiveBid: number;
+      injuryStatus?: string | null;
     }>;
   };
   draftHistory: Array<{
@@ -215,6 +217,21 @@ function formatNullableNumber(value: number | null, digits = 1) {
   }
 
   return Number.isInteger(value) ? String(value) : value.toFixed(digits);
+}
+
+function InjuryBadge({ status }: { status?: string | null }) {
+  if (!status) return null;
+  const label = status === "out" ? "OUT"
+    : status === "doubtful" ? "D"
+    : status === "questionable" ? "Q"
+    : status === "probable" ? "P"
+    : null;
+  if (!label) return null;
+  return (
+    <span className="ml-1 text-[10px] font-semibold text-red-500 dark:text-red-400">
+      {label}
+    </span>
+  );
 }
 
 function formatRelativeTime(input: string | Date | null | undefined, now: number = Date.now()) {
@@ -1644,7 +1661,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         <td className="px-3 py-3 font-medium text-foreground">
                           <div className="flex items-center gap-2">
                             <PlayerAvatar espnId={player.id} team={player.team} size={28} />
-                            {player.name}
+                            {player.name}<InjuryBadge status={player.injuryStatus} />
                           </div>
                         </td>
                         <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
@@ -1902,7 +1919,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               <div className="flex items-center gap-2 min-w-0">
                                 <PlayerAvatar espnId={player.id} team={player.team} size={28} />
                                 <p className="truncate text-base font-semibold text-foreground">
-                                  {player.name}
+                                  {player.name}<InjuryBadge status={player.injuryStatus} />
                                 </p>
                               </div>
                               <p className="shrink-0 text-base font-bold tabular-nums text-foreground">
@@ -2001,7 +2018,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               <td className="px-3 py-3 font-medium text-foreground">
                                 <div className="flex items-center gap-2">
                                   <PlayerAvatar espnId={player.id} team={player.team} size={28} />
-                                  {player.name}
+                                  {player.name}<InjuryBadge status={player.injuryStatus} />
                                 </div>
                               </td>
                               <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
@@ -2369,7 +2386,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   <td className="px-3 py-3 font-medium text-foreground">
                                     <div className="flex items-center gap-2">
                                       <PlayerAvatar espnId={player.id} team={player.team} size={28} />
-                                      {player.name}
+                                      {player.name}<InjuryBadge status={player.injuryStatus} />
                                     </div>
                                   </td>
                                   <td className="px-3 py-3 text-muted-foreground">{player.team}</td>

@@ -530,6 +530,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
             suggestedValue: player.suggestedValue,
             totalPoints: player.totalPoints,
             totalGames: player.totalGames,
+            injuryStatus: player.injuryStatus,
             defaultBid,
             myExplicitBid,
             myEffectiveBid: myExplicitBid ?? defaultBid,
@@ -1705,6 +1706,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
     );
     const submissionId = submissionIdByUser.get(member.userId) ?? randomUUID();
     const explicitBidMap = explicitBidMapByUser.get(member.userId) ?? new Map<string, number>();
+    const memberSubmittedAnyBids = explicitBidMap.size > 0;
     const effectiveBidMap = new Map<string, number>();
 
     for (const player of eligiblePlayers) {
@@ -1733,7 +1735,15 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
         effectiveBid = 0;
       } else if (maxAllowed < access.league.minBid) {
         effectiveBid = 0;
+      } else if (memberSubmittedAnyBids) {
+        // Member submitted bids for some players but not this one —
+        // use exact suggested value (no noise) as the auto-pick.
+        effectiveBid = Math.max(
+          access.league.minBid,
+          Math.min(player.suggestedValue, maxAllowed),
+        );
       } else {
+        // Member submitted no bids at all — use noisy default.
         effectiveBid = sampleDefaultAutoBid(player.suggestedValue, maxAllowed);
       }
 

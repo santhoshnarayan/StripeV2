@@ -20,6 +20,8 @@ export type PlayerPoolEntry = {
   r2Pts: number;
   cfPts: number;
   finalsPts: number;
+  /** Injury status: "out" | "doubtful" | "questionable" | "probable" | null */
+  injuryStatus: string | null;
 };
 
 const PLAYER_FILE_CANDIDATES = [
@@ -120,6 +122,7 @@ export async function getPlayerPool() {
         r2Pts: toNullableNumber(row["R2 Pts"]) ?? 0,
         cfPts: toNullableNumber(row["CF Pts"]) ?? 0,
         finalsPts: toNullableNumber(row["Finals Pts"]) ?? 0,
+        injuryStatus: null,
       } satisfies PlayerPoolEntry;
     })
     .sort((left, right) => {
@@ -309,10 +312,12 @@ export async function getPlayerPoolForAuction(
   const players = await getPlayerPool();
   const injuries = await loadInjuries();
 
-  // Discount totalPoints by injury availability before computing VORP
+  // Discount totalPoints by injury availability and add injury status
   const adjusted = players.map((player) => {
     const injury = injuries[player.name];
-    if (!injury || !injury.availability) return player;
+    if (!injury || !injury.availability) {
+      return player;
+    }
 
     const adjustedTotal = discountByInjury(
       player.r1Pts,
@@ -325,6 +330,7 @@ export async function getPlayerPoolForAuction(
     return {
       ...player,
       totalPoints: Math.round(adjustedTotal * 10) / 10,
+      injuryStatus: injury.status ?? null,
     };
   });
 
