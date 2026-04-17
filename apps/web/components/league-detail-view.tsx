@@ -221,7 +221,7 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
   draft: { label: "Draft Room", shortLabel: "Draft" },
   simulator: { label: "Simulator", shortLabel: "Sim" },
   results: { label: "Reveal", shortLabel: "Reveal" },
-  standings: { label: "Standings", shortLabel: "Rank" },
+  standings: { label: "Standings", shortLabel: "Standings" },
 };
 
 function getLeagueTabOrder(phase: string): LeagueTab[] {
@@ -558,6 +558,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [showOnlySelected, setShowOnlySelected] = useState(false);
   const [showAddPlayers, setShowAddPlayers] = useState(false);
   const [addPlayerQuery, setAddPlayerQuery] = useState("");
+  const [expandedManagerRoster, setExpandedManagerRoster] = useState<string | null>(null);
   const [draftQuery, setDraftQuery] = useState("");
   const [draftConferenceFilter, setDraftConferenceFilter] = useState("all");
   const [draftTeamFilter, setDraftTeamFilter] = useState("all");
@@ -1864,15 +1865,18 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         return (
                           <div
                             key={submission.userId}
-                            className="group relative"
                           >
                             <div
                               className={[
-                                "flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm transition-colors",
+                                "flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm transition-colors cursor-pointer",
                                 submitted
                                   ? "border-emerald-500/40 bg-emerald-500/10 text-foreground"
                                   : "border-border/70 bg-background",
+                                expandedManagerRoster === submission.userId ? "rounded-b-none" : "",
                               ].join(" ")}
+                              onClick={() => setExpandedManagerRoster(
+                                expandedManagerRoster === submission.userId ? null : submission.userId,
+                              )}
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="flex min-w-0 items-center gap-2">
@@ -1903,21 +1907,24 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                 </span>
                               </div>
                             </div>
-                            {/* Roster popup on hover (desktop) */}
-                            {roster && roster.players.length > 0 && (
-                              <div className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden w-64 rounded-lg border border-border bg-popover p-2 shadow-lg group-hover:pointer-events-auto group-hover:block">
-                                <div className="space-y-1">
-                                  {roster.players
-                                    .slice()
-                                    .sort((a, b) => b.totalPoints - a.totalPoints)
-                                    .map((p) => (
-                                      <div key={p.playerId} className="flex items-center gap-2 rounded px-2 py-1 text-xs">
-                                        <PlayerAvatar espnId={p.playerId} team={p.playerTeam} size={20} />
-                                        <span className="truncate font-medium">{p.playerName}</span>
-                                        <span className="ml-auto tabular-nums text-muted-foreground">${p.acquisitionBid}</span>
-                                      </div>
-                                    ))}
-                                </div>
+                            {/* Expanded roster (click to toggle) */}
+                            {expandedManagerRoster === submission.userId && roster && roster.players.length > 0 && (
+                              <div className="rounded-b-lg border border-t-0 border-border/70 bg-muted/20 px-3 py-2 space-y-1">
+                                {roster.players
+                                  .slice()
+                                  .sort((a, b) => b.totalPoints - a.totalPoints)
+                                  .map((p) => (
+                                    <div key={p.playerId} className="flex items-center gap-2 rounded px-1 py-1 text-xs">
+                                      <PlayerAvatar espnId={p.playerId} team={p.playerTeam} size={20} />
+                                      <span className="truncate font-medium">{p.playerName}</span>
+                                      <span className="ml-auto tabular-nums text-muted-foreground">${p.acquisitionBid}</span>
+                                    </div>
+                                  ))}
+                              </div>
+                            )}
+                            {expandedManagerRoster === submission.userId && roster && roster.players.length === 0 && (
+                              <div className="rounded-b-lg border border-t-0 border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                                No drafted players yet.
                               </div>
                             )}
                           </div>
