@@ -693,6 +693,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
             userId: participant.userId,
             userName: participant.name,
             amount,
+            isAutoDefault: bidAmount?.isAutoDefault ?? false,
           };
         });
         const rankedBids = [...bids]
