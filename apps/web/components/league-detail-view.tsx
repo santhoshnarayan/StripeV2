@@ -73,6 +73,26 @@ type LeagueDetail = {
     totalGames: number | null;
     injuryStatus?: string | null;
   }>;
+  allPlayers?: Array<{
+    id: string;
+    name: string;
+    team: string;
+    conference: string;
+    seed: number | null;
+    gamesPlayed: number | null;
+    minutesPerGame: number | null;
+    pointsPerGame: number | null;
+    suggestedValue: number;
+    totalPoints: number | null;
+    totalGames: number | null;
+    injuryStatus?: string | null;
+    draftedBy: {
+      userId: string;
+      name: string;
+      acquisitionBid: number;
+      isAutoAssigned: boolean;
+    } | null;
+  }>;
   currentRound: null | {
     id: string;
     roundNumber: number;
@@ -1699,68 +1719,64 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortDraftPlayers(data.availablePlayers, "projected_desc").map(
-                    (player) => (
-                      <tr key={player.id} className="border-t border-border/70">
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {projectionPool.rankById.get(player.id) ?? "—"}
-                        </td>
-                        <td className="px-3 py-3 font-medium text-foreground">
-                          <div className="flex items-center gap-2">
-                            <PlayerAvatar espnId={player.id} team={player.team} size={28} />
-                            {player.name}<InjuryBadge status={player.injuryStatus} />
-                          </div>
-                        </td>
-                        <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
-                        <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {player.seed ?? "-"}
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {formatNullableNumber(player.gamesPlayed, 0)}
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {formatNullableNumber(player.minutesPerGame)}
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {formatNullableNumber(player.pointsPerGame)}
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums font-medium text-foreground">
-                          ${player.suggestedValue}
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {formatNullableNumber(player.totalPoints)}
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
-                          {formatNullableNumber(player.totalGames)}
-                        </td>
-                        {showDraftedPlayers ? <td className="px-3 py-3 text-muted-foreground/50">—</td> : null}
-                      </tr>
-                    ),
-                  )}
-                  {showDraftedPlayers ? data.rosters.flatMap((roster) =>
-                    roster.players.map((p) => (
-                      <tr key={p.playerId} className="border-t border-border/70 bg-muted/10">
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground/50">—</td>
-                        <td className="px-3 py-3">
-                          <div className="flex items-center gap-2 opacity-60">
-                            <PlayerAvatar espnId={p.playerId} team={p.playerTeam} size={28} />
-                            <span className="font-medium text-foreground">{p.playerName}</span>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3 text-muted-foreground/60">{p.playerTeam}</td>
-                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
-                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
-                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
-                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
-                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">${p.acquisitionBid}</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{p.totalPoints}</td>
-                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
-                        <td className="px-3 py-3 text-sm font-medium text-muted-foreground">{roster.name}</td>
-                      </tr>
-                    )),
-                  ) : null}
+                  {(data.allPlayers ?? data.availablePlayers.map((p) => ({ ...p, draftedBy: null })))
+                    .filter((player) => showDraftedPlayers || !player.draftedBy)
+                    .sort((a, b) => (b.totalPoints ?? 0) - (a.totalPoints ?? 0))
+                    .map((player) => {
+                      const drafted = player.draftedBy;
+                      return (
+                        <tr
+                          key={player.id}
+                          className={[
+                            "border-t border-border/70",
+                            drafted ? "bg-muted/10" : "",
+                          ].join(" ")}
+                        >
+                          <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                            {projectionPool.rankById.get(player.id) ?? "—"}
+                          </td>
+                          <td className="px-3 py-3 font-medium text-foreground">
+                            <div className={`flex items-center gap-2 ${drafted ? "opacity-60" : ""}`}>
+                              <PlayerAvatar espnId={player.id} team={player.team} size={28} />
+                              {player.name}<InjuryBadge status={player.injuryStatus} />
+                            </div>
+                          </td>
+                          <td className="px-3 py-3 text-muted-foreground">{player.team}</td>
+                          <td className="px-3 py-3 text-muted-foreground">{player.conference}</td>
+                          <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                            {player.seed ?? "-"}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                            {formatNullableNumber(player.gamesPlayed, 0)}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                            {formatNullableNumber(player.minutesPerGame)}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                            {formatNullableNumber(player.pointsPerGame)}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums font-medium text-foreground">
+                            ${player.suggestedValue}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                            {formatNullableNumber(player.totalPoints)}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                            {formatNullableNumber(player.totalGames)}
+                          </td>
+                          {showDraftedPlayers ? (
+                            <td className="px-3 py-3 text-sm text-muted-foreground">
+                              {drafted ? (
+                                <span>
+                                  <span className="font-medium">{drafted.name}</span>
+                                  <span className="ml-1 tabular-nums">${drafted.acquisitionBid}</span>
+                                </span>
+                              ) : "—"}
+                            </td>
+                          ) : null}
+                        </tr>
+                      );
+                    })}
                 </tbody>
               </table>
               {!data.availablePlayers.length ? (

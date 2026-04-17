@@ -814,6 +814,19 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       left.email.localeCompare(right.email),
     ),
     availablePlayers,
+    allPlayers: players.map((player) => {
+      const entry = rosterByPlayerId.get(player.id);
+      const member = entry ? memberByUserId.get(entry.userId) : null;
+      return {
+        ...player,
+        draftedBy: entry && member ? {
+          userId: entry.userId,
+          name: member.name,
+          acquisitionBid: entry.acquisitionBid,
+          isAutoAssigned: entry.isAutoAssigned ?? false,
+        } : null,
+      };
+    }),
     currentRound,
     draftHistory,
     lastResolvedRound: latestResolvedRound
