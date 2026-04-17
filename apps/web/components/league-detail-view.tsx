@@ -2773,9 +2773,10 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   </p>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-1.5">
+                                  {row.winnerName ? (
                                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200">
                                     <span aria-hidden>👑</span>
-                                    {row.winnerName ?? "—"}
+                                    {row.winnerName}
                                     {row.winningBid !== null ? (
                                       <span className="tabular-nums">
                                         · $
@@ -2783,6 +2784,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       </span>
                                     ) : null}
                                   </span>
+                                  ) : (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                                    Undrafted — returned to pool
+                                  </span>
+                                  )}
                                   {row.runnerUpName ? (
                                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-400/10 dark:text-amber-200">
                                       2nd · {row.runnerUpName}
@@ -2901,19 +2907,27 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     </div>
                                   </td>
                                   <td className="px-3 py-3 align-middle">
+                                    {row.winnerName ? (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-emerald-500/15 px-3 py-1.5 dark:bg-emerald-400/10">
                                       <span className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
-                                        {row.winnerName ?? "—"}
+                                        {row.winnerName}
                                       </span>
                                       <span className="text-xs tabular-nums text-emerald-700 dark:text-emerald-300">
                                         {row.winningBid !== null ? `$${row.winningBid}` : "—"}
                                       </span>
                                     </div>
+                                    ) : (
+                                    <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-muted/40 px-3 py-1.5">
+                                      <span className="text-sm font-medium text-muted-foreground">Undrafted</span>
+                                      <span className="text-[10px] text-muted-foreground/70">Returned to pool</span>
+                                    </div>
+                                    )}
                                   </td>
                                   <td className="px-3 py-3 align-middle">
+                                    {row.runnerUpName ? (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-amber-500/10 px-3 py-1.5 dark:bg-amber-400/10">
                                       <span className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-                                        {row.runnerUpName ?? "—"}
+                                        {row.runnerUpName}
                                       </span>
                                       <span className="text-xs tabular-nums text-amber-700 dark:text-amber-300">
                                         {row.runnerUpBid === null
@@ -2923,6 +2937,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                             : `$${row.runnerUpBid}`}
                                       </span>
                                     </div>
+                                    ) : (
+                                    <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-muted/20 px-3 py-1.5">
+                                      <span className="text-sm text-muted-foreground/50">—</span>
+                                    </div>
+                                    )}
                                   </td>
                                   {row.bids.map((bid) => {
                                     const maxAllowed = maxBidLookup.get(`${round.id}:${rowIndex}:${bid.userId}`) ?? Infinity;
