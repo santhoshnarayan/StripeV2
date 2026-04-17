@@ -126,6 +126,7 @@ type LeagueDetail = {
         amount: number | null;
         isWinningBid: boolean;
         isSecondPlaceBid: boolean;
+        isAutoDefault?: boolean;
       }>;
     }>;
   }>;
@@ -1728,43 +1729,60 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                       {data.currentRound.submissionStatuses.map((submission) => {
                         const submitted = Boolean(submission.submittedAt);
+                        const member = data.members.find((m) => m.userId === submission.userId);
+                        const roster = data.rosters.find((r) => r.userId === submission.userId);
                         return (
                           <div
                             key={submission.userId}
-                            title={
-                              submission.submittedAt
-                                ? `Submitted ${new Date(submission.submittedAt).toLocaleString()}`
-                                : "Waiting on bids"
-                            }
-                            className={[
-                              "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
-                              submitted
-                                ? "border-emerald-500/40 bg-emerald-500/10 text-foreground"
-                                : "border-border/70 bg-background",
-                            ].join(" ")}
+                            className="group relative"
                           >
-                            <span className="flex min-w-0 items-center gap-2">
-                              <span
-                                aria-hidden
-                                className={[
-                                  "inline-flex h-1.5 w-1.5 shrink-0 rounded-full",
-                                  submitted
-                                    ? "bg-emerald-500"
-                                    : "animate-pulse bg-amber-500",
-                                ].join(" ")}
-                              />
-                              <span className="truncate">{submission.name}</span>
-                            </span>
-                            <span
+                            <div
+                              title={
+                                submission.submittedAt
+                                  ? `Submitted ${new Date(submission.submittedAt).toLocaleString()}`
+                                  : "Waiting on bids"
+                              }
                               className={[
-                                "shrink-0 text-[11px]",
-                                submitted ? "text-emerald-700" : "text-muted-foreground",
+                                "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
+                                submitted
+                                  ? "border-emerald-500/40 bg-emerald-500/10 text-foreground"
+                                  : "border-border/70 bg-background",
                               ].join(" ")}
                             >
-                              {submitted
-                                ? formatRelativeTime(submission.submittedAt!)
-                                : "Waiting"}
-                            </span>
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span
+                                  aria-hidden
+                                  className={[
+                                    "inline-flex h-1.5 w-1.5 shrink-0 rounded-full",
+                                    submitted
+                                      ? "bg-emerald-500"
+                                      : "animate-pulse bg-amber-500",
+                                  ].join(" ")}
+                                />
+                                <span className="truncate">{submission.name}</span>
+                              </span>
+                              <span className="flex items-center gap-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                                <span>${member?.remainingBudget ?? "?"}</span>
+                                <span>{roster?.players.length ?? 0}/{data.league.rosterSize}</span>
+                              </span>
+                            </div>
+                            {/* Roster popup on hover (desktop) */}
+                            {roster && roster.players.length > 0 && (
+                              <div className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden w-64 rounded-lg border border-border bg-popover p-2 shadow-lg group-hover:pointer-events-auto group-hover:block">
+                                <div className="space-y-1">
+                                  {roster.players
+                                    .slice()
+                                    .sort((a, b) => b.totalPoints - a.totalPoints)
+                                    .map((p) => (
+                                      <div key={p.playerId} className="flex items-center gap-2 rounded px-2 py-1 text-xs">
+                                        <PlayerAvatar espnId={p.playerId} team={p.playerTeam} size={20} />
+                                        <span className="truncate font-medium">{p.playerName}</span>
+                                        <span className="ml-auto tabular-nums text-muted-foreground">${p.acquisitionBid}</span>
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -2630,6 +2648,9 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                         </span>
                                         <span className="shrink-0 font-semibold">
                                           {display}
+                                          {bid.isAutoDefault && bid.amount != null && bid.amount > 0 ? (
+                                            <span className="ml-1 text-[9px] font-normal text-muted-foreground/60">auto</span>
+                                          ) : null}
                                         </span>
                                       </div>
                                     );
@@ -2723,6 +2744,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                           : `$${bid.amount}`;
                                     const isWin = bid.isWinningBid;
                                     const isRunnerUp = !isWin && bid.isSecondPlaceBid;
+                                    const isAuto = bid.isAutoDefault;
                                     return (
                                       <td
                                         key={bid.userId}
@@ -2743,6 +2765,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                           ].join(" ")}
                                         >
                                           {display}
+                                          {isAuto && bid.amount != null && bid.amount > 0 ? (
+                                            <span className="ml-0.5 text-[9px] text-muted-foreground/60" title="Auto-bid">
+                                              A
+                                            </span>
+                                          ) : null}
                                         </span>
                                       </td>
                                     );
