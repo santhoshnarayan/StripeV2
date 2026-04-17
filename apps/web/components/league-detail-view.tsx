@@ -1848,7 +1848,13 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       </p>
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                      {data.currentRound.submissionStatuses.map((submission) => {
+                      {[...data.currentRound.submissionStatuses]
+                        .sort((a, b) => {
+                          const aBudget = data.members.find((m) => m.userId === a.userId)?.remainingBudget ?? 0;
+                          const bBudget = data.members.find((m) => m.userId === b.userId)?.remainingBudget ?? 0;
+                          return bBudget - aBudget;
+                        })
+                        .map((submission) => {
                         const submitted = Boolean(submission.submittedAt);
                         const member = data.members.find((m) => m.userId === submission.userId);
                         const roster = data.rosters.find((r) => r.userId === submission.userId);
