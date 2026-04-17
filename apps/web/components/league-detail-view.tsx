@@ -1840,8 +1840,19 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
                 <div className="space-y-4">
                   <div>
-                    <div className="flex items-baseline justify-between gap-3">
+                    <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-medium text-foreground">Submission Status</p>
+                      <div className="flex items-center gap-3">
+                        {data.league.isCommissioner ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => { setShowAddPlayers(true); setAddPlayerQuery(""); }}
+                            className="h-7 text-xs"
+                          >
+                            + Add Players
+                          </Button>
+                        ) : null}
                       <p className="text-xs text-muted-foreground">
                         {
                           data.currentRound.submissionStatuses.filter((s) => s.submittedAt)
@@ -1849,6 +1860,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         }{" "}
                         / {data.currentRound.submissionStatuses.length} submitted
                       </p>
+                      </div>
                     </div>
                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                       {[...data.currentRound.submissionStatuses]
