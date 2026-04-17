@@ -2246,7 +2246,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setShowAddPlayers((v) => !v)}
+                          onClick={() => { setShowAddPlayers(true); setAddPlayerQuery(""); }}
                           className="text-xs"
                         >
                           + Add Players to Round
@@ -2254,54 +2254,77 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         </>
                       ) : null}
                     </div>
-                    {showAddPlayers && data.league.isCommissioner ? (
-                      <div className="rounded-lg border border-border/70 p-3 space-y-2">
-                        <p className="text-xs font-medium text-muted-foreground">Add undrafted players to this round</p>
-                        <Input
-                          placeholder="Search players to add..."
-                          value={addPlayerQuery}
-                          onChange={(e) => setAddPlayerQuery(e.target.value)}
-                          className="h-8 text-sm"
-                        />
-                        <div className="max-h-48 overflow-y-auto space-y-1">
-                          {data.availablePlayers
-                            .filter((p) => {
-                              // Exclude players already in this round
-                              const inRound = new Set(data.currentRound?.players.map((rp) => rp.id) ?? []);
-                              if (inRound.has(p.id)) return false;
-                              if (!addPlayerQuery.trim()) return false;
-                              return [p.name, p.team].join(" ").toLowerCase().includes(addPlayerQuery.trim().toLowerCase());
-                            })
-                            .slice(0, 20)
-                            .map((p) => (
-                              <div key={p.id} className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/50">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <PlayerAvatar espnId={p.id} team={p.team} size={22} />
-                                  <span className="truncate font-medium">{p.name}</span>
-                                  <span className="text-xs text-muted-foreground">{p.team}</span>
-                                  <InjuryBadge status={p.injuryStatus} />
-                                </div>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-6 text-xs shrink-0"
-                                  onClick={async () => {
-                                    try {
-                                      await appApiFetch(
-                                        `/leagues/${leagueId}/draft/rounds/${data.currentRound!.id}/add-players`,
-                                        { method: "POST", body: JSON.stringify({ playerIds: [p.id] }) },
-                                      );
-                                      toast.success(`Added ${p.name}`);
-                                      void loadLeague();
-                                    } catch (err) {
-                                      toast.error(err instanceof Error ? err.message : "Failed to add player");
-                                    }
-                                  }}
-                                >
-                                  Add
-                                </Button>
-                              </div>
-                            ))}
+                    {/* Add Players Modal */}
+                    {showAddPlayers && data.league.isCommissioner && data.currentRound ? (
+                      <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-16" onClick={() => setShowAddPlayers(false)}>
+                        <div className="bg-background border rounded-lg shadow-lg w-full max-w-lg mx-4 max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-between px-4 py-3 border-b">
+                            <div>
+                              <p className="font-semibold text-sm">Add Players to Round {data.currentRound.roundNumber}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {(() => {
+                                  const inRound = new Set(data.currentRound!.players.map((rp) => rp.id));
+                                  return data.availablePlayers.filter((p) => !inRound.has(p.id)).length;
+                                })()} players not in this round
+                              </p>
+                            </div>
+                            <button onClick={() => setShowAddPlayers(false)} className="text-muted-foreground hover:text-foreground text-lg px-2">&times;</button>
+                          </div>
+                          <div className="px-4 py-2 border-b">
+                            <Input
+                              placeholder="Search players..."
+                              value={addPlayerQuery}
+                              onChange={(e) => setAddPlayerQuery(e.target.value)}
+                              className="h-8 text-sm"
+                              autoFocus
+                            />
+                          </div>
+                          <div className="flex-1 overflow-y-auto px-4 py-2 space-y-1">
+                            {(() => {
+                              const inRound = new Set(data.currentRound!.players.map((rp) => rp.id));
+                              const q = addPlayerQuery.trim().toLowerCase();
+                              return data.availablePlayers
+                                .filter((p) => {
+                                  if (inRound.has(p.id)) return false;
+                                  if (q && ![p.name, p.team].join(" ").toLowerCase().includes(q)) return false;
+                                  return true;
+                                })
+                                .sort((a, b) => (b.totalPoints ?? 0) - (a.totalPoints ?? 0))
+                                .slice(0, 50)
+                                .map((p) => (
+                                  <div key={p.id} className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/50">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <PlayerAvatar espnId={p.id} team={p.team} size={24} />
+                                      <span className="truncate font-medium">{p.name}</span>
+                                      <span className="text-xs text-muted-foreground">{p.team}</span>
+                                      <InjuryBadge status={p.injuryStatus} />
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <span className="text-xs tabular-nums text-muted-foreground">${p.suggestedValue}</span>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-6 text-xs"
+                                        onClick={async () => {
+                                          try {
+                                            await appApiFetch(
+                                              `/leagues/${leagueId}/draft/rounds/${data.currentRound!.id}/add-players`,
+                                              { method: "POST", body: JSON.stringify({ playerIds: [p.id] }) },
+                                            );
+                                            toast.success(`Added ${p.name}`);
+                                            void loadLeague();
+                                          } catch (err) {
+                                            toast.error(err instanceof Error ? err.message : "Failed to add player");
+                                          }
+                                        }}
+                                      >
+                                        Add
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ));
+                            })()}
+                          </div>
                         </div>
                       </div>
                     ) : null}
