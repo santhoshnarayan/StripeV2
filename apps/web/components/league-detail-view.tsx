@@ -1616,7 +1616,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     <span>{member.rosterCount} players</span>
                     <span>${member.remainingBudget} left</span>
                     <span>{member.remainingRosterSlots} spots left</span>
-                    <span>{member.totalPoints} proj. pts</span>
+                    <span>{typeof member.totalPoints === "number" ? member.totalPoints.toFixed(1) : member.totalPoints} proj. pts</span>
                   </div>
                   {data.league.isCommissioner && member.role !== "commissioner" ? (
                     <div className="mt-3">
