@@ -1738,28 +1738,29 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       </tr>
                     ),
                   )}
-                  {showDraftedPlayers && data.rosters.flatMap((roster) =>
+                  {showDraftedPlayers ? data.rosters.flatMap((roster) =>
                     roster.players.map((p) => (
-                      <tr key={p.playerId} className="border-t border-border/70 opacity-60">
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
-                        <td className="px-3 py-3 font-medium text-foreground">
-                          <div className="flex items-center gap-2">
+                      <tr key={p.playerId} className="border-t border-border/70 bg-muted/10">
+                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground/50">—</td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-2 opacity-60">
                             <PlayerAvatar espnId={p.playerId} team={p.playerTeam} size={28} />
-                            {p.playerName}
+                            <span className="font-medium text-foreground">{p.playerName}</span>
                           </div>
                         </td>
-                        <td className="px-3 py-3 text-muted-foreground">{p.playerTeam}</td>
-                        <td className="px-3 py-3 text-muted-foreground" colSpan={2}>—</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
+                        <td className="px-3 py-3 text-muted-foreground/60">{p.playerTeam}</td>
+                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
+                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
+                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
+                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
+                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
                         <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">${p.acquisitionBid}</td>
                         <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{p.totalPoints}</td>
-                        <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">—</td>
-                        <td className="px-3 py-3 text-sm text-muted-foreground">{roster.name}</td>
+                        <td className="px-3 py-3 text-muted-foreground/40">—</td>
+                        <td className="px-3 py-3 text-sm font-medium text-muted-foreground">{roster.name}</td>
                       </tr>
                     )),
-                  )}
+                  ) : null}
                 </tbody>
               </table>
               {!data.availablePlayers.length ? (
