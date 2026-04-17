@@ -746,6 +746,40 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     return { rankById, replacementPts };
   }, [data]);
 
+  // Compute max allowed bid per user at each row in each resolved round.
+  // Used to detect invalid bids in the reveal table.
+  // Key: `${roundId}:${rowIndex}:${userId}` → maxAllowed
+  const maxBidLookup = useMemo(() => {
+    if (!data) return new Map<string, number>();
+    const lookup = new Map<string, number>();
+    const budgetState = new Map(
+      data.members.map((m) => [m.userId, {
+        budget: data.league.budgetPerTeam,
+        slots: data.league.rosterSize,
+      }]),
+    );
+
+    for (const round of data.draftHistory) {
+      for (let ri = 0; ri < round.rows.length; ri++) {
+        const row = round.rows[ri];
+        // Snapshot max bid for each user BEFORE this row resolves
+        for (const [uid, s] of budgetState) {
+          const max = s.slots > 0
+            ? Math.max(0, s.budget - (s.slots - 1) * data.league.minBid)
+            : 0;
+          lookup.set(`${round.id}:${ri}:${uid}`, max);
+        }
+        // Deduct the winner's spending
+        if (row.winnerUserId && row.winningBid != null) {
+          const s = budgetState.get(row.winnerUserId);
+          if (s) { s.budget -= row.winningBid; s.slots--; }
+        }
+      }
+    }
+
+    return lookup;
+  }, [data]);
+
   const filteredAvailablePlayers = useMemo(() => {
     if (!data) {
       return [];
@@ -2787,6 +2821,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     </div>
                                   </td>
                                   {row.bids.map((bid) => {
+                                    const maxAllowed = maxBidLookup.get(`${round.id}:${rowIndex}:${bid.userId}`) ?? Infinity;
+                                    const isInvalid = bid.amount != null && bid.amount > 0 && bid.amount > maxAllowed;
                                     const display =
                                       bid.amount === null
                                         ? "—"
@@ -2794,7 +2830,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                           ? "Pass"
                                           : `$${bid.amount}`;
                                     const isWin = bid.isWinningBid;
-                                    const isRunnerUp = !isWin && bid.isSecondPlaceBid;
+                                    const isRunnerUp = !isWin && bid.isSecondPlaceBid && !isInvalid;
                                     const isAuto = bid.isAutoDefault;
                                     return (
                                       <td
@@ -2804,16 +2840,19 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                         <span
                                           className={[
                                             "inline-block min-w-[3rem] text-sm tabular-nums transition-colors",
-                                            isWin
-                                              ? "font-semibold text-emerald-700 dark:text-emerald-300"
-                                              : isRunnerUp
-                                                ? "font-medium text-amber-700 dark:text-amber-300"
-                                                : bid.amount === 0
-                                                  ? "italic text-muted-foreground/70"
-                                                  : bid.amount === null
-                                                    ? "text-muted-foreground/50"
-                                                    : "text-muted-foreground",
+                                            isInvalid
+                                              ? "line-through text-red-500/70 dark:text-red-400/70"
+                                              : isWin
+                                                ? "font-semibold text-emerald-700 dark:text-emerald-300"
+                                                : isRunnerUp
+                                                  ? "font-medium text-amber-700 dark:text-amber-300"
+                                                  : bid.amount === 0
+                                                    ? "italic text-muted-foreground/70"
+                                                    : bid.amount === null
+                                                      ? "text-muted-foreground/50"
+                                                      : "text-muted-foreground",
                                           ].join(" ")}
+                                          title={isInvalid ? `Over max allowed ($${maxAllowed})` : undefined}
                                         >
                                           {display}
                                           {isAuto && bid.amount != null && bid.amount > 0 ? (
