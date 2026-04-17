@@ -555,6 +555,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [bidValues, setBidValues] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<LeagueTab>("overview");
   const [showDraftedPlayers, setShowDraftedPlayers] = useState(false);
+  const [showOnlySelected, setShowOnlySelected] = useState(false);
   const [draftQuery, setDraftQuery] = useState("");
   const [draftConferenceFilter, setDraftConferenceFilter] = useState("all");
   const [draftTeamFilter, setDraftTeamFilter] = useState("all");
@@ -834,11 +835,15 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           return false;
         }
 
+        if (showOnlySelected && !selectedPlayerIds.includes(player.id)) {
+          return false;
+        }
+
         return true;
       }),
       draftSort,
     );
-  }, [data, draftConferenceFilter, draftQuery, draftSeedFilter, draftSort, draftTeamFilter]);
+  }, [data, draftConferenceFilter, draftQuery, draftSeedFilter, draftSort, draftTeamFilter, showOnlySelected, selectedPlayerIds]);
 
   const filteredBidPlayers = useMemo(() => {
     if (!data?.currentRound) {
@@ -1835,40 +1840,48 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         const submitted = Boolean(submission.submittedAt);
                         const member = data.members.find((m) => m.userId === submission.userId);
                         const roster = data.rosters.find((r) => r.userId === submission.userId);
+                        const priority = data.priorityOrder.find((p) => p.userId === submission.userId);
                         return (
                           <div
                             key={submission.userId}
                             className="group relative"
                           >
                             <div
-                              title={
-                                submission.submittedAt
-                                  ? `Submitted ${new Date(submission.submittedAt).toLocaleString()}`
-                                  : "Waiting on bids"
-                              }
                               className={[
-                                "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
+                                "flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm transition-colors",
                                 submitted
                                   ? "border-emerald-500/40 bg-emerald-500/10 text-foreground"
                                   : "border-border/70 bg-background",
                               ].join(" ")}
                             >
-                              <span className="flex min-w-0 items-center gap-2">
-                                <span
-                                  aria-hidden
-                                  className={[
-                                    "inline-flex h-1.5 w-1.5 shrink-0 rounded-full",
-                                    submitted
-                                      ? "bg-emerald-500"
-                                      : "animate-pulse bg-amber-500",
-                                  ].join(" ")}
-                                />
-                                <span className="truncate">{submission.name}</span>
-                              </span>
-                              <span className="flex items-center gap-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                                <span>${member?.remainingBudget ?? "?"}</span>
-                                <span>{roster?.players.length ?? 0}/{data.league.rosterSize}</span>
-                              </span>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span
+                                    aria-hidden
+                                    className={[
+                                      "inline-flex h-1.5 w-1.5 shrink-0 rounded-full",
+                                      submitted
+                                        ? "bg-emerald-500"
+                                        : "animate-pulse bg-amber-500",
+                                    ].join(" ")}
+                                  />
+                                  <span className="truncate">{submission.name}</span>
+                                </span>
+                                <span className="flex items-center gap-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                                  <span>${member?.remainingBudget ?? "?"}</span>
+                                  <span>{roster?.players.length ?? 0}/{data.league.rosterSize}</span>
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                <span>
+                                  Tiebreak #{priority?.draftPriority ?? "?"}
+                                </span>
+                                <span>
+                                  {submitted
+                                    ? formatRelativeTime(submission.submittedAt!)
+                                    : "Waiting"}
+                                </span>
+                              </div>
                             </div>
                             {/* Roster popup on hover (desktop) */}
                             {roster && roster.players.length > 0 && (
@@ -2381,11 +2394,19 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
                         <span>{selectedPlayerIds.length} selected</span>
-                        <span>{selectedVisibleCount} selected in current view</span>
-                        <span>{filteredAvailablePlayers.length} visible players</span>
-                        <span>{data.availablePlayers.length} total remaining players</span>
+                        <span>{filteredAvailablePlayers.length} visible</span>
+                        <span>{data.availablePlayers.length} total remaining</span>
+                        <label className="flex items-center gap-1.5 cursor-pointer ml-auto">
+                          <input
+                            type="checkbox"
+                            checked={showOnlySelected}
+                            onChange={(e) => setShowOnlySelected(e.target.checked)}
+                            className="rounded"
+                          />
+                          Show only selected
+                        </label>
                       </div>
 
                       <div className="space-y-3 md:hidden">
