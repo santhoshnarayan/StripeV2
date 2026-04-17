@@ -1847,20 +1847,21 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
             Math.min(explicitBid, maxAllowed),
           );
         }
-      } else if (isAllRemainingRound && player.suggestedValue < 2) {
-        // In an all-remaining round, cheap players default to a pass.
-        effectiveBid = 0;
       } else if (maxAllowed < access.league.minBid) {
         effectiveBid = 0;
+      } else if (isAllRemainingRound && memberSubmittedAnyBids) {
+        // All-remaining round + member submitted bids: unspecified players
+        // default to $0 (pass). The member chose which players to bid on.
+        effectiveBid = 0;
       } else if (memberSubmittedAnyBids) {
-        // Member submitted bids for some players but not this one —
+        // Normal round + member submitted bids for some players but not this one —
         // use exact suggested value (no noise) as the auto-pick.
         effectiveBid = Math.max(
           access.league.minBid,
           Math.min(player.suggestedValue, maxAllowed),
         );
       } else {
-        // Member submitted no bids at all — use noisy default.
+        // Member submitted no bids at all — use noisy default (auto-draft).
         effectiveBid = sampleDefaultAutoBid(player.suggestedValue, maxAllowed);
       }
 
