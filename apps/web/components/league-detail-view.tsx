@@ -2427,6 +2427,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         </label>
                       </div>
 
+                      {/* Mobile: Open Round button above player list */}
+                      <div className="md:hidden">
+                        {openRoundError ? (
+                          <p className="text-sm text-destructive mb-2">{openRoundError}</p>
+                        ) : null}
+                        <Button type="submit" disabled={openRoundPending} className="w-full">
+                          {openRoundPending ? "Opening..." : `Open Round (${selectedPlayerIds.length} players)`}
+                        </Button>
+                      </div>
+
                       <div className="space-y-3 md:hidden">
                         {filteredAvailablePlayers.map((player) => {
                           const checked = selectedPlayerIdSet.has(player.id);
