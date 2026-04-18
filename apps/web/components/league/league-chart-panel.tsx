@@ -692,26 +692,40 @@ export function LeagueChartPanel({
   // Score snapshot across every game AT the hovered event's moment.
   // Built from hoveredEvent.gamesSnapshot (keyed by seriesKey+gameNum) →
   // gameId via the schedule. ScoreboardCards use this to rewind in time.
+  //
+  // For games not present in gamesSnapshot at the hovered moment we emit an
+  // explicit pre-game entry (0–0, status "pre"). Without this, cards for
+  // games that hadn't tipped yet would keep showing their current/final
+  // score instead of rewinding — the classic scoreboard desync.
   const hoveredGameStateById = useMemo(() => {
     const m = new Map<
       string,
       { homeScore: number; awayScore: number; status: "pre" | "in" | "post" }
     >();
-    if (!hoveredEvent || !hoveredEvent.gamesSnapshot || !schedule) return m;
+    if (!hoveredEvent || !schedule) return m;
     const byComposite = new Map<string, string>();
     for (const [seriesKey, games] of Object.entries(schedule.series)) {
       for (const g of games) {
         if (g.gameNum != null) byComposite.set(`${seriesKey}|${g.gameNum}`, g.id);
       }
     }
-    for (const snap of hoveredEvent.gamesSnapshot) {
+    const snapshotGids = new Set<string>();
+    for (const snap of hoveredEvent.gamesSnapshot ?? []) {
       const gid = byComposite.get(`${snap.seriesKey}|${snap.gameNum}`);
       if (gid) {
+        snapshotGids.add(gid);
         m.set(gid, {
           homeScore: snap.homeScore,
           awayScore: snap.awayScore,
           status: snap.status,
         });
+      }
+    }
+    // Fill remaining games with pre-game state so cards correctly show
+    // "hasn't started" at this point in time.
+    for (const gid of byComposite.values()) {
+      if (!snapshotGids.has(gid)) {
+        m.set(gid, { homeScore: 0, awayScore: 0, status: "pre" });
       }
     }
     return m;

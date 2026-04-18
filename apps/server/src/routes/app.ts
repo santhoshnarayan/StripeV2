@@ -4010,8 +4010,15 @@ appRouter.post("/leagues/:leagueId/rebuild-projections", async (c) => {
   const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
   if (!access) return c.json({ error: "League not found" }, 404);
 
-  const body = (await c.req.json().catch(() => ({}))) as { mode?: "full" | "incremental" };
-  const mode = body.mode === "full" ? "full" : "incremental";
+  const body = (await c.req.json().catch(() => ({}))) as {
+    mode?: "full" | "incremental" | "actuals-only";
+  };
+  const mode =
+    body.mode === "full"
+      ? "full"
+      : body.mode === "actuals-only"
+        ? "actuals-only"
+        : "incremental";
 
   const jobId = await enqueueProjectionRebuild({
     leagueId: access.league.id,

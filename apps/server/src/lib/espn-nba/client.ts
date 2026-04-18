@@ -172,7 +172,7 @@ export interface GameBoxscore {
 export interface PlayItem {
   id: string;
   sequenceNumber: string;
-  period?: { number?: number };
+  period?: { number?: number; displayValue?: string };
   clock?: { displayValue?: string; value?: number };
   scoringPlay?: boolean;
   shootingPlay?: boolean;
@@ -180,11 +180,18 @@ export interface PlayItem {
   type?: { id?: string; text?: string };
   text?: string;
   shortText?: string;
+  alternativeText?: string;
+  shortAlternativeText?: string;
   homeScore?: number;
   awayScore?: number;
   team?: EspnRef;
+  possessionTeam?: EspnRef;
   participants?: { athlete?: EspnRef; type?: string }[];
   coordinate?: { x?: number; y?: number };
+  pointsAttempted?: number;
+  valid?: boolean;
+  priority?: boolean;
+  modified?: string;
   homeWinPercentage?: number;
   tieWinPercentage?: number;
   /** ISO-8601 server-side timestamp of when the play occurred. */

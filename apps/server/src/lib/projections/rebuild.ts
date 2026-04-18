@@ -28,7 +28,7 @@ import {
 
 const SIM_COUNT_PER_EVENT = 2_000;
 
-type RebuildMode = "full" | "incremental";
+type RebuildMode = "full" | "incremental" | "actuals-only";
 
 interface RebuildParams {
   leagueId: string;
@@ -321,6 +321,49 @@ async function runProjectionRebuild(
     .update(nbaProjectionJob)
     .set({ totalEvents: snapshots.length, updatedAt: new Date() })
     .where(eq(nbaProjectionJob.id, jobId));
+
+  if (mode === "actuals-only") {
+    // Fast path: recompute only actualPoints + cumulative metadata for every
+    // event. Skip Monte Carlo entirely. Used after a fix to the snapshot
+    // builder (e.g. wallclock sort change) where projections are still valid
+    // but actuals need to be refreshed. Orders of magnitude faster than full.
+    let processed = 0;
+    for (const snap of snapshots) {
+      const actualPoints = rosterActualPoints(rosters, snap.cumulativePointsByPlayer);
+      await db
+        .update(nbaEventProjection)
+        .set({
+          actualPoints,
+          eventMeta: snapshotEventMeta(snap),
+          gamesSnapshot: snap.liveGames,
+          computedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(nbaEventProjection.leagueId, params.leagueId),
+            eq(nbaEventProjection.gameId, snap.event.gameId),
+            eq(nbaEventProjection.sequence, snap.event.sequence),
+          ),
+        );
+      processed++;
+      if (processed % 50 === 0) {
+        await db
+          .update(nbaProjectionJob)
+          .set({ processedEvents: processed, updatedAt: new Date() })
+          .where(eq(nbaProjectionJob.id, jobId));
+      }
+    }
+    await db
+      .update(nbaProjectionJob)
+      .set({
+        processedEvents: processed,
+        status: "completed",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(nbaProjectionJob.id, jobId));
+    return;
+  }
 
   if (mode === "full") {
     // Atomic replace: compute every projection row first (slow Monte Carlo

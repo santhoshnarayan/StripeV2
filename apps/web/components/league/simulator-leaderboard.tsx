@@ -209,10 +209,12 @@ export function SimulatorLeaderboard({
 }
 
 function TeamExposureRowCells({ row }: { row: TeamExposureRow }) {
-  // Drop the "Champ" column: show R1..Finals only (winByRound indices 0..3).
+  // Columns are "probability of WINNING round X" — for R1..Finals.
+  // teamReachPct is indexed by reach-level [≥1, ≥2, ≥3, ≥4, ≥5]; "wins R1" =
+  // reached ≥R2 = teamReachPct[1]; "wins Finals" = reached ≥R5 = teamReachPct[4].
   const unrostered = row.playerCount === 0;
   const cells = unrostered
-    ? row.teamReachPct.slice(0, 4)
+    ? row.teamReachPct.slice(1, 5)
     : row.winByRound.slice(0, 4);
   return (
     <>
