@@ -25,7 +25,6 @@ import {
 import { useAutoSim } from "@/lib/use-auto-sim";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { LiveGamesTicker } from "@/components/nba/live-games-ticker";
-import { ScoringTimelineChart } from "@/components/nba/scoring-timeline-chart";
 import { LeagueChartPanel } from "@/components/league/league-chart-panel";
 import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
 import { usePolling } from "@/lib/use-polling";
@@ -1783,19 +1782,6 @@ function StandingsPanel({
               </tbody>
             </table>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Scoring Timeline */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Scoring over time</CardTitle>
-          <CardDescription>
-            Cumulative playoff points per manager, bucketed by game date.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ScoringTimelineChart leagueId={leagueId} />
         </CardContent>
       </Card>
 

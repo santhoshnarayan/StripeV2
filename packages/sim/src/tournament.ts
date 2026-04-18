@@ -220,8 +220,22 @@ function getTeamRating(
 }
 
 interface SeriesPlayerAccum {
-  playerGameCounts: Map<string, number[]>;
-  playerPointsAccum: Map<string, number[]>;
+  /** Dense (numPlayers × 4) Float32Array of per-round game counts. */
+  games: Float32Array;
+  /** Dense (numPlayers × 4) Float64Array of per-round points. */
+  pts: Float64Array;
+}
+
+/** Precomputed point-distribution weights for a team, stored as typed arrays
+ *  indexed into the global playerIndex. Built once per `runTournamentSim`
+ *  call and reused across every sim × series × game. */
+interface TeamPointDistribution {
+  /** Number of eligible players (length of active slices of typed arrays). */
+  count: number;
+  /** Global player indices (into `playerIndex`), first `count` entries valid. */
+  playerIdx: Int32Array;
+  /** Per-player Dirichlet alpha (share × concentration), first `count` valid. */
+  alphas: Float64Array;
 }
 
 interface SimContext {
@@ -236,6 +250,13 @@ interface SimContext {
   aliases: Record<string, string>;
   aliasesRev: Record<string, string>;
   liveByKey: Map<string, LiveGameState[]>;
+  /** team abbrev (any known alias) → precomputed distribution. */
+  teamDistByKey: Map<string, TeamPointDistribution>;
+  /** playerIndex: espnId → column in simMatrix / row in accum typed arrays. */
+  playerIndex: Map<string, number>;
+  numPlayers: number;
+  /** Scratch buffer reused by the Dirichlet sampler. */
+  scratchShares: Float64Array;
 }
 
 function simulateSeries(
@@ -261,46 +282,21 @@ function simulateSeries(
   for (let gameNum = 0; gameNum < 7; gameNum++) {
     if (hWins === 4 || lWins === 4) break;
 
-    // Distribute points to players using Dirichlet
+    // Distribute points to players using Dirichlet, using precomputed
+    // per-team (playerIdx, alphas) typed arrays — no per-call allocation.
+    const accumGames = accum.games;
+    const accumPts = accum.pts;
+    const scratch = ctx.scratchShares;
     const trackTeam = (team: string, score: number) => {
-      const teamKey = resolveTeam(team, ctx.rostersByTeam, ctx.aliases, ctx.aliasesRev);
-      const roster = ctx.rostersByTeam[teamKey] ?? [];
-      const pm = ctx.playoffMinutes[team] ?? ctx.playoffMinutes[teamKey] ?? {};
-
-      const activeIds: string[] = [];
-      const weights: number[] = [];
-      let totalWeight = 0;
-
-      for (const p of roster) {
-        // Only distribute points to players who have projected playoff minutes.
-        // Using regular-season MPG as fallback dilutes star shares and under-
-        // projects top scorers. Matches the explore reference behavior.
-        const mins = pm[p.nba_id] ?? 0;
-        if (mins <= 0) continue;
-        const ptsPerMin = p.mpg > 0 ? p.ppg / p.mpg : 1;
-        const w = ptsPerMin * mins;
-        activeIds.push(p.espn_id);
-        weights.push(w);
-        totalWeight += w;
-      }
-
-      if (activeIds.length === 0 || totalWeight === 0) return;
-
-      // Dirichlet-distributed shares (concentration=20)
-      const concentration = 20;
-      const alphas = weights.map((w) => (w / totalWeight) * concentration);
-      const shares = rng.dirichlet(alphas);
-
-      for (let i = 0; i < activeIds.length; i++) {
-        const espnId = activeIds[i];
-        const gc = accum.playerGameCounts.get(espnId) ?? [0, 0, 0, 0];
-        gc[roundIdx] = (gc[roundIdx] ?? 0) + 1;
-        accum.playerGameCounts.set(espnId, gc);
-
-        const pts = score * shares[i];
-        const pa = accum.playerPointsAccum.get(espnId) ?? [0, 0, 0, 0];
-        pa[roundIdx] = (pa[roundIdx] ?? 0) + pts;
-        accum.playerPointsAccum.set(espnId, pa);
+      const dist = ctx.teamDistByKey.get(team);
+      if (!dist || dist.count === 0) return;
+      const count = dist.count;
+      rng.dirichletInto(dist.alphas, scratch, count);
+      const playerIdx = dist.playerIdx;
+      for (let i = 0; i < count; i++) {
+        const offset = playerIdx[i] * 4 + roundIdx;
+        accumGames[offset] += 1;
+        accumPts[offset] += score * scratch[i];
       }
     };
 
@@ -315,18 +311,14 @@ function simulateSeries(
       const lowerActual = liveHigherHome ? live.awayScore : live.homeScore;
 
       // Apply accrued actual player points (and count as played game for each)
-      const touched = new Set<string>();
-      for (const [espnId, pts] of Object.entries(live.playerPoints)) {
+      for (const espnId in live.playerPoints) {
+        const pts = live.playerPoints[espnId];
         if (!Number.isFinite(pts) || pts <= 0) continue;
-        const pa = accum.playerPointsAccum.get(espnId) ?? [0, 0, 0, 0];
-        pa[roundIdx] = (pa[roundIdx] ?? 0) + pts;
-        accum.playerPointsAccum.set(espnId, pa);
-        touched.add(espnId);
-      }
-      for (const espnId of touched) {
-        const gc = accum.playerGameCounts.get(espnId) ?? [0, 0, 0, 0];
-        gc[roundIdx] = (gc[roundIdx] ?? 0) + 1;
-        accum.playerGameCounts.set(espnId, gc);
+        const idx = ctx.playerIndex.get(espnId);
+        if (idx == null) continue;
+        const offset = idx * 4 + roundIdx;
+        accumPts[offset] += pts;
+        accumGames[offset] += 1;
       }
 
       if (live.status === "post") {
@@ -463,6 +455,58 @@ export async function runTournamentSim(
     injuriesByName.set(name, entry as InjuryEntry);
   }
 
+  // Build player index for the sim matrix
+  const allPlayerIds = simPlayers.map((p) => p.espn_id);
+  const playerIndex = new Map<string, number>();
+  allPlayerIds.forEach((id, idx) => playerIndex.set(id, idx));
+  const numPlayers = allPlayerIds.length;
+
+  // Precompute per-team Dirichlet distributions once. Keyed by every known
+  // alias so `trackTeam(team, …)` can skip the alias resolution on the hot path.
+  const teamDistByKey = new Map<string, TeamPointDistribution>();
+  let maxTeamCount = 1;
+  const CONCENTRATION = 20;
+  for (const teamKey of Object.keys(rostersByTeam)) {
+    const roster = rostersByTeam[teamKey];
+    const pm = playoffMinutes[teamKey] ?? {};
+    const idx: number[] = [];
+    const w: number[] = [];
+    let total = 0;
+    for (const p of roster) {
+      const mins = pm[p.nba_id] ?? 0;
+      if (mins <= 0) continue;
+      const playerIdx = playerIndex.get(p.espn_id);
+      if (playerIdx == null) continue;
+      const ptsPerMin = p.mpg > 0 ? p.ppg / p.mpg : 1;
+      const ww = ptsPerMin * mins;
+      idx.push(playerIdx);
+      w.push(ww);
+      total += ww;
+    }
+    const count = idx.length;
+    const alphas = new Float64Array(count);
+    if (total > 0) {
+      for (let i = 0; i < count; i++) alphas[i] = (w[i] / total) * CONCENTRATION;
+    }
+    const dist: TeamPointDistribution = {
+      count,
+      playerIdx: Int32Array.from(idx),
+      alphas,
+    };
+    teamDistByKey.set(teamKey, dist);
+    if (count > maxTeamCount) maxTeamCount = count;
+  }
+  // Mirror the distribution map across team aliases so hot-path lookups never
+  // need to run `resolveTeam`. Both directions of each alias point to the
+  // same underlying distribution object.
+  for (const [seedAbbr, csvAbbr] of Object.entries(aliases)) {
+    const d = teamDistByKey.get(seedAbbr) ?? teamDistByKey.get(csvAbbr);
+    if (d) {
+      teamDistByKey.set(seedAbbr, d);
+      teamDistByKey.set(csvAbbr, d);
+    }
+  }
+
   // Build the shared simulation context
   const ctx: SimContext = {
     config,
@@ -476,13 +520,11 @@ export async function runTournamentSim(
     aliases,
     aliasesRev,
     liveByKey: buildLiveGameMap(data.liveGames),
+    teamDistByKey,
+    playerIndex,
+    numPlayers,
+    scratchShares: new Float64Array(maxTeamCount),
   };
-
-  // Build player index for the sim matrix
-  const allPlayerIds = simPlayers.map((p) => p.espn_id);
-  const playerIndex = new Map<string, number>();
-  allPlayerIds.forEach((id, idx) => playerIndex.set(id, idx));
-  const numPlayers = allPlayerIds.length;
 
   // Sim matrix: sims × numPlayers
   const simMatrix = new Float64Array(config.sims * numPlayers);
@@ -495,8 +537,15 @@ export async function runTournamentSim(
   const cfCounts: Record<string, number> = {};
   const finalsCounts: Record<string, number> = {};
   const champCounts: Record<string, number> = {};
-  const totalPlayerGames = new Map<string, number[]>();
-  const totalPlayerPoints = new Map<string, number[]>();
+  // Dense (numPlayers × 4) accumulators across all sims, mirroring the per-sim
+  // typed-array accum. Indexed the same way: `idx * 4 + round`.
+  const totalGames = new Float64Array(numPlayers * 4);
+  const totalPts = new Float64Array(numPlayers * 4);
+  // Per-sim accum, reused across sims via .fill(0). Allocating once avoids
+  // reallocating ~numPlayers × 4 × 8 bytes every sim.
+  const accumGames = new Float32Array(numPlayers * 4);
+  const accumPts = new Float64Array(numPlayers * 4);
+  const accum: SeriesPlayerAccum = { games: accumGames, pts: accumPts };
   // Track how many sims each team made the main bracket (for conditioning)
   const teamPlayoffSims: Record<string, number> = {};
   // Per-sim per-team max round reached (0=not in playoffs, 1=lost R1, 2=lost R2,
@@ -526,10 +575,8 @@ export async function runTournamentSim(
       await new Promise((r) => setTimeout(r, 0));
     }
 
-    const accum: SeriesPlayerAccum = {
-      playerGameCounts: new Map(),
-      playerPointsAccum: new Map(),
-    };
+    accumGames.fill(0);
+    accumPts.fill(0);
 
     // Play-in (points NOT tracked — play-in points don't count for fantasy)
     const [east7, east8] = simulatePlayIn(
@@ -624,24 +671,20 @@ export async function runTournamentSim(
     champCounts[finWinner] = (champCounts[finWinner] ?? 0) + 1;
     markReached(finWinner, 5, sim);
 
-    // Record per-sim per-player totals into the sim matrix
-    for (const [espnId, pts] of accum.playerPointsAccum) {
-      const colIdx = playerIndex.get(espnId);
-      if (colIdx == null) continue;
-      const total = pts.reduce((s, v) => s + v, 0);
-      simMatrix[sim * numPlayers + colIdx] = total;
-    }
-
-    // Accumulate for aggregate projections
-    for (const [espnId, games] of accum.playerGameCounts) {
-      const existing = totalPlayerGames.get(espnId) ?? [0, 0, 0, 0];
-      for (let i = 0; i < 4; i++) existing[i] += games[i] ?? 0;
-      totalPlayerGames.set(espnId, existing);
-    }
-    for (const [espnId, pts] of accum.playerPointsAccum) {
-      const existing = totalPlayerPoints.get(espnId) ?? [0, 0, 0, 0];
-      for (let i = 0; i < 4; i++) existing[i] += pts[i] ?? 0;
-      totalPlayerPoints.set(espnId, existing);
+    // Record per-sim per-player totals into the sim matrix and fold the
+    // per-sim typed-array accums into the global totals. Dense O(numPlayers)
+    // sweep — no per-player map lookups.
+    const simOffset = sim * numPlayers;
+    for (let p = 0; p < numPlayers; p++) {
+      const base = p * 4;
+      let total = 0;
+      for (let r = 0; r < 4; r++) {
+        const pts = accumPts[base + r];
+        total += pts;
+        totalGames[base + r] += accumGames[base + r];
+        totalPts[base + r] += pts;
+      }
+      if (total !== 0) simMatrix[simOffset + p] = total;
     }
   }
 
@@ -692,39 +735,52 @@ export async function runTournamentSim(
   // This means play-in players don't get penalized by 0-point sims where
   // their team was eliminated before the bracket.
   const players: PlayerProjection[] = [];
-  for (const [espnId, games] of totalPlayerGames) {
+  for (const [espnId, col] of playerIndex) {
     const p = playerLookup.get(espnId);
     if (!p) continue;
-    const pts = totalPlayerPoints.get(espnId) ?? [0, 0, 0, 0];
+    const base = col * 4;
+    const games: number[] = [
+      totalGames[base],
+      totalGames[base + 1],
+      totalGames[base + 2],
+      totalGames[base + 3],
+    ];
+    const pts: number[] = [
+      totalPts[base],
+      totalPts[base + 1],
+      totalPts[base + 2],
+      totalPts[base + 3],
+    ];
+    // Skip players who never accumulated anything.
+    if (games[0] === 0 && games[1] === 0 && games[2] === 0 && games[3] === 0) {
+      continue;
+    }
 
     // Condition on team making the main bracket
     const divisor = teamPlayoffSims[p.team] ?? n;
     if (divisor <= 0) continue;
 
-    const meanPts = pts.reduce((s, pt) => s + pt, 0) / divisor;
+    const meanPts = (pts[0] + pts[1] + pts[2] + pts[3]) / divisor;
 
     // Compute stddev, p10, p90 from sim matrix
-    const col = playerIndex.get(espnId);
     let stddev = 0;
     let p10 = 0;
     let p90 = 0;
-    if (col != null) {
-      const vals = new Float64Array(n);
-      for (let sim = 0; sim < n; sim++) {
-        vals[sim] = simMatrix[sim * numPlayers + col];
-      }
-      // Stddev
-      let sumSq = 0;
-      for (let sim = 0; sim < n; sim++) {
-        const diff = vals[sim] - meanPts;
-        sumSq += diff * diff;
-      }
-      stddev = Math.sqrt(sumSq / n);
-      // Percentiles
-      const sorted = Float64Array.from(vals).sort();
-      p10 = sorted[Math.floor(0.1 * n)];
-      p90 = sorted[Math.floor(0.9 * n)];
+    const vals = new Float64Array(n);
+    for (let sim = 0; sim < n; sim++) {
+      vals[sim] = simMatrix[sim * numPlayers + col];
     }
+    // Stddev
+    let sumSq = 0;
+    for (let sim = 0; sim < n; sim++) {
+      const diff = vals[sim] - meanPts;
+      sumSq += diff * diff;
+    }
+    stddev = Math.sqrt(sumSq / n);
+    // Percentiles
+    const sorted = Float64Array.from(vals).sort();
+    p10 = sorted[Math.floor(0.1 * n)];
+    p90 = sorted[Math.floor(0.9 * n)];
 
     players.push({
       espnId,

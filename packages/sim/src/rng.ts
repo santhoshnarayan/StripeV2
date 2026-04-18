@@ -70,4 +70,23 @@ export class RNG {
     if (total <= 0) return alphas.map(() => 1 / alphas.length);
     return samples.map((s) => s / total);
   }
+
+  /** In-place Dirichlet: writes `len` proportions (summing to 1) into `out`.
+   *  `alphas` is read for the first `len` entries. Avoids allocation in the
+   *  sim hot loop. */
+  dirichletInto(alphas: Float64Array, out: Float64Array, len: number): void {
+    let total = 0;
+    for (let i = 0; i < len; i++) {
+      const g = this.gamma(alphas[i] < 1e-6 ? 1e-6 : alphas[i]);
+      out[i] = g;
+      total += g;
+    }
+    if (total <= 0) {
+      const inv = 1 / len;
+      for (let i = 0; i < len; i++) out[i] = inv;
+      return;
+    }
+    const inv = 1 / total;
+    for (let i = 0; i < len; i++) out[i] *= inv;
+  }
 }
