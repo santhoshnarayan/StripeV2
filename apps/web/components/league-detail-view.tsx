@@ -1608,6 +1608,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [showAddPlayers, setShowAddPlayers] = useState(false);
   const [addPlayerQuery, setAddPlayerQuery] = useState("");
   const [expandedManagerRoster, setExpandedManagerRoster] = useState<string | null>(null);
+  const [historyMetric, setHistoryMetric] = useState<"pts" | "varp">("pts");
   const [draftQuery, setDraftQuery] = useState("");
   const [draftConferenceFilter, setDraftConferenceFilter] = useState("all");
   const [draftTeamFilter, setDraftTeamFilter] = useState("all");
@@ -4064,6 +4065,13 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               </th>
                               <th className="px-3 py-2 text-left font-medium">Winner / Bid</th>
                               <th className="px-3 py-2 text-left font-medium">Runner-Up / Bid</th>
+                              <th
+                                className="cursor-pointer select-none px-2 py-2 text-right font-medium hover:text-foreground"
+                                onClick={() => setHistoryMetric((m) => m === "pts" ? "varp" : "pts")}
+                                title="Click to toggle"
+                              >
+                                {historyMetric === "pts" ? "Pts/$" : "VARP/$"}
+                              </th>
                               {round.participants.map((participant, pIdx) => {
                                 const first = participant.name.split(" ")[0] ?? participant.name;
                                 const isLast = pIdx === round.participants.length - 1;
@@ -4107,12 +4115,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     </div>
                                   </td>
                                   <td className="px-3 py-3 align-middle">
-                                    {row.winnerName ? (() => {
-                                      const pts = row.totalPoints ?? 0;
-                                      const bid = row.winningBid ?? 0;
-                                      const ptsPerDollar = bid > 0 ? pts / bid : 0;
-                                      const varpPerDollar = bid > 0 ? Math.max(0, pts - projectionPool.replacementPts) / bid : 0;
-                                      return (
+                                    {row.winnerName ? (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-emerald-500/15 px-3 py-1.5 dark:bg-emerald-400/10">
                                       <span className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
                                         {row.winnerName}
@@ -4120,14 +4123,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       <span className="text-xs tabular-nums text-emerald-700 dark:text-emerald-300">
                                         {row.winningBid !== null ? `$${row.winningBid}` : "—"}
                                       </span>
-                                      {row.totalPoints != null && bid > 0 ? (
-                                        <span className="mt-0.5 text-[10px] tabular-nums text-emerald-700/70 dark:text-emerald-300/70">
-                                          {ptsPerDollar.toFixed(1)} pts/$ · {varpPerDollar.toFixed(1)} varp/$
-                                        </span>
-                                      ) : null}
                                     </div>
-                                      );
-                                    })() : (
+                                    ) : (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-muted/40 px-3 py-1.5">
                                       <span className="text-sm font-medium text-muted-foreground">Undrafted</span>
                                       <span className="text-[10px] text-muted-foreground/70">Returned to pool</span>
@@ -4154,6 +4151,23 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     </div>
                                     )}
                                   </td>
+                                  {(() => {
+                                    const pts = row.totalPoints ?? 0;
+                                    const bid = row.winningBid ?? 0;
+                                    const hasBid = row.winnerName && bid > 0;
+                                    const val = hasBid
+                                      ? historyMetric === "pts"
+                                        ? pts / bid
+                                        : Math.max(0, pts - projectionPool.replacementPts) / bid
+                                      : null;
+                                    return (
+                                      <td className="px-2 py-3 text-right align-middle">
+                                        <span className="text-sm tabular-nums text-muted-foreground">
+                                          {val != null ? val.toFixed(1) : "—"}
+                                        </span>
+                                      </td>
+                                    );
+                                  })()}
                                   {row.bids.map((bid, bidIdx) => {
                                     const maxAllowed = bid.maxAllowed ?? Infinity;
                                     const isInvalid = bid.amount != null && bid.amount > 0 && bid.amount > maxAllowed;
