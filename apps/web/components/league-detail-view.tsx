@@ -2873,7 +2873,20 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         </p>
       ) : null}
 
-      <LiveGamesTicker rosteredPlayers={rosteredPlayersMap} />
+      <LiveGamesTicker
+        rosteredPlayers={rosteredPlayersMap}
+        leagueId={data.league.id}
+        rosters={data.rosters.map((r) => ({
+          userId: r.userId,
+          name: r.name,
+          players: r.players.map((p) => ({
+            playerId: p.playerId,
+            playerName: p.playerName,
+            playerTeam: p.playerTeam,
+          })),
+        }))}
+        livePoints={data.livePoints ?? {}}
+      />
 
       <section className="rounded-2xl border border-border/80 bg-background/90 p-2">
         <div className="flex flex-nowrap gap-1 overflow-x-auto sm:gap-2">

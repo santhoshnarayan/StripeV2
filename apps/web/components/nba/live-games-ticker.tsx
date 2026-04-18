@@ -1,10 +1,36 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { TeamLogo } from "@/components/sim/player-avatar";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { PlayerHeadshot, TeamLogo } from "@/components/sim/player-avatar";
 import { useLiveGames, type TickerGame } from "@/lib/use-live-games";
 import { cn } from "@/lib/utils";
-import { GameDetail, type RosteredPlayerInfo } from "@/components/nba/game-detail";
+import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
+
+export type TickerRoster = {
+  userId: string;
+  name: string;
+  players: Array<{
+    playerId: string;
+    playerName: string;
+    playerTeam: string;
+  }>;
+};
+
+type RosteredGamePlayer = {
+  playerId: string;
+  playerName: string;
+  playerTeam: string;
+  livePoints: number;
+  managerShortName: string;
+};
+
+/** Short player name: "F. Last" */
+function shortPlayerName(displayName: string): string {
+  const parts = displayName.split(/\s+/);
+  if (parts.length < 2) return displayName;
+  return `${parts[0][0]}. ${parts.slice(1).join(" ")}`;
+}
 
 function formatClock(t: TickerGame): string {
   if (t.status === "in") {
@@ -23,7 +49,51 @@ function formatClock(t: TickerGame): string {
   return "";
 }
 
-function GameCard({ game, onClick }: { game: TickerGame; onClick?: () => void }) {
+function RosterRotator({ players }: { players: RosteredGamePlayer[] }) {
+  const [idx, setIdx] = useState(0);
+  const [fading, setFading] = useState(false);
+
+  useEffect(() => {
+    if (players.length <= 1) return;
+    const t = setInterval(() => {
+      setFading(true);
+      setTimeout(() => {
+        setIdx((i) => (i + 1) % players.length);
+        setFading(false);
+      }, 200);
+    }, 4000);
+    return () => clearInterval(t);
+  }, [players.length]);
+
+  if (players.length === 0) return null;
+  const p = players[idx % players.length];
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 transition-opacity duration-200 min-w-0",
+        fading ? "opacity-0" : "opacity-100",
+      )}
+    >
+      <PlayerHeadshot espnId={p.playerId} size={16} />
+      <span className="text-[10px] truncate flex-1 min-w-0">
+        <span className="font-medium text-foreground/80">{shortPlayerName(p.playerName)}</span>
+        <span className="text-muted-foreground/70 tabular-nums"> {Math.round(p.livePoints)}pts</span>
+      </span>
+      <span className="text-[9px] text-muted-foreground/60 truncate shrink-0">
+        {p.managerShortName}
+      </span>
+    </div>
+  );
+}
+
+function GameCard({
+  game,
+  rosteredGamePlayers,
+}: {
+  game: TickerGame;
+  rosteredGamePlayers?: RosteredGamePlayer[];
+}) {
   const isLive = game.status === "in";
   const isFinal = game.status === "post";
   const isPre = game.status === "pre";
@@ -32,9 +102,8 @@ function GameCard({ game, onClick }: { game: TickerGame; onClick?: () => void })
   const clock = formatClock(game);
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <Link
+      href={`/games/${encodeURIComponent(game.id)}`}
       className={cn(
         "shrink-0 rounded-lg border px-3 py-2 w-[170px] flex flex-col gap-1 text-left transition-colors",
         isLive && "border-red-500/60 bg-red-500/5 hover:bg-red-500/10",
@@ -56,10 +125,16 @@ function GameCard({ game, onClick }: { game: TickerGame; onClick?: () => void })
       <TeamRow team={game.awayTeam} score={game.awayScore} isPre={isPre} isWinning={awayWin} isLosing={isFinal && homeWin} />
       <TeamRow team={game.homeTeam} score={game.homeScore} isPre={isPre} isWinning={homeWin} isLosing={isFinal && awayWin} />
 
+      {rosteredGamePlayers && rosteredGamePlayers.length > 0 ? (
+        <div className="pt-1 border-t border-border/30 -mx-1 px-1">
+          <RosterRotator players={rosteredGamePlayers} />
+        </div>
+      ) : null}
+
       {game.broadcast ? (
         <div className="text-[9px] text-muted-foreground/60 truncate">{game.broadcast}</div>
       ) : null}
-    </button>
+    </Link>
   );
 }
 
@@ -105,11 +180,16 @@ function TeamRow({
 
 export function LiveGamesTicker({
   rosteredPlayers,
+  leagueId: _leagueId,
+  rosters,
+  livePoints,
 }: {
   rosteredPlayers?: Map<string, RosteredPlayerInfo>;
+  leagueId?: string;
+  rosters?: TickerRoster[];
+  livePoints?: Record<string, number>;
 } = {}) {
   const { games } = useLiveGames();
-  const [openEventId, setOpenEventId] = useState<string | null>(null);
 
   const sorted = useMemo(() => {
     const order = { in: 0, pre: 1, post: 2 } as const;
@@ -123,24 +203,54 @@ export function LiveGamesTicker({
     });
   }, [games]);
 
+  // Index rostered players by NBA team abbrev so we can quickly find the set
+  // of rostered players involved in a given game.
+  const playersByTeam = useMemo(() => {
+    const map = new Map<string, RosteredGamePlayer[]>();
+    if (!rosters || rosters.length === 0) return map;
+    for (const roster of rosters) {
+      const managerShortName =
+        rosteredPlayers && roster.players[0]
+          ? rosteredPlayers.get(roster.players[0].playerId)?.managerShortName ?? roster.name
+          : roster.name;
+      for (const p of roster.players) {
+        const team = p.playerTeam;
+        if (!team) continue;
+        // Prefer the canonical manager short name from the shared map when available.
+        const shortName =
+          rosteredPlayers?.get(p.playerId)?.managerShortName ?? managerShortName;
+        const entry: RosteredGamePlayer = {
+          playerId: p.playerId,
+          playerName: p.playerName,
+          playerTeam: team,
+          livePoints: livePoints?.[p.playerId] ?? 0,
+          managerShortName: shortName,
+        };
+        const arr = map.get(team);
+        if (arr) arr.push(entry);
+        else map.set(team, [entry]);
+      }
+    }
+    return map;
+  }, [rosters, livePoints, rosteredPlayers]);
+
   if (sorted.length === 0) return null;
 
   return (
-    <>
-      <div className="overflow-x-auto no-scrollbar -mx-4 px-4 md:-mx-0 md:px-0">
-        <div className="flex gap-2">
-          {sorted.map((g) => (
-            <GameCard key={g.id} game={g} onClick={() => setOpenEventId(g.id)} />
-          ))}
-        </div>
+    <div className="overflow-x-auto no-scrollbar -mx-4 px-4 md:-mx-0 md:px-0">
+      <div className="flex gap-2">
+        {sorted.map((g) => {
+          const home = playersByTeam.get(g.homeTeam) ?? [];
+          const away = playersByTeam.get(g.awayTeam) ?? [];
+          // Sort by points desc so the highest-scoring rostered player shows first.
+          const gamePlayers = [...home, ...away].sort(
+            (a, b) => b.livePoints - a.livePoints,
+          );
+          return (
+            <GameCard key={g.id} game={g} rosteredGamePlayers={gamePlayers} />
+          );
+        })}
       </div>
-      {openEventId ? (
-        <GameDetail
-          eventId={openEventId}
-          onClose={() => setOpenEventId(null)}
-          rosteredPlayers={rosteredPlayers}
-        />
-      ) : null}
-    </>
+    </div>
   );
 }
