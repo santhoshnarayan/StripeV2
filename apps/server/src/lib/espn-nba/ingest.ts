@@ -553,19 +553,28 @@ export async function syncLiveGames(): Promise<number> {
 
   const now = new Date(nowMs);
   const fifteenMinFuture = new Date(nowMs + 15 * 60 * 1000);
-  const thirtyMinAgo = new Date(nowMs - 30 * 60 * 1000);
+  const oneHourAgo = new Date(nowMs - 60 * 60 * 1000);
 
+  // Derive "game just ended" from the max play wallclock, not nba_game.updatedAt —
+  // the latter gets bumped by any re-sync/backfill and would revive old games.
+  // wallclock reflects when ESPN timestamped the play itself, so a post-game
+  // correction landing minutes later inflates this only slightly.
   const rows = await db
-    .select({ id: nbaGame.id, status: nbaGame.status, startTime: nbaGame.startTime, updatedAt: nbaGame.updatedAt })
+    .select({
+      id: nbaGame.id,
+      status: nbaGame.status,
+      startTime: nbaGame.startTime,
+      lastPlayAt: sql<Date | null>`(SELECT max(${nbaPlay.wallclock}) FROM ${nbaPlay} WHERE ${nbaPlay.gameId} = ${nbaGame.id})`,
+    })
     .from(nbaGame);
 
   const targets: string[] = [];
   let nextPreStart: number | null = null;
   for (const g of rows) {
     if (g.status === "in") targets.push(g.id);
-    else if (g.status === "pre" && g.startTime && g.startTime <= fifteenMinFuture && g.startTime >= thirtyMinAgo) {
+    else if (g.status === "pre" && g.startTime && g.startTime <= fifteenMinFuture && g.startTime >= oneHourAgo) {
       targets.push(g.id);
-    } else if (g.status === "post" && g.updatedAt && g.updatedAt >= thirtyMinAgo) {
+    } else if (g.status === "post" && g.lastPlayAt && g.lastPlayAt >= oneHourAgo) {
       targets.push(g.id);
     } else if (g.status === "pre" && g.startTime && g.startTime.getTime() > fifteenMinFuture.getTime()) {
       const t = g.startTime.getTime();
