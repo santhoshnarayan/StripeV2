@@ -15,6 +15,7 @@ import { AdjustmentsView } from "@/components/sim/adjustments-view";
 import { AdjustmentsTab as ExploreAdjustmentsTab, setBracketConstants } from "@/components/sim/adjustments-tab-explore";
 import { InjuriesView } from "@/components/sim/injuries-view";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
+import { SimulatorLeaderboard } from "@/components/league/simulator-leaderboard";
 import { appApiFetch } from "@/lib/app-api";
 import {
   runTournamentSim,
@@ -39,7 +40,7 @@ import {
   type TeamExposureRow,
 } from "@/lib/sim/draft";
 
-type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor" | "exposure";
+type SimSubTab = "leaderboard" | "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor" | "exposure";
 
 export interface LeagueRosterData {
   rosters: Array<{
@@ -178,7 +179,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
   );
   const [simulating, setSimulating] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [subTab, setSubTab] = useState<SimSubTab>("players");
+  const [subTab, setSubTab] = useState<SimSubTab>("leaderboard");
   const [config, setConfig] = useState<SimConfig>(DEFAULT_SIM_CONFIG);
   const autoRanRef = useRef(false);
 
@@ -439,9 +440,10 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
   }, [simResults, rosterInputs, leagueData, eqComputing]);
 
   const subTabs: { id: SimSubTab; label: string }[] = [
+    ...(leagueData ? [{ id: "leaderboard" as SimSubTab, label: "Leaderboard" }] : []),
+    { id: "bracket", label: "Bracket" },
     { id: "players", label: "Players" },
     { id: "teams", label: "Teams" },
-    { id: "bracket", label: "Bracket" },
     ...(leagueData ? [
       { id: "roster" as SimSubTab, label: "Roster" },
       { id: "exposure" as SimSubTab, label: "Exposure" },
@@ -524,6 +526,19 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
           </Button>
         </div>
       </div>
+
+      {subTab === "leaderboard" && leagueData && managerProjections ? (
+        <SimulatorLeaderboard
+          managerProjections={managerProjections}
+          exposure={exposureResult}
+          rosters={leagueData.rosters}
+          viewerUserId={leagueData.viewerUserId}
+        />
+      ) : subTab === "leaderboard" && !simResults ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          {simulating ? `Running simulation... ${Math.round(progress * 100)}%` : "Run a simulation to see the leaderboard."}
+        </div>
+      ) : null}
 
       {subTab === "bracket" ? (
         <>

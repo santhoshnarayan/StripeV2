@@ -166,22 +166,22 @@ function LeadersTeamSection({
   playerToManager: Map<string, { name: string; playerName: string }>;
   rostered: Array<{ playerId: string; playerName: string; managerShortName: string }>;
 }) {
-  // Merge: leaders (top scorers/projections) + any drafted players not already
-  // in the leaders list. Drafted-but-low-scoring players surface at the bottom
-  // with a 0 value so managers can see who hasn't contributed yet.
+  // Drafted-only, top-3 per team. Leaders are the source of truth for values;
+  // add drafted players missing from that list at value=0 (bench / DNP), then
+  // keep the top 3.
+  const rosteredIds = new Set(rostered.map((r) => r.playerId));
   const byId = new Map<string, { playerId: string; playerName: string; value: number }>();
-  for (const p of leaders) byId.set(p.playerId, p);
+  for (const p of leaders) {
+    if (rosteredIds.has(p.playerId)) byId.set(p.playerId, p);
+  }
   for (const r of rostered) {
     if (!byId.has(r.playerId)) {
       byId.set(r.playerId, { playerId: r.playerId, playerName: r.playerName, value: 0 });
     }
   }
-  const rows = Array.from(byId.values()).sort((a, b) => {
-    const aM = playerToManager.has(a.playerId) ? 1 : 0;
-    const bM = playerToManager.has(b.playerId) ? 1 : 0;
-    if (aM !== bM) return bM - aM; // drafted players anchor to top within each band? — actually keep points first
-    return b.value - a.value;
-  }).sort((a, b) => b.value - a.value);
+  const rows = Array.from(byId.values())
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 3);
 
   return (
     <div className="flex flex-col gap-0.5 min-w-0">

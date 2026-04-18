@@ -625,6 +625,194 @@ appRouter.get("/leagues/:leagueId/scoring-timeline", async (c) => {
   return c.json({ managers, points });
 });
 
+// Fine-grained per-checkpoint timeseries for the NCAAM-style chart.
+// Each checkpoint is a moment in time (scoring play, halftime, or game-end)
+// with cumulative per-manager fantasy points and the associated game context.
+// Frontend filters by resolution (game / half / scoring). Projected points
+// and win prob are computed client-side from the sim.
+appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+
+  const rosterRows = await db
+    .select({ userId: rosterEntry.userId, playerId: rosterEntry.playerId })
+    .from(rosterEntry)
+    .where(eq(rosterEntry.leagueId, access.league.id));
+
+  const members = await getLeagueMembers(access.league.id);
+  const managers = members
+    .filter((m) => m.userId)
+    .map((m) => ({ userId: m.userId, name: m.name }));
+
+  if (rosterRows.length === 0) {
+    return c.json({ managers, checkpoints: [] });
+  }
+
+  const playerToUser = new Map<string, string>();
+  for (const r of rosterRows) playerToUser.set(r.playerId, r.userId);
+  const rosteredPlayerIds = Array.from(new Set(rosterRows.map((r) => r.playerId)));
+
+  // Games with a seriesKey (i.e. playoff), ordered chronologically.
+  const games = await db
+    .select({
+      id: nbaGame.id,
+      date: nbaGame.date,
+      startTime: nbaGame.startTime,
+      homeTeam: nbaGame.homeTeamAbbrev,
+      awayTeam: nbaGame.awayTeamAbbrev,
+      homeScore: nbaGame.homeScore,
+      awayScore: nbaGame.awayScore,
+      status: nbaGame.status,
+      seriesKey: nbaGame.seriesKey,
+      gameNum: nbaGame.gameNum,
+    })
+    .from(nbaGame)
+    .where(isNotNull(nbaGame.seriesKey))
+    .orderBy(asc(nbaGame.startTime));
+
+  const finishedOrLive = games.filter((g) => g.status === "post" || g.status === "in");
+  if (finishedOrLive.length === 0) {
+    return c.json({ managers, checkpoints: [] });
+  }
+  const gameIds = finishedOrLive.map((g) => g.id);
+
+  // Final per-player totals for reconciliation at game-end.
+  const finalStats = await db
+    .select({
+      gameId: nbaPlayerGameStats.gameId,
+      playerId: nbaPlayerGameStats.playerId,
+      points: nbaPlayerGameStats.points,
+    })
+    .from(nbaPlayerGameStats)
+    .where(
+      and(
+        inArray(nbaPlayerGameStats.gameId, gameIds),
+        inArray(nbaPlayerGameStats.playerId, rosteredPlayerIds),
+      ),
+    );
+
+  const finalByGame = new Map<string, Map<string, number>>();
+  for (const s of finalStats) {
+    const bag = finalByGame.get(s.gameId) ?? new Map<string, number>();
+    bag.set(s.playerId, s.points ?? 0);
+    finalByGame.set(s.gameId, bag);
+  }
+
+  // All scoring plays for these games, ordered by sequence.
+  const plays = await db
+    .select({
+      gameId: nbaPlay.gameId,
+      sequence: nbaPlay.sequence,
+      period: nbaPlay.period,
+      clock: nbaPlay.clock,
+      scoreValue: nbaPlay.scoreValue,
+      playerIds: nbaPlay.playerIds,
+    })
+    .from(nbaPlay)
+    .where(and(inArray(nbaPlay.gameId, gameIds), eq(nbaPlay.scoringPlay, true)))
+    .orderBy(asc(nbaPlay.gameId), asc(nbaPlay.sequence));
+
+  type Checkpoint = {
+    t: string;
+    gameId: string;
+    seriesKey: string | null;
+    gameNum: number | null;
+    homeTeam: string | null;
+    awayTeam: string | null;
+    period: number | null;
+    clock: string | null;
+    label: "play" | "half" | "end";
+    pointsDelta: Record<string, number>;
+  };
+
+  const checkpoints: Checkpoint[] = [];
+
+  for (const g of finishedOrLive) {
+    const gamePlays = plays.filter((p) => p.gameId === g.id);
+    const baseTime = g.startTime
+      ? new Date(g.startTime).toISOString()
+      : g.date
+      ? new Date(g.date).toISOString()
+      : new Date().toISOString();
+    const running = new Map<string, number>();
+
+    let halfEmitted = false;
+    for (let i = 0; i < gamePlays.length; i++) {
+      const p = gamePlays[i];
+      const ids = Array.isArray(p.playerIds) ? (p.playerIds as unknown[]) : [];
+      const scorerId = typeof ids[0] === "string" ? (ids[0] as string) : null;
+      const score = p.scoreValue ?? 0;
+      const delta: Record<string, number> = {};
+      if (scorerId && score > 0) {
+        const userId = playerToUser.get(scorerId);
+        if (userId) {
+          delta[userId] = score;
+          running.set(scorerId, (running.get(scorerId) ?? 0) + score);
+        }
+      }
+      // Emit a per-play checkpoint (delta may be empty for non-rostered scorers).
+      const seqOffsetMs = (p.sequence ?? i) % 1_000_000;
+      const t = new Date(new Date(baseTime).getTime() + seqOffsetMs).toISOString();
+      checkpoints.push({
+        t,
+        gameId: g.id,
+        seriesKey: g.seriesKey,
+        gameNum: g.gameNum,
+        homeTeam: g.homeTeam,
+        awayTeam: g.awayTeam,
+        period: p.period,
+        clock: p.clock,
+        label: "play",
+        pointsDelta: delta,
+      });
+
+      // After end of Q2 (period transitions to 3+), emit a synthetic half marker.
+      const nextPeriod = gamePlays[i + 1]?.period ?? null;
+      if (!halfEmitted && (p.period ?? 0) === 2 && (nextPeriod ?? 0) >= 3) {
+        checkpoints[checkpoints.length - 1].label = "half";
+        halfEmitted = true;
+      }
+    }
+
+    // Game-end reconciliation: for completed games, diff our scorer-only running
+    // totals against the authoritative box score. Emit a reconciliation delta so
+    // cumulative matches exactly (captures free throws / missing playerId rows).
+    if (g.status === "post" && finalByGame.has(g.id)) {
+      const final = finalByGame.get(g.id)!;
+      const reconcile: Record<string, number> = {};
+      for (const [playerId, truePts] of final.entries()) {
+        const userId = playerToUser.get(playerId);
+        if (!userId) continue;
+        const already = running.get(playerId) ?? 0;
+        const diff = truePts - already;
+        if (diff !== 0) reconcile[userId] = (reconcile[userId] ?? 0) + diff;
+      }
+      const endT = g.startTime
+        ? new Date(new Date(g.startTime).getTime() + 2 * 60 * 60 * 1000).toISOString()
+        : new Date().toISOString();
+      checkpoints.push({
+        t: endT,
+        gameId: g.id,
+        seriesKey: g.seriesKey,
+        gameNum: g.gameNum,
+        homeTeam: g.homeTeam,
+        awayTeam: g.awayTeam,
+        period: null,
+        clock: null,
+        label: "end",
+        pointsDelta: reconcile,
+      });
+    }
+  }
+
+  // Sort all checkpoints chronologically.
+  checkpoints.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+
+  return c.json({ managers, checkpoints });
+});
+
 function computeMaxBid(
   remainingBudget: number,
   remainingRosterSlots: number,
