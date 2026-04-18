@@ -21,8 +21,12 @@ type TableData = {
   page: number;
   pageSize: number;
   hasMore: boolean;
+  sort: string | null;
+  dir: "asc" | "desc";
   items: Record<string, unknown>[];
 };
+
+type SortState = { col: string; dir: "asc" | "desc" } | null;
 
 export function DatabaseBrowser() {
   const [tables, setTables] = useState<TableInfo[]>([]);
@@ -33,6 +37,8 @@ export function DatabaseBrowser() {
   const [data, setData] = useState<TableData | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortState>(null);
+  const [filters, setFilters] = useState<Record<string, string>>({});
 
   useEffect(() => {
     (async () => {
@@ -50,35 +56,90 @@ export function DatabaseBrowser() {
     })();
   }, []);
 
-  const load = useCallback(async (table: string, p: number, ps: number) => {
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `/api/admin/db/tables/${encodeURIComponent(table)}?page=${p}&pageSize=${ps}`,
-        { credentials: "include" },
-      );
-      if (!res.ok) {
-        const payload = (await res.json().catch(() => ({}))) as { error?: string };
-        setData(null);
-        setTablesError(payload.error ?? `Failed to load rows (${res.status})`);
-        return;
+  const load = useCallback(
+    async (
+      table: string,
+      p: number,
+      ps: number,
+      s: SortState,
+      f: Record<string, string>,
+    ) => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        params.set("page", String(p));
+        params.set("pageSize", String(ps));
+        if (s) {
+          params.set("sort", s.col);
+          params.set("dir", s.dir);
+        }
+        for (const [col, v] of Object.entries(f)) {
+          const trimmed = v.trim();
+          if (trimmed) params.set(`f_${col}`, trimmed);
+        }
+        const res = await fetch(
+          `/api/admin/db/tables/${encodeURIComponent(table)}?${params.toString()}`,
+          { credentials: "include" },
+        );
+        if (!res.ok) {
+          const payload = (await res.json().catch(() => ({}))) as { error?: string };
+          setData(null);
+          setTablesError(payload.error ?? `Failed to load rows (${res.status})`);
+          return;
+        }
+        setTablesError(null);
+        const payload = (await res.json()) as TableData;
+        setData(payload);
+      } finally {
+        setLoading(false);
       }
-      setTablesError(null);
-      const payload = (await res.json()) as TableData;
-      setData(payload);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const onSelect = useCallback(
     (table: string) => {
       setSelected(table);
       setPage(1);
-      load(table, 1, pageSize);
+      setSort(null);
+      setFilters({});
+      load(table, 1, pageSize, null, {});
     },
     [load, pageSize],
   );
+
+  const toggleSort = useCallback(
+    (col: string) => {
+      if (!selected) return;
+      const next: SortState =
+        !sort || sort.col !== col
+          ? { col, dir: "asc" }
+          : sort.dir === "asc"
+            ? { col, dir: "desc" }
+            : null;
+      setSort(next);
+      setPage(1);
+      load(selected, 1, pageSize, next, filters);
+    },
+    [selected, sort, pageSize, filters, load],
+  );
+
+  const setColumnFilter = useCallback(
+    (col: string, value: string) => {
+      setFilters((prev) => ({ ...prev, [col]: value }));
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!selected) return;
+    const handle = setTimeout(() => {
+      setPage(1);
+      load(selected, 1, pageSize, sort, filters);
+    }, 300);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -156,7 +217,7 @@ export function DatabaseBrowser() {
                       const ps = Number.parseInt(e.target.value, 10);
                       setPageSize(ps);
                       setPage(1);
-                      load(selected, 1, ps);
+                      load(selected, 1, ps, sort, filters);
                     }}
                     className="rounded-md border border-gray-300 bg-white px-2 py-1"
                   >
@@ -167,9 +228,23 @@ export function DatabaseBrowser() {
                     ))}
                   </select>
                 </label>
+                {(sort || Object.values(filters).some((v) => v.trim())) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSort(null);
+                      setFilters({});
+                      setPage(1);
+                      load(selected, 1, pageSize, null, {});
+                    }}
+                    className="rounded-md border border-gray-300 px-2 py-1 hover:bg-gray-50"
+                  >
+                    Clear
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => load(selected, page, pageSize)}
+                  onClick={() => load(selected, page, pageSize, sort, filters)}
                   className="rounded-md border border-gray-300 px-2 py-1 hover:bg-gray-50"
                 >
                   Refresh
@@ -185,17 +260,49 @@ export function DatabaseBrowser() {
                 <table className="min-w-full border-collapse text-xs font-mono">
                   <thead className="sticky top-0 bg-gray-50 text-gray-600">
                     <tr>
+                      {data.columns.map((col) => {
+                        const active = sort?.col === col.name;
+                        const arrow = active ? (sort.dir === "asc" ? "▲" : "▼") : "";
+                        return (
+                          <th
+                            key={col.name}
+                            className="border-b border-gray-200 px-3 py-2 text-left font-medium"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => toggleSort(col.name)}
+                              className="flex w-full flex-col items-start text-left hover:text-gray-900"
+                              title="Click to sort"
+                            >
+                              <span className="flex items-center gap-1">
+                                {col.name}
+                                {arrow && (
+                                  <span className="text-gray-500">{arrow}</span>
+                                )}
+                              </span>
+                              <span className="text-[10px] font-normal text-gray-400">
+                                {col.dataType}
+                              </span>
+                            </button>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                    <tr>
                       {data.columns.map((col) => (
                         <th
                           key={col.name}
-                          className="border-b border-gray-200 px-3 py-2 text-left font-medium"
+                          className="border-b border-gray-200 px-2 py-1 align-top"
                         >
-                          <div className="flex flex-col">
-                            <span>{col.name}</span>
-                            <span className="text-[10px] font-normal text-gray-400">
-                              {col.dataType}
-                            </span>
-                          </div>
+                          <input
+                            type="text"
+                            value={filters[col.name] ?? ""}
+                            onChange={(e) =>
+                              setColumnFilter(col.name, e.target.value)
+                            }
+                            placeholder="filter…"
+                            className="w-full rounded border border-gray-200 bg-white px-2 py-0.5 text-xs font-normal font-sans focus:border-gray-400 focus:outline-none"
+                          />
                         </th>
                       ))}
                     </tr>
@@ -240,7 +347,7 @@ export function DatabaseBrowser() {
                     onClick={() => {
                       const p = Math.max(1, data.page - 1);
                       setPage(p);
-                      load(selected, p, pageSize);
+                      load(selected, p, pageSize, sort, filters);
                     }}
                     className="rounded-md border border-gray-300 px-3 py-1 hover:bg-gray-50 disabled:opacity-40"
                   >
@@ -252,7 +359,7 @@ export function DatabaseBrowser() {
                     onClick={() => {
                       const p = data.page + 1;
                       setPage(p);
-                      load(selected, p, pageSize);
+                      load(selected, p, pageSize, sort, filters);
                     }}
                     className="rounded-md border border-gray-300 px-3 py-1 hover:bg-gray-50 disabled:opacity-40"
                   >

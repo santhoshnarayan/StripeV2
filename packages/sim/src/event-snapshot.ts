@@ -87,9 +87,13 @@ export function buildEventSnapshots(params: {
   const { games, plays } = params;
   const gameById = new Map(games.map((g) => [g.id, g]));
 
+  // Sort by wallclock (true play time) when available so the cumulative
+  // counter advances in the same order the chart renders. Using updatedAt
+  // (ingest batch time) caused old rows synced later to flip wallclock order,
+  // which made on-chart cumulative values appear to drop mid-timeline.
   const sorted = [...plays].sort((a, b) => {
-    const ta = a.updatedAt.getTime();
-    const tb = b.updatedAt.getTime();
+    const ta = (a.wallclock ?? a.updatedAt).getTime();
+    const tb = (b.wallclock ?? b.updatedAt).getTime();
     if (ta !== tb) return ta - tb;
     if (a.gameId !== b.gameId) return a.gameId < b.gameId ? -1 : 1;
     return a.sequence - b.sequence;

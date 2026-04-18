@@ -113,16 +113,43 @@ adminRouter.get("/db/tables/:table", async (c) => {
     return c.json({ error: "Unknown table" }, 404);
   }
 
-  const offset = (page - 1) * pageSize;
+  const columnNames = new Set(match.columns.map((c) => c.name));
 
-  // Order by first column ascending for stable pagination.
-  const orderCol = match.columns[0]?.name ?? "";
-  const orderClause = orderCol
-    ? sql`order by ${sql.identifier(orderCol)} asc`
+  const sortParam = c.req.query("sort");
+  const dirParamRaw = (c.req.query("dir") ?? "asc").toLowerCase();
+  const dir: "asc" | "desc" = dirParamRaw === "desc" ? "desc" : "asc";
+  const sortCol =
+    sortParam && columnNames.has(sortParam)
+      ? sortParam
+      : match.columns[0]?.name ?? null;
+  const orderClause = sortCol
+    ? dir === "desc"
+      ? sql`order by ${sql.identifier(sortCol)} desc nulls last`
+      : sql`order by ${sql.identifier(sortCol)} asc nulls last`
     : sql``;
+
+  // Per-column filters sent as `f_<column>=value` → ILIKE match cast to text.
+  const filterClauses: ReturnType<typeof sql>[] = [];
+  for (const [key, value] of Object.entries(c.req.queries())) {
+    if (!key.startsWith("f_")) continue;
+    const col = key.slice(2);
+    if (!columnNames.has(col)) continue;
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (!raw) continue;
+    const pattern = `%${raw}%`;
+    filterClauses.push(
+      sql`${sql.identifier(col)}::text ilike ${pattern}`,
+    );
+  }
+  const whereClause = filterClauses.length
+    ? sql`where ${sql.join(filterClauses, sql` and `)}`
+    : sql``;
+
+  const offset = (page - 1) * pageSize;
 
   const rowsResult = await db.execute(sql`
     select * from ${sql.identifier(match.name)}
+    ${whereClause}
     ${orderClause}
     limit ${pageSize + 1}
     offset ${offset}
@@ -137,6 +164,8 @@ adminRouter.get("/db/tables/:table", async (c) => {
     page,
     pageSize,
     hasMore,
+    sort: sortCol,
+    dir,
     items,
   });
 });

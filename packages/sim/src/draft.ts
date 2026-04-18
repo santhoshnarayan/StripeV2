@@ -1016,6 +1016,12 @@ export interface TeamExposureRow {
 export interface TeamExposureResult {
   /** Indexed by manager userId. */
   rowsByManager: Map<string, TeamExposureRow[]>;
+  /**
+   * Team → length-5 advancement probabilities, i.e. P(team reaches round >= r).
+   * Manager-independent; used to render cells for teams a manager has no
+   * players on (still useful context for the leaderboard).
+   */
+  teamReachPctByTeam: Map<string, number[]>;
 }
 
 export function computeTeamExposureMatrix(
@@ -1046,6 +1052,18 @@ export function computeTeamExposureMatrix(
   const winCounts = new Uint32Array(rosters.length);
   for (let s = 0; s < numSims; s++) winCounts[winners[s]]++;
 
+  // Precompute team-level advancement probabilities (manager-independent).
+  const teamReachPctByTeam = new Map<string, number[]>();
+  for (const [team, reached] of Object.entries(teamRoundReached)) {
+    const pct: number[] = [];
+    for (let r = 1; r <= 5; r++) {
+      let c = 0;
+      for (let s = 0; s < numSims; s++) if (reached[s] >= r) c++;
+      pct.push(c / numSims);
+    }
+    teamReachPctByTeam.set(team, pct);
+  }
+
   const rowsByManager = new Map<string, TeamExposureRow[]>();
   const minSampleFrac = 0.01;
   const minSample = Math.max(1, Math.floor(numSims * minSampleFrac));
@@ -1071,7 +1089,7 @@ export function computeTeamExposureMatrix(
       if (!reached) continue;
 
       const winByRound: (number | null)[] = [];
-      const teamReachPct: number[] = [];
+      const teamReachPct = teamReachPctByTeam.get(team) ?? [];
       for (let r = 1; r <= 5; r++) {
         let conditioned = 0;
         let winsConditioned = 0;
@@ -1081,7 +1099,6 @@ export function computeTeamExposureMatrix(
             if (winners[s] === m) winsConditioned++;
           }
         }
-        teamReachPct.push(conditioned / numSims);
         winByRound.push(conditioned >= minSample ? winsConditioned / conditioned : null);
       }
 
@@ -1112,5 +1129,5 @@ export function computeTeamExposureMatrix(
     rowsByManager.set(roster.userId, rows);
   }
 
-  return { rowsByManager };
+  return { rowsByManager, teamReachPctByTeam };
 }

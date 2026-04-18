@@ -86,17 +86,26 @@ export function SimulatorLeaderboard({
       const aliased = aliases[r.team];
       if (aliased) byTeam.set(aliased, r);
     }
-    return allTeamsInOrder.map(
-      ({ team }) =>
-        byTeam.get(team) ?? {
-          team,
-          playerCount: 0,
-          playerNames: [],
-          winByRound: [null, null, null, null, null],
-          baseWin: 0,
-          teamReachPct: [],
-        },
-    );
+    const reachMap = exposure?.teamReachPctByTeam;
+    return allTeamsInOrder.map(({ team }) => {
+      const existing = byTeam.get(team);
+      if (existing) return existing;
+      // Unrostered teams still show the team's own advancement probability
+      // (P(team reaches round r)) so managers can see how every playoff team is
+      // trending, even teams they have no exposure to.
+      const reach =
+        reachMap?.get(team) ??
+        (aliases[team] ? reachMap?.get(aliases[team]) : undefined) ??
+        [];
+      return {
+        team,
+        playerCount: 0,
+        playerNames: [],
+        winByRound: [null, null, null, null, null],
+        baseWin: 0,
+        teamReachPct: reach,
+      };
+    });
   };
 
   return (
@@ -201,7 +210,10 @@ export function SimulatorLeaderboard({
 
 function TeamExposureRowCells({ row }: { row: TeamExposureRow }) {
   // Drop the "Champ" column: show R1..Finals only (winByRound indices 0..3).
-  const cells = row.winByRound.slice(0, 4);
+  const unrostered = row.playerCount === 0;
+  const cells = unrostered
+    ? row.teamReachPct.slice(0, 4)
+    : row.winByRound.slice(0, 4);
   return (
     <>
       <span className="flex items-center gap-1 min-w-0">
@@ -212,18 +224,32 @@ function TeamExposureRowCells({ row }: { row: TeamExposureRow }) {
         <span className="text-white/50 ml-0.5">×{row.playerCount}</span>
       </span>
       {cells.map((v, i) => {
-        const delta = v != null ? v - row.baseWin : null;
+        if (v == null) {
+          return (
+            <span key={i} className="text-center tabular-nums text-[10px] text-white/30">
+              –
+            </span>
+          );
+        }
+        if (unrostered) {
+          // Team-only advancement probability — no delta vs baseline since
+          // this manager has zero exposure. Render dim so it reads as context.
+          return (
+            <span key={i} className="text-center tabular-nums text-[10px] text-white/40">
+              {(v * 100).toFixed(0)}
+            </span>
+          );
+        }
+        const delta = v - row.baseWin;
         const cls =
-          v == null
-            ? "text-white/30"
-            : delta! > 0.005
+          delta > 0.005
             ? "text-emerald-200 font-semibold"
-            : delta! < -0.005
+            : delta < -0.005
             ? "text-rose-200"
             : "text-white/70";
         return (
           <span key={i} className={cn("text-center tabular-nums text-[10px]", cls)}>
-            {v == null ? "–" : `${(v * 100).toFixed(0)}`}
+            {(v * 100).toFixed(0)}
           </span>
         );
       })}
