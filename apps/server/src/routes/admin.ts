@@ -283,5 +283,10 @@ adminRouter.get("/logs", async (c) => {
     return c.json({ error: "Railway logs unavailable", details: body.errors }, 502);
   }
 
-  return c.json({ entries: body.data.environmentLogs });
+  // Railway returns ascending timestamps (oldest first). Flip so the admin UI
+  // shows newest entries at the top.
+  const entries = [...body.data.environmentLogs].sort((a, b) =>
+    b.timestamp.localeCompare(a.timestamp),
+  );
+  return c.json({ entries });
 });
