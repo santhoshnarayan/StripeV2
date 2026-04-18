@@ -20,6 +20,24 @@ type ServicesResponse = {
 
 const LIMIT_OPTIONS = [100, 200, 500, 1000];
 
+const LEVEL_OPTIONS = [
+  { value: "", label: "All levels" },
+  { value: "error", label: "Error" },
+  { value: "warn", label: "Warn+" },
+  { value: "info", label: "Info+" },
+  { value: "debug", label: "Debug+" },
+] as const;
+
+// Railway's filter grammar supports `@level:<name>` tokens. For inclusive
+// thresholds (warn+, info+, debug+) we OR the level tokens together.
+const LEVEL_FILTER: Record<string, string> = {
+  error: "@level:error",
+  warn: "(@level:error OR @level:warn OR @level:warning)",
+  info: "(@level:error OR @level:warn OR @level:warning OR @level:info)",
+  debug:
+    "(@level:error OR @level:warn OR @level:warning OR @level:info OR @level:debug)",
+};
+
 export function LogsViewer() {
   const [services, setServices] = useState<RailwayService[]>([]);
   const [environments, setEnvironments] = useState<RailwayEnvironment[]>([]);
@@ -28,6 +46,7 @@ export function LogsViewer() {
   const [environmentId, setEnvironmentId] = useState<string>("");
   const [filter, setFilter] = useState("");
   const [debouncedFilter, setDebouncedFilter] = useState("");
+  const [level, setLevel] = useState<string>("");
   const [limit, setLimit] = useState(200);
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -77,7 +96,9 @@ export function LogsViewer() {
         limit: String(limit),
       });
       if (serviceId) params.set("serviceId", serviceId);
-      if (debouncedFilter) params.set("filter", debouncedFilter);
+      const levelToken = level ? LEVEL_FILTER[level] : "";
+      const composedFilter = [levelToken, debouncedFilter].filter(Boolean).join(" ");
+      if (composedFilter) params.set("filter", composedFilter);
 
       const res = await fetch(`/api/admin/logs?${params.toString()}`, {
         credentials: "include",
@@ -94,7 +115,7 @@ export function LogsViewer() {
     } finally {
       setLoading(false);
     }
-  }, [environmentId, serviceId, debouncedFilter, limit]);
+  }, [environmentId, serviceId, debouncedFilter, level, limit]);
 
   useEffect(() => {
     load();
@@ -175,9 +196,23 @@ export function LogsViewer() {
             ))}
           </select>
         </label>
+        <label className="flex items-center gap-1 text-xs">
+          <span className="text-gray-500">Level</span>
+          <select
+            value={level}
+            onChange={(e) => setLevel(e.target.value)}
+            className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+          >
+            {LEVEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <input
           type="search"
-          placeholder="Filter (e.g. @level:error auction)"
+          placeholder="Search message (e.g. auction payout)"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="min-w-[220px] flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm focus:border-gray-900 focus:outline-none"
@@ -211,6 +246,58 @@ export function LogsViewer() {
           className="rounded-md border border-gray-300 bg-white px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
         >
           {loading ? "Loading…" : "Refresh"}
+        </button>
+        {(level || filter) && (
+          <button
+            type="button"
+            onClick={() => {
+              setLevel("");
+              setFilter("");
+            }}
+            className="rounded-md border border-gray-300 bg-white px-3 py-1 text-xs text-gray-600 hover:bg-gray-50"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-gray-500">Quick filters</span>
+        <button
+          type="button"
+          onClick={() => setLevel("error")}
+          className={`rounded-full border px-2 py-0.5 ${
+            level === "error"
+              ? "border-red-400 bg-red-50 text-red-700"
+              : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
+          }`}
+        >
+          Errors only
+        </button>
+        <button
+          type="button"
+          onClick={() => setLevel("warn")}
+          className={`rounded-full border px-2 py-0.5 ${
+            level === "warn"
+              ? "border-amber-400 bg-amber-50 text-amber-800"
+              : "border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
+          }`}
+        >
+          Warnings+
+        </button>
+        <button
+          type="button"
+          onClick={() => setFilter("exception OR stack OR traceback")}
+          className="rounded-full border border-gray-300 bg-white px-2 py-0.5 text-gray-600 hover:bg-gray-50"
+        >
+          Exceptions
+        </button>
+        <button
+          type="button"
+          onClick={() => setFilter('"status=5"')}
+          className="rounded-full border border-gray-300 bg-white px-2 py-0.5 text-gray-600 hover:bg-gray-50"
+        >
+          5xx responses
         </button>
       </div>
 
