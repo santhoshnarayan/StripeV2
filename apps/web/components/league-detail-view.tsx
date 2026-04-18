@@ -26,6 +26,7 @@ import { useAutoSim } from "@/lib/use-auto-sim";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { LiveGamesTicker } from "@/components/nba/live-games-ticker";
 import { ScoringTimelineChart } from "@/components/nba/scoring-timeline-chart";
+import { LeagueChartPanel } from "@/components/league/league-chart-panel";
 import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
 import { usePolling } from "@/lib/use-polling";
 import { markUserActive } from "@/lib/use-activity";
@@ -271,7 +272,7 @@ const ACTION_TYPE_LABELS: Record<string, string> = {
   snake_end: "Snake Draft Ended",
 };
 
-type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator" | "commissioner";
+type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator" | "chart" | "commissioner";
 type DraftSortOption =
   | "suggested_desc"
   | "projected_desc"
@@ -300,6 +301,7 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
   players: { label: "Players", shortLabel: "Pool" },
   draft: { label: "Draft Room", shortLabel: "Draft" },
   simulator: { label: "Simulator", shortLabel: "Sim" },
+  chart: { label: "Chart", shortLabel: "Chart" },
   results: { label: "Reveal", shortLabel: "Reveal" },
   standings: { label: "Standings", shortLabel: "Standings" },
   commissioner: { label: "Commissioner", shortLabel: "Commish" },
@@ -308,7 +310,7 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
 function getLeagueTabOrder(phase: string, isCommissioner?: boolean): LeagueTab[] {
   const base: LeagueTab[] = phase === "draft" || phase === "invite"
     ? ["draft", "simulator", "overview", "managers", "players", "results", "standings"]
-    : ["standings", "simulator", "overview", "managers", "players", "draft", "results"];
+    : ["standings", "chart", "simulator", "overview", "managers", "players", "draft", "results"];
   if (isCommissioner) base.push("commissioner");
   return base;
 }
@@ -4635,6 +4637,21 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           rosters={data.rosters}
           livePoints={data.livePoints ?? {}}
           isScoring={data.league.phase === "scoring"}
+        />
+      ) : null}
+
+      {activeTab === "chart" ? (
+        <LeagueChartPanel
+          leagueId={leagueId}
+          rosters={data.rosters.map((r) => ({
+            userId: r.userId,
+            name: r.name,
+            players: r.players.map((p) => ({
+              playerId: p.playerId,
+              playerName: p.playerName,
+              playerTeam: p.playerTeam,
+            })),
+          }))}
         />
       ) : null}
 
