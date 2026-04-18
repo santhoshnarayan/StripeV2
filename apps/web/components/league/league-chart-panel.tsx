@@ -198,8 +198,25 @@ export function LeagueChartPanel({
   const [projections, setProjections] = useState<ProjectionsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [mode, setMode] = useState<ChartMode>("pts");
-  const [resolution, setResolution] = useState<Resolution>("game");
+  const [mode, setMode] = useState<ChartMode>(() => {
+    if (typeof window === "undefined") return "pts";
+    const v = window.localStorage.getItem("leagueChart.mode");
+    return v === "prob" || v === "pts" || v === "proj" ? (v as ChartMode) : "pts";
+  });
+  const [resolution, setResolution] = useState<Resolution>(() => {
+    if (typeof window === "undefined") return "scoring";
+    const v = window.localStorage.getItem("leagueChart.resolution");
+    return v === "game" || v === "half" || v === "scoring"
+      ? (v as Resolution)
+      : "scoring";
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") window.localStorage.setItem("leagueChart.mode", mode);
+  }, [mode]);
+  useEffect(() => {
+    if (typeof window !== "undefined")
+      window.localStorage.setItem("leagueChart.resolution", resolution);
+  }, [resolution]);
   const [activeRound, setActiveRound] = useState<Round | null>(null);
   const [hoveredGameId, setHoveredGameId] = useState<string | null>(null);
   const [hoveredEventKey, setHoveredEventKey] = useState<string | null>(null);
@@ -739,10 +756,21 @@ export function LeagueChartPanel({
                   labelFormatter={(label) => {
                     const t = String(label ?? "");
                     let base: string;
-                    try { base = new Date(t).toLocaleString(); } catch { base = t; }
+                    try {
+                      base = new Date(t).toLocaleString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      });
+                    } catch { base = t; }
+                    const ev = hoveredEventKey ? eventByKey.get(hoveredEventKey) : null;
+                    const qc = ev && ev.eventMeta.period != null && ev.eventMeta.clock
+                      ? ` · Q${ev.eventMeta.period} ${ev.eventMeta.clock}`
+                      : "";
                     return pendingEvents > 0
-                      ? `${base}  ·  +${pendingEvents} queued`
-                      : base;
+                      ? `${base}${qc}  ·  +${pendingEvents} queued`
+                      : `${base}${qc}`;
                   }}
                   formatter={(value, key) => {
                     const n = typeof value === "number" ? value : Number(value ?? 0);
@@ -803,21 +831,6 @@ export function LeagueChartPanel({
           </div>
 
           <div className="w-28 shrink-0 flex flex-col text-[11px] overflow-hidden pt-2 pb-2">
-            {hoveredEvent ? (() => {
-              const g = allGames.find((ag) => ag.id === hoveredEvent.gameId);
-              const matchup =
-                g && g.awayTeam && g.homeTeam
-                  ? `${g.awayTeam} @ ${g.homeTeam}${g.gameNum ? ` G${g.gameNum}` : ""}`
-                  : null;
-              return (
-                <div className="text-[9px] text-muted-foreground leading-tight pb-1.5 mb-1 border-b border-border/40 break-words">
-                  {matchup ? (
-                    <div className="font-medium text-foreground/80">{matchup}</div>
-                  ) : null}
-                  <div>{eventLineText(hoveredEvent)}</div>
-                </div>
-              );
-            })() : null}
             {endLabels.slice(0, 12).map((e) => (
               <div key={e.userId} className="flex items-center gap-1.5 leading-tight py-0.5 min-w-0">
                 <span
@@ -831,6 +844,39 @@ export function LeagueChartPanel({
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Hover readout — full width, always visible so play text has room */}
+        <div className="min-h-[28px] rounded-md border border-border/50 bg-muted/20 px-2.5 py-1 text-[11px] leading-tight">
+          {hoveredEvent ? (() => {
+            const g = allGames.find((ag) => ag.id === hoveredEvent.gameId);
+            const matchup =
+              g && g.awayTeam && g.homeTeam
+                ? `${g.awayTeam} @ ${g.homeTeam}${g.gameNum ? ` · G${g.gameNum}` : ""}`
+                : null;
+            const p = hoveredEvent.eventMeta.period;
+            const clk = hoveredEvent.eventMeta.clock;
+            const qc = p != null && clk ? `Q${p} ${clk}` : null;
+            const home = hoveredEvent.eventMeta.homeScore;
+            const away = hoveredEvent.eventMeta.awayScore;
+            const score = home != null && away != null ? `${away}–${home}` : null;
+            return (
+              <div className="flex items-center gap-2 min-w-0">
+                {matchup ? (
+                  <span className="font-medium text-foreground/90 shrink-0">{matchup}</span>
+                ) : null}
+                {qc ? <span className="text-muted-foreground shrink-0">{qc}</span> : null}
+                {score ? <span className="tabular-nums shrink-0">{score}</span> : null}
+                <span className="text-muted-foreground truncate">
+                  {eventLineText(hoveredEvent)}
+                </span>
+              </div>
+            );
+          })() : (
+            <span className="text-muted-foreground italic">
+              hover the chart to see each play
+            </span>
+          )}
         </div>
 
         {/* Round filter */}
