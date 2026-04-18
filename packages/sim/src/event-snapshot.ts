@@ -36,7 +36,7 @@ export interface GameMeta {
 
 // ─── Outputs ───────────────────────────────────────────────────────
 
-export type EventKind = "scoring" | "end_of_half" | "end_of_game";
+export type EventKind = "scoring" | "end_of_period" | "end_of_game";
 
 export interface EventDescriptor {
   kind: EventKind;
@@ -145,12 +145,12 @@ export function buildEventSnapshots(params: {
       kind = "end_of_game";
     } else if (play.scoringPlay) {
       kind = "scoring";
-    } else if (
-      play.clock === "0:00" &&
-      play.period != null &&
-      (play.period === 2 || play.period === 4)
-    ) {
-      kind = "end_of_half";
+    } else if (play.clock === "0:00" && play.period != null) {
+      // End of any period (Q1–Q4 + every OT period). When the same play is
+      // both scoring AND clock=0:00 (buzzer-beater), the earlier branch
+      // classifies it as "scoring" — ESPN typically emits a separate
+      // end-of-period marker play right after, which we catch here.
+      kind = "end_of_period";
     }
     if (kind == null) continue;
 

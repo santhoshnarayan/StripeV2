@@ -69,7 +69,7 @@ type ProjectionEvent = {
   gameId: string;
   sequence: number;
   updatedAtEvent: string;
-  kind: "scoring" | "end_of_half" | "end_of_game";
+  kind: "scoring" | "end_of_period" | "end_of_game";
   actualPoints: Record<string, number>;
   projectedPoints: Record<
     string,
@@ -496,7 +496,7 @@ export function LeagueChartPanel({
       let filtered = projections.events;
       if (resolution === "half") {
         filtered = filtered.filter(
-          (ev) => ev.kind === "end_of_half" || ev.kind === "end_of_game",
+          (ev) => ev.kind === "end_of_period" || ev.kind === "end_of_game",
         );
       } else if (resolution === "game") {
         filtered = filtered.filter((ev) => ev.kind === "end_of_game");
@@ -1339,9 +1339,11 @@ function playByPlayText(
     }
     return "Final";
   }
-  if (ev.kind === "end_of_half") {
-    const p = ev.eventMeta.period ?? 2;
-    return p === 2 ? "End Q2 (half)" : `End Q${p}`;
+  if (ev.kind === "end_of_period") {
+    const p = ev.eventMeta.period ?? 0;
+    if (p === 2) return "End Q2 (half)";
+    if (p >= 5) return `End OT${p - 4}`;
+    return `End Q${p}`;
   }
   // scoring play — prefer the actual ESPN play text when available.
   const text = ev.eventMeta.text?.trim();
