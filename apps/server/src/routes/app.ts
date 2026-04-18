@@ -2,7 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Hono } from "hono";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
@@ -185,7 +185,7 @@ appRouter.get("/nba/live-ticker", async (c) => {
   const rows = await db
     .select()
     .from(nbaGame)
-    .where(and(sql`${nbaGame.date} >= ${start}`, sql`${nbaGame.date} < ${endOfTomorrow}`))
+    .where(and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)))
     .orderBy(asc(nbaGame.startTime));
 
   return c.json({
@@ -221,7 +221,7 @@ appRouter.get("/nba/scoreboard", async (c) => {
   const rows = await db
     .select()
     .from(nbaGame)
-    .where(and(sql`${nbaGame.date} >= ${dayStart}`, sql`${nbaGame.date} < ${dayEnd}`))
+    .where(and(gte(nbaGame.date, dayStart), lt(nbaGame.date, dayEnd)))
     .orderBy(asc(nbaGame.startTime));
   return c.json({ date: dayStart.toISOString(), games: rows });
 });
@@ -1264,7 +1264,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       const rows = await db
         .select()
         .from(nbaGame)
-        .where(and(sql`${nbaGame.date} >= ${start}`, sql`${nbaGame.date} < ${endOfTomorrow}`))
+        .where(and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)))
         .orderBy(asc(nbaGame.startTime));
       return rows;
     })(),
