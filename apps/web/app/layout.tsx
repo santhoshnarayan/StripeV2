@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
 import { AppNav } from "@/components/app-nav";
 import { Toaster } from "@/components/ui/sonner";
+import { VersionWatcher } from "@/components/version-watcher";
 import { ThemeProvider } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import "./globals.css";
@@ -57,6 +58,7 @@ export default function RootLayout({
             </div>
           </div>
           <Toaster />
+          <VersionWatcher />
         </ThemeProvider>
       </body>
     </html>
