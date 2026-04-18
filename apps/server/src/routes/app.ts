@@ -290,6 +290,10 @@ appRouter.get("/nba/live-ticker", async (c) => {
     home: Array<{ playerId: string; playerName: string; value: number }>;
     away: Array<{ playerId: string; playerName: string; value: number }>;
   } {
+    // Return enough players that the client can show all drafted players in
+    // the game (rosters typically max out ~8-9 per NBA team, so 10 covers it).
+    const ACTUAL_LIMIT = 10;
+    const PROJECTED_LIMIT = 8;
     if ((status === "in" || status === "post") && statsByGame.has(gameId)) {
       const list = statsByGame.get(gameId)!;
       const pick = (team: string | null) =>
@@ -297,14 +301,14 @@ appRouter.get("/nba/live-ticker", async (c) => {
           ? list
               .filter((s) => s.teamAbbrev === team)
               .sort((a, b) => b.points - a.points)
-              .slice(0, 3)
+              .slice(0, ACTUAL_LIMIT)
               .map((s) => ({ playerId: s.playerId, playerName: s.playerName, value: s.points }))
           : [];
       return { source: "actual", home: pick(home), away: pick(away) };
     }
     const pickProj = (team: string | null) =>
       (team ? topProjected.get(team) ?? [] : [])
-        .slice(0, 3)
+        .slice(0, PROJECTED_LIMIT)
         .map((p) => ({ playerId: p.playerId, playerName: p.playerName, value: p.ppg }));
     return { source: "projected", home: pickProj(home), away: pickProj(away) };
   }

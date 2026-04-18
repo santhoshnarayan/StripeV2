@@ -91,22 +91,28 @@ function RosterRotator({ players }: { players: RosteredGamePlayer[] }) {
 function LeadersPanel({
   game,
   anchor,
+  playerToManager,
+  rosteredByTeam,
 }: {
   game: TickerGame;
   anchor: DOMRect;
+  playerToManager: Map<string, { name: string; playerName: string }>;
+  rosteredByTeam: Map<string, Array<{ playerId: string; playerName: string; managerShortName: string }>>;
 }) {
   if (!game.leaders) return null;
   const isActual = game.leaders.source === "actual";
   const valueLabel = isActual ? "pts" : "ppg";
   // Position above the card if near viewport bottom, else below.
   const padding = 8;
-  const panelWidth = 260;
+  const panelWidth = 300;
   const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1024;
   const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 768;
   let left = anchor.left + anchor.width / 2 - panelWidth / 2;
   left = Math.max(padding, Math.min(viewportWidth - panelWidth - padding, left));
+  // Rough heuristic: ~320px tall with two teams × up to ~8 rows each.
+  const estHeight = 340;
   const spaceBelow = viewportHeight - anchor.bottom;
-  const showAbove = spaceBelow < 220 && anchor.top > 220;
+  const showAbove = spaceBelow < estHeight && anchor.top > estHeight;
   const style: React.CSSProperties = showAbove
     ? { left, bottom: viewportHeight - anchor.top + padding, width: panelWidth }
     : { left, top: anchor.bottom + padding, width: panelWidth };
@@ -116,24 +122,28 @@ function LeadersPanel({
       className="fixed z-50 rounded-lg border border-border bg-background shadow-lg p-3 text-xs"
       style={style}
     >
-      <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-border/50">
+      <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-border/50">
         <span className="font-semibold text-foreground">Key scorers</span>
         <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
           {isActual ? "actual" : "projected"}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <LeadersColumn
+      <div className="flex flex-col gap-2.5">
+        <LeadersTeamSection
           team={game.awayTeam}
           seed={game.awaySeed}
           leaders={game.leaders.away}
           valueLabel={valueLabel}
+          playerToManager={playerToManager}
+          rostered={rosteredByTeam.get(game.awayTeam) ?? []}
         />
-        <LeadersColumn
+        <LeadersTeamSection
           team={game.homeTeam}
           seed={game.homeSeed}
           leaders={game.leaders.home}
           valueLabel={valueLabel}
+          playerToManager={playerToManager}
+          rostered={rosteredByTeam.get(game.homeTeam) ?? []}
         />
       </div>
     </div>,
@@ -141,20 +151,41 @@ function LeadersPanel({
   );
 }
 
-function LeadersColumn({
+function LeadersTeamSection({
   team,
   seed,
   leaders,
   valueLabel,
+  playerToManager,
+  rostered,
 }: {
   team: string;
   seed: number | null;
   leaders: TickerLeaders["home"];
   valueLabel: string;
+  playerToManager: Map<string, { name: string; playerName: string }>;
+  rostered: Array<{ playerId: string; playerName: string; managerShortName: string }>;
 }) {
+  // Merge: leaders (top scorers/projections) + any drafted players not already
+  // in the leaders list. Drafted-but-low-scoring players surface at the bottom
+  // with a 0 value so managers can see who hasn't contributed yet.
+  const byId = new Map<string, { playerId: string; playerName: string; value: number }>();
+  for (const p of leaders) byId.set(p.playerId, p);
+  for (const r of rostered) {
+    if (!byId.has(r.playerId)) {
+      byId.set(r.playerId, { playerId: r.playerId, playerName: r.playerName, value: 0 });
+    }
+  }
+  const rows = Array.from(byId.values()).sort((a, b) => {
+    const aM = playerToManager.has(a.playerId) ? 1 : 0;
+    const bM = playerToManager.has(b.playerId) ? 1 : 0;
+    if (aM !== bM) return bM - aM; // drafted players anchor to top within each band? — actually keep points first
+    return b.value - a.value;
+  }).sort((a, b) => b.value - a.value);
+
   return (
-    <div className="flex flex-col gap-1 min-w-0">
-      <div className="flex items-center gap-1.5 pb-0.5">
+    <div className="flex flex-col gap-0.5 min-w-0">
+      <div className="flex items-center gap-1.5 pb-1 border-b border-border/30">
         <TeamLogo team={team} size={14} />
         <span className="text-[11px] font-semibold truncate">
           {seed != null ? (
@@ -163,20 +194,30 @@ function LeadersColumn({
           {team}
         </span>
       </div>
-      {leaders.length === 0 ? (
-        <span className="text-[10px] text-muted-foreground italic">—</span>
+      {rows.length === 0 ? (
+        <span className="text-[10px] text-muted-foreground italic py-0.5">—</span>
       ) : (
-        leaders.map((p) => (
-          <div key={p.playerId} className="flex items-center gap-1.5 min-w-0">
-            <PlayerHeadshot espnId={p.playerId} size={16} />
-            <span className="text-[10px] truncate flex-1 min-w-0">
-              {shortPlayerName(p.playerName)}
-            </span>
-            <span className="text-[10px] tabular-nums font-medium shrink-0">
-              {valueLabel === "ppg" ? p.value.toFixed(1) : Math.round(p.value)}
-            </span>
-          </div>
-        ))
+        rows.map((p) => {
+          const mgr = playerToManager.get(p.playerId);
+          return (
+            <div
+              key={p.playerId}
+              className={cn(
+                "grid grid-cols-[16px_1fr_auto_64px] items-center gap-1.5 min-w-0 py-0.5",
+                mgr && "font-medium",
+              )}
+            >
+              <PlayerHeadshot espnId={p.playerId} size={16} />
+              <span className="text-[10px] truncate">{shortPlayerName(p.playerName)}</span>
+              <span className="text-[10px] tabular-nums shrink-0 text-right">
+                {valueLabel === "ppg" ? p.value.toFixed(1) : Math.round(p.value)}
+              </span>
+              <span className="text-[10px] truncate text-right text-muted-foreground">
+                {mgr?.name ?? ""}
+              </span>
+            </div>
+          );
+        })
       )}
     </div>
   );
@@ -185,9 +226,13 @@ function LeadersColumn({
 function GameCard({
   game,
   rosteredGamePlayers,
+  playerToManager,
+  rosteredByTeam,
 }: {
   game: TickerGame;
   rosteredGamePlayers?: RosteredGamePlayer[];
+  playerToManager: Map<string, { name: string; playerName: string }>;
+  rosteredByTeam: Map<string, Array<{ playerId: string; playerName: string; managerShortName: string }>>;
 }) {
   const isLive = game.status === "in";
   const isFinal = game.status === "post";
@@ -259,7 +304,12 @@ function GameCard({
         ) : null}
       </Link>
       {hoverRect && game.leaders ? (
-        <LeadersPanel game={game} anchor={hoverRect} />
+        <LeadersPanel
+          game={game}
+          anchor={hoverRect}
+          playerToManager={playerToManager}
+          rosteredByTeam={rosteredByTeam}
+        />
       ) : null}
     </>
   );
@@ -366,6 +416,37 @@ export function LiveGamesTicker({
     return map;
   }, [rosters, livePoints, rosteredPlayers]);
 
+  // playerId → manager short name, for tagging rostered players in the hover panel.
+  const playerToManager = useMemo(() => {
+    const map = new Map<string, { name: string; playerName: string }>();
+    for (const [, arr] of playersByTeam) {
+      for (const p of arr) {
+        map.set(p.playerId, { name: p.managerShortName, playerName: p.playerName });
+      }
+    }
+    return map;
+  }, [playersByTeam]);
+
+  // team abbrev → array of rostered players (for the hover panel to surface
+  // drafted bench players who may not be in the top-scorer list).
+  const rosteredByTeam = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{ playerId: string; playerName: string; managerShortName: string }>
+    >();
+    for (const [team, arr] of playersByTeam) {
+      map.set(
+        team,
+        arr.map((p) => ({
+          playerId: p.playerId,
+          playerName: p.playerName,
+          managerShortName: p.managerShortName,
+        })),
+      );
+    }
+    return map;
+  }, [playersByTeam]);
+
   if (sorted.length === 0) return null;
 
   return (
@@ -379,7 +460,13 @@ export function LiveGamesTicker({
             (a, b) => b.livePoints - a.livePoints,
           );
           return (
-            <GameCard key={g.id} game={g} rosteredGamePlayers={gamePlayers} />
+            <GameCard
+              key={g.id}
+              game={g}
+              rosteredGamePlayers={gamePlayers}
+              playerToManager={playerToManager}
+              rosteredByTeam={rosteredByTeam}
+            />
           );
         })}
       </div>
