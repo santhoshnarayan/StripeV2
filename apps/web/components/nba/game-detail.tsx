@@ -282,19 +282,28 @@ function PlayByPlay({ plays }: { plays: PlayRow[] }) {
   );
 }
 
+export type GameDetailVariant = "sheet" | "page";
+
 export function GameDetail({
   eventId,
   onClose,
   rosteredPlayers,
+  variant = "sheet",
+  headerExtra,
+  onNotFound,
 }: {
   eventId: string;
-  onClose: () => void;
+  onClose?: () => void;
   rosteredPlayers?: Map<string, RosteredPlayerInfo>;
+  variant?: GameDetailVariant;
+  headerExtra?: React.ReactNode;
+  onNotFound?: () => void;
 }) {
   const [data, setData] = useState<GameDetailData | null>(null);
   const [plays, setPlays] = useState<PlayRow[]>([]);
   const [winProb, setWinProb] = useState<WinProbPoint[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [tab, setTab] = useState<"box" | "pbp" | "chart">("box");
 
   const cancelledRef = useRef(false);
@@ -319,13 +328,25 @@ export function GameDetail({
           })),
       );
       setError(null);
+      setNotFound(false);
     } catch (err) {
-      if (!cancelledRef.current) setError((err as Error).message);
+      if (cancelledRef.current) return;
+      const msg = (err as Error).message;
+      setError(msg);
+      if (msg === "not_found") {
+        setNotFound(true);
+        onNotFound?.();
+      }
     }
   });
 
   useEffect(() => {
     cancelledRef.current = false;
+    setData(null);
+    setPlays([]);
+    setWinProb([]);
+    setError(null);
+    setNotFound(false);
     void loadRef.current();
     return () => {
       cancelledRef.current = true;
@@ -335,8 +356,113 @@ export function GameDetail({
   const isLive = data?.game.status === "in";
   usePolling(() => loadRef.current(), {
     activeMs: isLive ? 60_000 : 300_000,
-    enabled: data?.game.status !== "post",
+    enabled: data?.game.status !== "post" && !notFound,
   });
+
+  const isPage = variant === "page";
+
+  const body = !data ? (
+    <div className="p-6 text-sm text-muted-foreground">
+      {notFound ? "Game not found." : error ? `Error: ${error}` : "Loading…"}
+    </div>
+  ) : (
+    <>
+      <div className="sticky top-0 bg-background border-b border-border z-10 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3 min-w-0">
+          <TeamLogo team={data.game.awayTeamAbbrev} size={24} />
+          <span className="text-lg font-bold tabular-nums">{data.game.awayScore}</span>
+          <span className="text-xs text-muted-foreground">@</span>
+          <span className="text-lg font-bold tabular-nums">{data.game.homeScore}</span>
+          <TeamLogo team={data.game.homeTeamAbbrev} size={24} />
+        </div>
+        <div className="flex items-center gap-3">
+          <span
+            className={cn(
+              "text-xs font-semibold",
+              data.game.status === "in" && "text-red-500",
+            )}
+          >
+            {formatStatus(data.game)}
+          </span>
+          {!isPage && onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground text-sm"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {headerExtra}
+
+      <div className="px-4 pt-3 pb-2 flex gap-1 border-b border-border/60 overflow-x-auto no-scrollbar">
+        {(["box", "pbp", "chart"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={cn(
+              "text-xs px-2 py-1 rounded-md font-medium shrink-0",
+              tab === t
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t === "box" ? "Box Score" : t === "pbp" ? "Play-by-Play" : "Win Prob"}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-4">
+        {tab === "box" ? (
+          <>
+            <TeamStatsPanel
+              rows={data.teamStats}
+              home={data.game.homeTeamAbbrev}
+              away={data.game.awayTeamAbbrev}
+            />
+            <TeamBox
+              team={data.game.awayTeamAbbrev}
+              opposing={data.game.homeTeamAbbrev}
+              players={data.playerStats}
+              rosteredPlayers={rosteredPlayers}
+            />
+            <TeamBox
+              team={data.game.homeTeamAbbrev}
+              opposing={data.game.awayTeamAbbrev}
+              players={data.playerStats}
+              rosteredPlayers={rosteredPlayers}
+            />
+          </>
+        ) : null}
+
+        {tab === "pbp" ? <PlayByPlay plays={plays} /> : null}
+
+        {tab === "chart" ? (
+          <WinProbabilityChart
+            points={winProb}
+            homeTeam={data.game.homeTeamAbbrev}
+            awayTeam={data.game.awayTeamAbbrev}
+          />
+        ) : null}
+
+        {data.game.broadcast || data.game.venue ? (
+          <div className="pt-2 text-[11px] text-muted-foreground border-t border-border/40 space-y-0.5">
+            {data.game.broadcast ? <div>Coverage: {data.game.broadcast}</div> : null}
+            {data.game.venue ? <div>Venue: {data.game.venue}</div> : null}
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+
+  if (isPage) {
+    return <div className="w-full">{body}</div>;
+  }
 
   return (
     <div
@@ -347,100 +473,7 @@ export function GameDetail({
         className="absolute inset-x-0 bottom-0 md:inset-y-0 md:right-0 md:left-auto md:w-[480px] bg-background border-t md:border-t-0 md:border-l border-border rounded-t-xl md:rounded-none max-h-[92vh] md:max-h-none overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        {!data ? (
-          <div className="p-6 text-sm text-muted-foreground">
-            {error ? `Error: ${error}` : "Loading…"}
-          </div>
-        ) : (
-          <>
-            <div className="sticky top-0 bg-background border-b border-border z-10 px-4 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3 min-w-0">
-                <TeamLogo team={data.game.awayTeamAbbrev} size={24} />
-                <span className="text-lg font-bold tabular-nums">{data.game.awayScore}</span>
-                <span className="text-xs text-muted-foreground">@</span>
-                <span className="text-lg font-bold tabular-nums">{data.game.homeScore}</span>
-                <TeamLogo team={data.game.homeTeamAbbrev} size={24} />
-              </div>
-              <div className="flex items-center gap-3">
-                <span
-                  className={cn(
-                    "text-xs font-semibold",
-                    data.game.status === "in" && "text-red-500",
-                  )}
-                >
-                  {formatStatus(data.game)}
-                </span>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="text-muted-foreground hover:text-foreground text-sm"
-                  aria-label="Close"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-
-            <div className="px-4 pt-3 pb-2 flex gap-1 border-b border-border/60">
-              {(["box", "pbp", "chart"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setTab(t)}
-                  className={cn(
-                    "text-xs px-2 py-1 rounded-md font-medium",
-                    tab === t
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {t === "box" ? "Box Score" : t === "pbp" ? "Play-by-Play" : "Win Prob"}
-                </button>
-              ))}
-            </div>
-
-            <div className="p-4 space-y-4">
-              {tab === "box" ? (
-                <>
-                  <TeamStatsPanel
-                    rows={data.teamStats}
-                    home={data.game.homeTeamAbbrev}
-                    away={data.game.awayTeamAbbrev}
-                  />
-                  <TeamBox
-                    team={data.game.awayTeamAbbrev}
-                    opposing={data.game.homeTeamAbbrev}
-                    players={data.playerStats}
-                    rosteredPlayers={rosteredPlayers}
-                  />
-                  <TeamBox
-                    team={data.game.homeTeamAbbrev}
-                    opposing={data.game.awayTeamAbbrev}
-                    players={data.playerStats}
-                    rosteredPlayers={rosteredPlayers}
-                  />
-                </>
-              ) : null}
-
-              {tab === "pbp" ? <PlayByPlay plays={plays} /> : null}
-
-              {tab === "chart" ? (
-                <WinProbabilityChart
-                  points={winProb}
-                  homeTeam={data.game.homeTeamAbbrev}
-                  awayTeam={data.game.awayTeamAbbrev}
-                />
-              ) : null}
-
-              {data.game.broadcast || data.game.venue ? (
-                <div className="pt-2 text-[11px] text-muted-foreground border-t border-border/40 space-y-0.5">
-                  {data.game.broadcast ? <div>Coverage: {data.game.broadcast}</div> : null}
-                  {data.game.venue ? <div>Venue: {data.game.venue}</div> : null}
-                </div>
-              ) : null}
-            </div>
-          </>
-        )}
+        {body}
       </div>
     </div>
   );
