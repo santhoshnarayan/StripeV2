@@ -8,6 +8,7 @@ import { auth } from "./auth.js";
 import { appRouter } from "./routes/app.js";
 import { startCronJobs } from "./cron/index.js";
 import { startWorker } from "./tasks/queue.js";
+import { recoverAuctions } from "./lib/auction-queue.js";
 
 const app = new Hono();
 
@@ -80,6 +81,7 @@ app.on(["GET", "POST"], "/graphql", async (c) => {
 
 // Start background services
 startCronJobs();
+recoverAuctions().catch((err) => console.error("[auction] Recovery failed:", err));
 
 if (process.env.REDIS_URL) {
   startWorker();

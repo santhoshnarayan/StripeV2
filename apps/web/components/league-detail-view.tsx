@@ -183,6 +183,21 @@ type LeagueDetail = {
       totalPoints: number;
     }>;
   }>;
+  auctionState: {
+    status: string;
+    bidTimerSeconds: number;
+    nominationTimerSeconds: number;
+    nominationOrder: string[];
+    nominationIndex: number;
+    currentNominatorUserId: string | null;
+    currentPlayerId: string | null;
+    currentPlayerName: string | null;
+    currentPlayerTeam: string | null;
+    highBidAmount: number | null;
+    highBidUserId: string | null;
+    expiresAt: string | null;
+    totalAwards: number;
+  } | null;
   actions: Array<{
     id: string;
     type: string;
@@ -210,6 +225,15 @@ const ACTION_TYPE_LABELS: Record<string, string> = {
   budget_adjust: "Budget Adjustment",
   round_opened: "Round Opened",
   round_closed: "Round Closed",
+  auction_start: "Auction Started",
+  auction_nominate: "Nomination",
+  auction_bid: "Bid",
+  auction_award: "Auction Award",
+  auction_pass: "Passed",
+  auction_pause: "Paused",
+  auction_resume: "Resumed",
+  auction_undo_award: "Undo Award",
+  auction_end: "Auction Ended",
 };
 
 type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator" | "commissioner";
@@ -549,6 +573,535 @@ function bidInputStyle(bid: number | null, suggestedValue: number): React.CSSPro
   // light mode is a solid gray that pops against the tinted background. Match
   // the border to the bg so the tint fills edge-to-edge in both themes.
   return { backgroundColor, color, borderColor: backgroundColor };
+}
+
+// ====================== LIVE AUCTION COMPONENTS ======================
+
+type AuctionSSEState = {
+  status: string;
+  bidTimerSeconds: number;
+  nominationTimerSeconds: number;
+  nominationOrder: string[];
+  nominationIndex: number;
+  currentNominatorUserId: string | null;
+  currentPlayerId: string | null;
+  currentPlayerName: string | null;
+  currentPlayerTeam: string | null;
+  highBidAmount: number | null;
+  highBidUserId: string | null;
+  expiresAt: string | null;
+  totalAwards: number;
+  leagueId: string;
+};
+
+function useAuctionSSE(leagueId: string, enabled: boolean) {
+  const [state, setState] = useState<AuctionSSEState | null>(null);
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const es = new EventSource(`/api/app/leagues/${leagueId}/auction/stream`, {
+      withCredentials: true,
+    });
+
+    es.addEventListener("state", (e) => {
+      setState(JSON.parse(e.data));
+      setConnected(true);
+    });
+    es.addEventListener("bid", (e) => {
+      const bid = JSON.parse(e.data);
+      setState((prev) =>
+        prev
+          ? {
+              ...prev,
+              highBidAmount: bid.amount,
+              highBidUserId: bid.userId,
+              expiresAt: bid.expiresAt,
+            }
+          : prev,
+      );
+    });
+    es.addEventListener("award", (e) => {
+      const award = JSON.parse(e.data);
+      toast.success(`${award.playerName} awarded for $${award.amount}`);
+    });
+    es.addEventListener("nominate", (e) => {
+      const nom = JSON.parse(e.data);
+      setState((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "bidding",
+              currentPlayerId: nom.playerId,
+              currentPlayerName: nom.playerName,
+              currentPlayerTeam: nom.playerTeam,
+              highBidAmount: nom.openingBid,
+              highBidUserId: nom.nominatorUserId,
+              expiresAt: nom.expiresAt,
+            }
+          : prev,
+      );
+    });
+    es.addEventListener("nominate_turn", (e) => {
+      const turn = JSON.parse(e.data);
+      setState((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "nominating",
+              currentNominatorUserId: turn.nominatorUserId,
+              nominationIndex: turn.nominationIndex,
+              currentPlayerId: null,
+              currentPlayerName: null,
+              currentPlayerTeam: null,
+              highBidAmount: null,
+              highBidUserId: null,
+              expiresAt: null,
+            }
+          : prev,
+      );
+    });
+    es.addEventListener("pause", () => {
+      setState((prev) => (prev ? { ...prev, status: "paused" } : prev));
+    });
+    es.addEventListener("resume", (e) => {
+      const d = JSON.parse(e.data);
+      setState((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: d.status,
+              expiresAt: d.expiresAt,
+            }
+          : prev,
+      );
+    });
+    es.addEventListener("end", () => {
+      setState((prev) => (prev ? { ...prev, status: "completed" } : prev));
+    });
+    es.addEventListener("undo_award", (e) => {
+      const d = JSON.parse(e.data);
+      toast(`Undone: ${d.playerName} removed from roster, $${d.refundAmount} refunded`);
+    });
+
+    es.onerror = () => {
+      setConnected(false);
+    };
+
+    return () => es.close();
+  }, [leagueId, enabled]);
+
+  return { state, connected };
+}
+
+function CountdownTimer({ expiresAt }: { expiresAt: string | null }) {
+  const [remaining, setRemaining] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!expiresAt) {
+      setRemaining(null);
+      return;
+    }
+    const target = new Date(expiresAt).getTime();
+
+    const tick = () => {
+      const ms = target - Date.now();
+      setRemaining(Math.max(0, ms));
+    };
+    tick();
+    const interval = setInterval(tick, 100);
+    return () => clearInterval(interval);
+  }, [expiresAt]);
+
+  if (remaining === null) return null;
+  const seconds = Math.ceil(remaining / 1000);
+  const isUrgent = seconds <= 3;
+  return (
+    <span
+      className={
+        isUrgent
+          ? "tabular-nums font-bold text-red-500 animate-pulse"
+          : "tabular-nums font-medium"
+      }
+    >
+      {seconds}s
+    </span>
+  );
+}
+
+function AuctionDraftPanel({
+  leagueId,
+  data,
+  viewerUserId,
+  onRefresh,
+}: {
+  leagueId: string;
+  data: LeagueDetail;
+  viewerUserId: string;
+  onRefresh: () => void;
+}) {
+  const { state: sseState, connected } = useAuctionSSE(leagueId, !!data.auctionState);
+  const auction = sseState ?? data.auctionState;
+  const [bidAmount, setBidAmount] = useState("");
+  const [nomSearch, setNomSearch] = useState("");
+  const [nomBid, setNomBid] = useState("");
+  const [actionPending, setActionPending] = useState(false);
+
+  const memberMap = useMemo(
+    () => new Map(data.members.map((m) => [m.userId, m])),
+    [data.members],
+  );
+
+  const isCommissioner = data.league.isCommissioner;
+  const isMyNomination =
+    auction?.status === "nominating" &&
+    auction.currentNominatorUserId === viewerUserId;
+
+  const filteredPlayers = useMemo(() => {
+    if (!nomSearch) return data.availablePlayers.slice(0, 20);
+    const q = nomSearch.toLowerCase();
+    return data.availablePlayers
+      .filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          p.team.toLowerCase().includes(q),
+      )
+      .slice(0, 20);
+  }, [data.availablePlayers, nomSearch]);
+
+  async function handleNominate(playerId: string, playerName: string, playerTeam: string) {
+    const bid = parseInt(nomBid) || 1;
+    setActionPending(true);
+    try {
+      const result = await appApiFetch<{ ok: boolean; error?: string }>(
+        `/leagues/${leagueId}/auction/nominate`,
+        {
+          method: "POST",
+          body: JSON.stringify({ playerId, playerName, playerTeam, openingBid: bid }),
+        },
+      );
+      if (!result.ok) toast.error(result.error ?? "Nomination failed");
+      else {
+        setNomSearch("");
+        setNomBid("");
+        onRefresh();
+      }
+    } catch {
+      toast.error("Nomination failed");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  async function handleBid() {
+    const amount = parseInt(bidAmount);
+    if (!amount || amount <= (auction?.highBidAmount ?? 0)) {
+      toast.error("Bid must be higher than current high bid");
+      return;
+    }
+    setActionPending(true);
+    try {
+      const result = await appApiFetch<{ ok: boolean; error?: string }>(
+        `/leagues/${leagueId}/auction/bid`,
+        { method: "POST", body: JSON.stringify({ amount }) },
+      );
+      if (!result.ok) toast.error(result.error ?? "Bid failed");
+      else {
+        setBidAmount("");
+        toast.success(`Bid $${amount} placed!`);
+      }
+    } catch {
+      toast.error("Bid failed");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  async function handleCommissionerAction(action: string) {
+    setActionPending(true);
+    try {
+      const result = await appApiFetch<{ ok: boolean; error?: string }>(
+        `/leagues/${leagueId}/auction/${action}`,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      if (!result.ok) toast.error(result.error ?? "Action failed");
+      else onRefresh();
+    } catch {
+      toast.error("Action failed");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  if (!auction) return null;
+
+  const nominatorName = auction.currentNominatorUserId
+    ? memberMap.get(auction.currentNominatorUserId)?.name ?? "Unknown"
+    : "—";
+  const highBidderName = auction.highBidUserId
+    ? memberMap.get(auction.highBidUserId)?.name ?? "Unknown"
+    : "—";
+  const minNextBid = (auction.highBidAmount ?? 0) + 1;
+
+  return (
+    <div className="space-y-4">
+      {/* Status banner */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-lg">Live Auction Draft</CardTitle>
+              <CardDescription>
+                {auction.totalAwards} players drafted
+                {!connected && sseState === null ? " (connecting...)" : ""}
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className={[
+                  "inline-flex h-2 w-2 rounded-full",
+                  auction.status === "paused"
+                    ? "bg-amber-500"
+                    : connected
+                      ? "bg-emerald-500"
+                      : "bg-red-500 animate-pulse",
+                ].join(" ")}
+              />
+              <span className="text-sm text-muted-foreground capitalize">
+                {auction.status === "paused" ? "Paused" : connected ? "Live" : "Reconnecting"}
+              </span>
+              {isCommissioner && auction.status !== "completed" ? (
+                <div className="flex gap-1 ml-2">
+                  {auction.status === "paused" ? (
+                    <Button size="sm" variant="outline" disabled={actionPending} onClick={() => handleCommissionerAction("resume")}>
+                      Resume
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline" disabled={actionPending} onClick={() => handleCommissionerAction("pause")}>
+                      Pause
+                    </Button>
+                  )}
+                  <Button size="sm" variant="destructive" disabled={actionPending} onClick={() => handleCommissionerAction("end")}>
+                    End
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          {/* Current bidding slot */}
+          {auction.status === "bidding" && auction.currentPlayerName ? (
+            <div className="rounded-lg border border-border/80 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Now bidding on</p>
+                  <p className="text-xl font-semibold">
+                    {auction.currentPlayerName}{" "}
+                    <span className="text-muted-foreground text-base">({auction.currentPlayerTeam})</span>
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm text-muted-foreground">Time remaining</p>
+                  <p className="text-2xl">
+                    <CountdownTimer expiresAt={auction.expiresAt} />
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2">
+                <div>
+                  <span className="text-sm text-muted-foreground">High bid: </span>
+                  <span className="font-semibold text-lg">${auction.highBidAmount}</span>
+                  <span className="text-sm text-muted-foreground ml-1">by {highBidderName}</span>
+                </div>
+                {auction.highBidUserId === viewerUserId ? (
+                  <span className="text-sm font-medium text-emerald-600">You are winning</span>
+                ) : null}
+              </div>
+              {/* Bid input */}
+              {auction.highBidUserId !== viewerUserId ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    placeholder={`Min $${minNextBid}`}
+                    value={bidAmount}
+                    onChange={(e) => setBidAmount(e.target.value)}
+                    className="w-32"
+                    min={minNextBid}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleBid(); }}
+                  />
+                  <Button disabled={actionPending || !bidAmount} onClick={handleBid}>
+                    Bid ${bidAmount || minNextBid}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={actionPending}
+                    onClick={() => {
+                      setBidAmount(String(minNextBid));
+                      setTimeout(handleBid, 0);
+                    }}
+                  >
+                    +$1
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Nomination phase */}
+          {auction.status === "nominating" ? (
+            <div className="rounded-lg border border-border/80 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Nominating</p>
+                  <p className="text-lg font-semibold">
+                    {isMyNomination ? "Your turn to nominate!" : `Waiting for ${nominatorName}...`}
+                  </p>
+                </div>
+                {auction.expiresAt ? (
+                  <div className="text-right">
+                    <p className="text-sm text-muted-foreground">Time remaining</p>
+                    <p className="text-2xl">
+                      <CountdownTimer expiresAt={auction.expiresAt} />
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+              {isMyNomination ? (
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Search players..."
+                      value={nomSearch}
+                      onChange={(e) => setNomSearch(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Input
+                      type="number"
+                      placeholder="Opening bid"
+                      value={nomBid}
+                      onChange={(e) => setNomBid(e.target.value)}
+                      className="w-32"
+                      min={1}
+                    />
+                  </div>
+                  <div className="max-h-60 overflow-y-auto space-y-1">
+                    {filteredPlayers.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        disabled={actionPending}
+                        className="w-full flex items-center justify-between rounded-md px-3 py-2 text-sm hover:bg-muted/60 transition-colors text-left"
+                        onClick={() => handleNominate(p.id, p.name, p.team)}
+                      >
+                        <span>
+                          {p.name} <span className="text-muted-foreground">({p.team})</span>
+                        </span>
+                        <span className="text-muted-foreground">${p.suggestedValue}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Paused state */}
+          {auction.status === "paused" ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-center">
+              <p className="text-lg font-semibold text-amber-600">Auction Paused</p>
+              <p className="text-sm text-muted-foreground">
+                The commissioner has paused the auction. Timer will reset when resumed.
+              </p>
+            </div>
+          ) : null}
+
+          {/* Completed */}
+          {auction.status === "completed" ? (
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 text-center">
+              <p className="text-lg font-semibold text-emerald-600">Auction Complete</p>
+              <p className="text-sm text-muted-foreground">
+                {auction.totalAwards} players were drafted.
+              </p>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {/* Manager status */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Manager Status</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {data.members.map((m) => {
+              const isNominator = auction.currentNominatorUserId === m.userId;
+              const isHighBidder = auction.highBidUserId === m.userId;
+              return (
+                <div
+                  key={m.userId}
+                  className={[
+                    "flex items-center justify-between rounded-md border px-3 py-2 text-sm",
+                    isNominator
+                      ? "border-blue-500/50 bg-blue-500/5"
+                      : isHighBidder
+                        ? "border-emerald-500/50 bg-emerald-500/5"
+                        : "border-border/70",
+                  ].join(" ")}
+                >
+                  <div className="flex items-center gap-2">
+                    {isNominator ? (
+                      <span className="inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" />
+                    ) : isHighBidder ? (
+                      <span className="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    ) : null}
+                    <span className="font-medium truncate">{m.name}</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-muted-foreground">
+                    <span>${m.remainingBudget}</span>
+                    <span>{m.rosterCount}/{data.league.rosterSize}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Available players */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Available Players ({data.availablePlayers.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="max-h-96 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="pb-2 font-medium">Player</th>
+                  <th className="pb-2 font-medium text-right">Projected</th>
+                  <th className="pb-2 font-medium text-right">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.availablePlayers.slice(0, 50).map((p) => (
+                  <tr key={p.id} className="border-b border-border/40">
+                    <td className="py-1.5">
+                      {p.name} <span className="text-muted-foreground">({p.team})</span>
+                    </td>
+                    <td className="py-1.5 text-right tabular-nums">{p.totalPoints?.toFixed(1) ?? "—"}</td>
+                    <td className="py-1.5 text-right tabular-nums">${p.suggestedValue}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
 }
 
 export function LeagueDetailView({ leagueId }: { leagueId: string }) {
@@ -1859,7 +2412,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         </Card>
       ) : null}
 
-      {activeTab === "draft" ? (
+      {activeTab === "draft" && data.auctionState && viewerUserId ? (
+        <AuctionDraftPanel
+          leagueId={leagueId}
+          data={data}
+          viewerUserId={viewerUserId}
+          onRefresh={() => loadLeague({ silent: true })}
+        />
+      ) : null}
+
+      {activeTab === "draft" && !data.auctionState ? (
         <>
           {data.currentRound ? (
             <Card>
@@ -3311,6 +3873,62 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              {/* Start Auction Draft */}
+              {!data.currentRound && !data.auctionState && data.league.phase !== "scoring" ? (
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground mb-3">Start Live Auction Draft</h3>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    Managers take turns nominating players. Anyone can outbid. Timer resets on each bid.
+                  </p>
+                  <form
+                    className="flex flex-wrap gap-3 items-end"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const form = e.currentTarget;
+                      const fd = new FormData(form);
+                      try {
+                        const result = await appApiFetch<{ ok: boolean; error?: string }>(
+                          `/leagues/${leagueId}/auction/start`,
+                          {
+                            method: "POST",
+                            body: JSON.stringify({
+                              bidTimerSeconds: parseInt(fd.get("bidTimer") as string) || 10,
+                              nominationTimerSeconds: parseInt(fd.get("nomTimer") as string) || 30,
+                              orderMode: fd.get("orderMode") || "draft_priority",
+                            }),
+                          },
+                        );
+                        if (result.ok) {
+                          toast.success("Auction started!");
+                          loadLeague();
+                        } else {
+                          toast.error(result.error ?? "Failed to start auction");
+                        }
+                      } catch {
+                        toast.error("Failed to start auction");
+                      }
+                    }}
+                  >
+                    <div>
+                      <Label className="text-xs">Bid Timer (sec)</Label>
+                      <Input type="number" name="bidTimer" defaultValue={10} min={5} max={60} className="w-24" />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Nomination Timer (sec)</Label>
+                      <Input type="number" name="nomTimer" defaultValue={30} min={15} max={120} className="w-24" />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Order</Label>
+                      <select name="orderMode" className="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        <option value="draft_priority">Draft Priority</option>
+                        <option value="random">Random</option>
+                      </select>
+                    </div>
+                    <Button type="submit">Start Auction</Button>
+                  </form>
+                </div>
+              ) : null}
+
               {/* Remove Player from Roster */}
               <div>
                 <h3 className="text-sm font-semibold text-foreground mb-3">Remove Player from Roster</h3>

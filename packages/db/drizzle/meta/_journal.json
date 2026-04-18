@@ -15,6 +15,13 @@
       "when": 1776467704961,
       "tag": "0001_large_warhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776471664647,
+      "tag": "0002_cooing_mystique",
+      "breakpoints": true
     }
   ]
 }

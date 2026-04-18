@@ -6,6 +6,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
+  auctionState,
   draftBid,
   draftRound,
   draftRoundPlayer,
@@ -19,6 +20,12 @@ import {
 } from "@repo/db";
 import { auth } from "../auth.js";
 import { decryptBidAmount, encryptBidAmount } from "../lib/bid-crypto.js";
+import { streamSSE } from "hono/streaming";
+import {
+  getAuction,
+  startAuction,
+  type EventResult,
+} from "../lib/auction-queue.js";
 import {
   auctionConfigFromLeague,
   getPlayerPoolForAuction,
@@ -919,6 +926,35 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         };
       })
       .sort((left, right) => right.totalPoints - left.totalPoints || left.name.localeCompare(right.name)),
+    auctionState: await (async () => {
+      const rows = await db
+        .select()
+        .from(auctionState)
+        .where(
+          and(
+            eq(auctionState.leagueId, leagueId),
+            inArray(auctionState.status, ["nominating", "bidding", "paused"]),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row) return null;
+      return {
+        status: row.status,
+        bidTimerSeconds: row.bidTimerSeconds,
+        nominationTimerSeconds: row.nominationTimerSeconds,
+        nominationOrder: row.nominationOrder,
+        nominationIndex: row.nominationIndex,
+        currentNominatorUserId: row.currentNominatorUserId,
+        currentPlayerId: row.currentPlayerId,
+        currentPlayerName: row.currentPlayerName,
+        currentPlayerTeam: row.currentPlayerTeam,
+        highBidAmount: row.highBidAmount,
+        highBidUserId: row.highBidUserId,
+        expiresAt: row.expiresAt?.toISOString() ?? null,
+        totalAwards: row.totalAwards,
+      };
+    })(),
     actions: access.isCommissioner
       ? await db
           .select()
@@ -2508,4 +2544,291 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
         ? "scoring"
         : "draft",
   });
+});
+
+// ====================== LIVE AUCTION DRAFT ======================
+
+const startAuctionSchema = z.object({
+  bidTimerSeconds: z.number().int().min(5).max(60).default(10),
+  nominationTimerSeconds: z.number().int().min(15).max(120).default(30),
+  orderMode: z.enum(["draft_priority", "random"]).default("draft_priority"),
+});
+
+const nominateSchema = z.object({
+  playerId: z.string(),
+  playerName: z.string(),
+  playerTeam: z.string(),
+  openingBid: z.number().int().min(1),
+});
+
+const auctionBidSchema = z.object({
+  amount: z.number().int().min(1),
+});
+
+const undoAwardSchema = z.object({
+  playerId: z.string().optional(),
+});
+
+// Start auction
+appRouter.post("/leagues/:leagueId/auction/start", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  if (access.league.phase === "scoring") {
+    return c.json({ error: "League is already in scoring phase" }, 400);
+  }
+
+  // Check no active auction
+  const existing = await db
+    .select({ id: auctionState.id })
+    .from(auctionState)
+    .where(
+      and(
+        eq(auctionState.leagueId, leagueId),
+        inArray(auctionState.status, ["nominating", "bidding", "paused"]),
+      ),
+    )
+    .limit(1);
+  if (existing.length > 0) {
+    return c.json({ error: "An auction is already active" }, 400);
+  }
+
+  const body = startAuctionSchema.parse(await c.req.json());
+  const members = await getLeagueMembers(leagueId);
+
+  if (members.length < 2) {
+    return c.json({ error: "Need at least 2 members" }, 400);
+  }
+
+  const now = new Date();
+  let nominationOrder: string[];
+
+  if (body.orderMode === "random") {
+    nominationOrder = shuffle(members.map((m) => m.userId));
+  } else {
+    const sorted = await db.transaction(async (tx) => {
+      return ensureDraftPriorityOrder(tx, leagueId, members, now);
+    });
+    nominationOrder = sorted.map((m) => m.userId);
+  }
+
+  const auctionId = randomUUID();
+  const firstNominator = nominationOrder[0];
+
+  await db.transaction(async (tx) => {
+    await tx.insert(auctionState).values({
+      id: auctionId,
+      leagueId,
+      status: "nominating",
+      bidTimerSeconds: body.bidTimerSeconds,
+      nominationTimerSeconds: body.nominationTimerSeconds,
+      nominationOrder,
+      nominationIndex: 0,
+      currentNominatorUserId: firstNominator,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const seq = await nextSequenceNumber(tx, leagueId);
+    await tx.insert(leagueAction).values({
+      id: randomUUID(),
+      leagueId,
+      type: "auction_start",
+      actorUserId: session.user.id,
+      sequenceNumber: seq,
+      metadata: {
+        bidTimerSeconds: body.bidTimerSeconds,
+        nominationTimerSeconds: body.nominationTimerSeconds,
+        nominationOrder,
+      },
+      createdAt: now,
+    });
+
+    await tx
+      .update(league)
+      .set({ phase: "draft", updatedAt: now })
+      .where(eq(league.id, leagueId));
+  });
+
+  // Fetch the inserted row and start the engine
+  const [stateRow] = await db.select().from(auctionState).where(eq(auctionState.id, auctionId));
+  const engine = startAuction(leagueId, stateRow);
+  engine.restartNominationTimer(body.nominationTimerSeconds * 1000);
+
+  return c.json({ ok: true, auctionId });
+});
+
+// SSE stream
+appRouter.get("/leagues/:leagueId/auction/stream", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  return streamSSE(c, async (stream) => {
+    engine.addClient(stream);
+
+    // Send current state immediately
+    await stream.writeSSE({
+      event: "state",
+      data: JSON.stringify(engine.getStateSnapshot()),
+    });
+
+    stream.onAbort(() => {
+      engine.removeClient(stream);
+    });
+
+    // Keep alive
+    while (true) {
+      await stream.sleep(30_000);
+      await stream.writeSSE({ event: "ping", data: "" });
+    }
+  });
+});
+
+// Current state (non-SSE fallback)
+appRouter.get("/leagues/:leagueId/auction/state", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  return c.json(engine.getStateSnapshot());
+});
+
+// Nominate
+appRouter.post("/leagues/:leagueId/auction/nominate", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  const body = nominateSchema.parse(await c.req.json());
+  const result = await engine.enqueue({
+    type: "nominate",
+    userId: session.user.id,
+    playerId: body.playerId,
+    playerName: body.playerName,
+    playerTeam: body.playerTeam,
+    openingBid: body.openingBid,
+  });
+
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Bid
+appRouter.post("/leagues/:leagueId/auction/bid", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  const body = auctionBidSchema.parse(await c.req.json());
+  const result = await engine.enqueue({
+    type: "bid",
+    userId: session.user.id,
+    amount: body.amount,
+    receivedAt: new Date(),
+  });
+
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Pause
+appRouter.post("/leagues/:leagueId/auction/pause", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  const result = await engine.enqueue({ type: "pause", actorUserId: session.user.id });
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Resume
+appRouter.post("/leagues/:leagueId/auction/resume", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  const result = await engine.enqueue({ type: "resume", actorUserId: session.user.id });
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Undo award
+appRouter.post("/leagues/:leagueId/auction/undo-award", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  const body = undoAwardSchema.parse(await c.req.json());
+  const result = await engine.enqueue({
+    type: "undo_award",
+    actorUserId: session.user.id,
+    playerId: body.playerId,
+  });
+
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// End auction
+appRouter.post("/leagues/:leagueId/auction/end", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getAuction(leagueId);
+  if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  const result = await engine.enqueue({ type: "end", actorUserId: session.user.id });
+  return c.json(result, result.ok ? 200 : 400);
 });

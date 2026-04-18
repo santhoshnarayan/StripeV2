@@ -1,3 +1,5 @@
+export const runtime = "edge";
+
 if (!process.env.API_URL) {
   throw new Error(
     "API_URL environment variable is required for the app proxy. Set it in Vercel for Production and Preview environments.",

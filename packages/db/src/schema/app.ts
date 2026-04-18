@@ -214,6 +214,46 @@ export const leagueAction = pgTable(
   }),
 );
 
+export const auctionState = pgTable(
+  "auction_state",
+  {
+    id: text("id").primaryKey(),
+    leagueId: text("league_id")
+      .notNull()
+      .references(() => league.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("nominating"),
+    // Timer config
+    bidTimerSeconds: integer("bid_timer_seconds").notNull().default(10),
+    nominationTimerSeconds: integer("nomination_timer_seconds").notNull().default(30),
+    bufferMs: integer("buffer_ms").notNull().default(500),
+    // Nomination rotation
+    nominationOrder: jsonb("nomination_order").notNull(),
+    nominationIndex: integer("nomination_index").notNull().default(0),
+    currentNominatorUserId: text("current_nominator_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    // Current bidding slot
+    currentPlayerId: text("current_player_id"),
+    currentPlayerName: text("current_player_name"),
+    currentPlayerTeam: text("current_player_team"),
+    highBidAmount: integer("high_bid_amount"),
+    highBidUserId: text("high_bid_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    expiresAt: timestamp("expires_at"),
+    // Pause support
+    pausedAt: timestamp("paused_at"),
+    statusBeforePause: text("status_before_pause"),
+    // Tracking
+    totalAwards: integer("total_awards").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    leagueUnique: uniqueIndex("auction_state_league_unique").on(table.leagueId),
+  }),
+);
+
 export const rosterEntry = pgTable(
   "roster_entry",
   {
