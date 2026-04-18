@@ -2035,40 +2035,29 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
   const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
   const viewerState = memberStates.get(session.user.id);
 
-  if (!viewerState || viewerState.remainingRosterSlots <= 0) {
-    console.warn(`[submission] 400 roster full: user=${session.user.id} slots=${viewerState?.remainingRosterSlots ?? "no state"}`);
-    return c.json({ error: "Your roster is already full" }, 400);
-  }
+  const maxAllowed = viewerState
+    ? computeMaxBid(viewerState.remainingBudget, viewerState.remainingRosterSlots, access.league.minBid)
+    : 0;
 
-  const maxAllowed = computeMaxBid(
-    viewerState.remainingBudget,
-    viewerState.remainingRosterSlots,
-    access.league.minBid,
-  );
-
+  // Filter bids to only valid ones — skip invalid players instead of rejecting the whole submission.
+  const validatedBids: Record<string, number> = {};
   for (const [playerId, amount] of Object.entries(body.data.bids)) {
     if (!eligiblePlayerIds.has(playerId)) {
-      console.warn(`[submission] 400 player not in round: user=${session.user.id} player=${playerId}`);
-      return c.json({ error: "You can only bid on players in the active round" }, 400);
-    }
-
-    // A bid of 0 indicates the user does not want the player and is always allowed.
-    if (amount === 0) {
+      console.warn(`[submission] skipping player not in round: user=${session.user.id} player=${playerId}`);
       continue;
     }
-
+    if (amount === 0) {
+      validatedBids[playerId] = 0;
+      continue;
+    }
     if (amount < access.league.minBid) {
-      console.warn(`[submission] 400 below min: user=${session.user.id} player=${playerId} bid=${amount} min=${access.league.minBid}`);
-      return c.json({ error: "Bids must be at least the league minimum" }, 400);
+      console.warn(`[submission] skipping below min: user=${session.user.id} player=${playerId} bid=${amount} min=${access.league.minBid}`);
+      continue;
     }
-
     if (amount > maxAllowed) {
-      const playerName = playerMap.get(playerId)?.name ?? "player";
-      console.warn(`[submission] 400 over max: user=${session.user.id} player=${playerId} bid=${amount} max=${maxAllowed} budget=${viewerState.remainingBudget} slots=${viewerState.remainingRosterSlots}`);
-      return c.json({
-        error: `Bid for ${playerName} exceeds your max allowed bid of $${maxAllowed}`,
-      }, 400);
+      console.warn(`[submission] capping over max: user=${session.user.id} player=${playerId} bid=${amount} max=${maxAllowed}`);
     }
+    validatedBids[playerId] = Math.min(amount, maxAllowed);
   }
 
   const now = new Date();
@@ -2103,7 +2092,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
       });
     }
 
-    const bidEntries = Object.entries(body.data.bids);
+    const bidEntries = Object.entries(validatedBids);
 
     if (bidEntries.length) {
       await tx.insert(draftBid).values(
