@@ -2039,7 +2039,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         return `Bids must be $0 or at least $${data.league.minBid}.`;
       }
 
-      if (bid > data.currentRound.myMaxBid) {
+      if (data.currentRound.myMaxBid > 0 && bid > data.currentRound.myMaxBid) {
         return `Bids cannot exceed your max allowed bid of $${data.currentRound.myMaxBid}.`;
       }
     }
