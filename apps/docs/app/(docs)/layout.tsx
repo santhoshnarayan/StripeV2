@@ -35,6 +35,14 @@ export default function DocsLayout({
             </li>
           ))}
         </ul>
+        <div className="mt-6 border-t border-gray-200 pt-4">
+          <Link
+            href="/admin"
+            className="block rounded-md px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+          >
+            Admin sign in →
+          </Link>
+        </div>
       </nav>
       <main className="flex-1 max-w-3xl px-8 py-8 prose prose-gray">
         {children}
