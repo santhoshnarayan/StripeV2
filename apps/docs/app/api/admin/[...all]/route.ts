@@ -1,20 +1,19 @@
-if (!process.env.API_URL) {
-  throw new Error(
-    "API_URL environment variable is required for the admin proxy. Set it in Vercel for Production and Preview environments.",
-  );
-}
-
-const API_URL: string = process.env.API_URL;
-const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN;
-
 async function handler(req: Request) {
+  const apiUrl = process.env.API_URL;
+  if (!apiUrl) {
+    return Response.json(
+      { error: "API_URL is not configured on the docs deployment" },
+      { status: 503 },
+    );
+  }
+
   const url = new URL(req.url);
-  const targetUrl = `${API_URL}${url.pathname}${url.search}`;
+  const targetUrl = `${apiUrl}${url.pathname}${url.search}`;
 
   const headers = new Headers(req.headers);
-  headers.set("host", new URL(API_URL).host);
-  if (INTERNAL_API_TOKEN) {
-    headers.set("x-internal-api-token", INTERNAL_API_TOKEN);
+  headers.set("host", new URL(apiUrl).host);
+  if (process.env.INTERNAL_API_TOKEN) {
+    headers.set("x-internal-api-token", process.env.INTERNAL_API_TOKEN);
   }
 
   const res = await fetch(targetUrl, {
