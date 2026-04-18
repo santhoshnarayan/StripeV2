@@ -86,20 +86,36 @@ async function loadGames(): Promise<GameMeta[]> {
 
   if (rows.length === 0) return [];
 
-  const lastSeqRows = await db
+  // The "terminal" play for a game is the one with the latest wallclock —
+  // NOT max(sequence). ESPN sometimes appends correction/late plays with
+  // higher sequence numbers but earlier wallclocks (e.g. seq 728-730 with
+  // wc 19:35:58 after seq 727 "End of Game" with wc 19:46:15). Picking
+  // max(sequence) marked games as "post" too early in chronological order.
+  const allTerminalRows = await db
     .select({
       gameId: nbaPlay.gameId,
-      lastSeq: sql<number>`max(${nbaPlay.sequenceNumber})`,
+      sequenceNumber: nbaPlay.sequenceNumber,
+      wallclock: nbaPlay.wallclock,
     })
     .from(nbaPlay)
-    .where(
-      inArray(
-        nbaPlay.gameId,
-        rows.map((r) => r.id),
-      ),
-    )
-    .groupBy(nbaPlay.gameId);
-  const lastSeqByGame = new Map(lastSeqRows.map((r) => [r.gameId, r.lastSeq]));
+    .where(inArray(nbaPlay.gameId, rows.map((r) => r.id)));
+  const lastSeqByGame = new Map<string, number>();
+  const bestByGame = new Map<string, { wc: number; seq: number }>();
+  for (const p of allTerminalRows) {
+    if (p.sequenceNumber == null) continue;
+    const wc = p.wallclock ? p.wallclock.getTime() : 0;
+    const cur = bestByGame.get(p.gameId);
+    if (
+      !cur ||
+      wc > cur.wc ||
+      (wc === cur.wc && p.sequenceNumber > cur.seq)
+    ) {
+      bestByGame.set(p.gameId, { wc, seq: p.sequenceNumber });
+    }
+  }
+  for (const [gid, b] of bestByGame.entries()) {
+    lastSeqByGame.set(gid, b.seq);
+  }
 
   return rows
     .filter((r) => r.home && r.away)

@@ -8,7 +8,7 @@ const APP_VERSION =
   "dev";
 
 const nextConfig: NextConfig = {
-  transpilePackages: ["@repo/validators"],
+  transpilePackages: ["@repo/validators", "@repo/sim"],
   env: {
     NEXT_PUBLIC_APP_VERSION: APP_VERSION,
   },

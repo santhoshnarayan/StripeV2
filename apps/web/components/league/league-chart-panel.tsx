@@ -53,6 +53,8 @@ type ScheduleResponse = {
       awayScore: number | null;
       homeTeam: string | null;
       awayTeam: string | null;
+      period: number | null;
+      displayClock: string | null;
     }>
   >;
 };
@@ -148,6 +150,19 @@ function shortLabel(name: string): string {
   if (parts.length === 0) return name;
   if (parts.length === 1) return parts[0];
   return `${parts[0]} ${parts[parts.length - 1][0]}.`;
+}
+
+function darkenHex(hex: string, factor: number): string {
+  const m = hex.replace("#", "").trim();
+  if (m.length !== 6) return hex;
+  const r = parseInt(m.slice(0, 2), 16);
+  const g = parseInt(m.slice(2, 4), 16);
+  const b = parseInt(m.slice(4, 6), 16);
+  const ch = (n: number) =>
+    Math.max(0, Math.min(255, Math.round(n * factor)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${ch(r)}${ch(g)}${ch(b)}`;
 }
 
 function roundFromSeriesKey(key: string | null): Round | null {
@@ -338,7 +353,7 @@ export function LeagueChartPanel({
 
   // Scheduled game list, flat + chronological.
   const allGames = useMemo(() => {
-    if (!schedule) return [] as Array<{
+    type GameRow = {
       id: string;
       round: Round;
       gameNum: number | null;
@@ -349,21 +364,12 @@ export function LeagueChartPanel({
       awayTeam: string | null;
       homeScore: number | null;
       awayScore: number | null;
+      period: number | null;
+      displayClock: string | null;
       seriesKey: string;
-    }>;
-    const out: Array<{
-      id: string;
-      round: Round;
-      gameNum: number | null;
-      startTime: string | null;
-      date: string | null;
-      status: string;
-      homeTeam: string | null;
-      awayTeam: string | null;
-      homeScore: number | null;
-      awayScore: number | null;
-      seriesKey: string;
-    }> = [];
+    };
+    if (!schedule) return [] as GameRow[];
+    const out: GameRow[] = [];
     for (const [seriesKey, games] of Object.entries(schedule.series)) {
       const round = roundFromSeriesKey(seriesKey);
       if (!round) continue;
@@ -379,6 +385,8 @@ export function LeagueChartPanel({
           awayTeam: g.awayTeam,
           homeScore: g.homeScore,
           awayScore: g.awayScore,
+          period: g.period,
+          displayClock: g.displayClock,
           seriesKey,
         });
       }
@@ -678,7 +686,55 @@ export function LeagueChartPanel({
     return m;
   }, [projections]);
 
+  // Map from chart x-axis value (`t`, the row timestamp string) → eventKey.
+  // Built from the same `chartData` rows the chart renders, so a Recharts
+  // `activeLabel` lookup is O(1) and always points at the right event even
+  // when the row payload's `__eventKey` doesn't survive Recharts' internal
+  // payload shaping.
+  const eventKeyByT = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const row of chartData) {
+      const t = typeof row.t === "string" ? row.t : null;
+      const ek = typeof row.__eventKey === "string" ? row.__eventKey : null;
+      if (t && ek) m.set(t, ek);
+    }
+    return m;
+  }, [chartData]);
+
   const hoveredEvent = hoveredEventKey ? eventByKey.get(hoveredEventKey) ?? null : null;
+
+  // Per-manager standings: actual pts, projected total, win prob.
+  // When the chart is hovered, values come from the hovered event so the
+  // cards rewind in time alongside the scoreboard. Otherwise they reflect
+  // the latest projection event (or sim totals as a final fallback).
+  const standings = useMemo(() => {
+    const events = projections?.events ?? [];
+    const source = hoveredEvent ?? events[events.length - 1] ?? null;
+    const projByUser = new Map(
+      (managerProjections ?? []).map((m) => [m.userId, m]),
+    );
+    const rows = displayManagers.map((m) => {
+      const evProj = source?.projectedPoints[m.userId];
+      const simProj = projByUser.get(m.userId);
+      const actualPts = source?.actualPoints[m.userId] ?? 0;
+      const prob = evProj?.winProb ?? simProj?.winProbability ?? 0;
+      const avgTotal = evProj?.mean ?? simProj?.mean ?? actualPts;
+      return {
+        userId: m.userId,
+        name: m.name,
+        color: managerColors.get(m.userId) ?? "#94a3b8",
+        prob,
+        actualPts,
+        avgTotal,
+      };
+    });
+    rows.sort((a, b) => {
+      if (mode === "prob") return b.prob - a.prob;
+      if (mode === "pts") return b.actualPts - a.actualPts;
+      return b.avgTotal - a.avgTotal;
+    });
+    return rows;
+  }, [hoveredEvent, projections, displayManagers, managerColors, managerProjections, mode]);
 
   // Player name lookup for compact "F. Last Npts" hover text.
   const playerNameById = useMemo(() => {
@@ -700,7 +756,13 @@ export function LeagueChartPanel({
   const hoveredGameStateById = useMemo(() => {
     const m = new Map<
       string,
-      { homeScore: number; awayScore: number; status: "pre" | "in" | "post" }
+      {
+        homeScore: number;
+        awayScore: number;
+        status: "pre" | "in" | "post";
+        period?: number | null;
+        clock?: string | null;
+      }
     >();
     if (!hoveredEvent || !schedule) return m;
     const byComposite = new Map<string, string>();
@@ -714,10 +776,15 @@ export function LeagueChartPanel({
       const gid = byComposite.get(`${snap.seriesKey}|${snap.gameNum}`);
       if (gid) {
         snapshotGids.add(gid);
+        // The hovered chart point belongs to one specific game — attach its
+        // period/clock so the matching card shows "Q3 4:32" at that moment.
+        const isHoveredGame = gid === hoveredEvent.gameId;
         m.set(gid, {
           homeScore: snap.homeScore,
           awayScore: snap.awayScore,
           status: snap.status,
+          period: isHoveredGame ? hoveredEvent.eventMeta.period : null,
+          clock: isHoveredGame ? hoveredEvent.eventMeta.clock : null,
         });
       }
     }
@@ -776,11 +843,17 @@ export function LeagueChartPanel({
                 margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
                 onMouseMove={(state: unknown) => {
                   const s = state as {
+                    activeLabel?: string;
                     activePayload?: Array<{ payload?: { __gameId?: unknown; __eventKey?: unknown } }>;
                   };
                   const p = s?.activePayload?.[0]?.payload;
-                  const gid = p && typeof p.__gameId === "string" ? p.__gameId : null;
-                  const ek = p && typeof p.__eventKey === "string" ? p.__eventKey : null;
+                  let ek = p && typeof p.__eventKey === "string" ? p.__eventKey : null;
+                  if (!ek && s?.activeLabel) ek = eventKeyByT.get(s.activeLabel) ?? null;
+                  let gid = p && typeof p.__gameId === "string" ? p.__gameId : null;
+                  if (!gid && ek) {
+                    const ev = eventByKey.get(ek);
+                    if (ev) gid = ev.gameId;
+                  }
                   setHoveredGameId(gid);
                   setHoveredEventKey(ek);
                 }}
@@ -894,19 +967,33 @@ export function LeagueChartPanel({
             </ResponsiveContainer>
           </div>
 
-          <div className="w-28 shrink-0 flex flex-col text-[11px] overflow-hidden pt-2 pb-2">
-            {endLabels.slice(0, 12).map((e) => (
-              <div key={e.userId} className="flex items-center gap-1.5 leading-tight py-0.5 min-w-0">
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: managerColors.get(e.userId) }}
-                />
-                <span className="truncate flex-1">{shortLabel(e.name)}</span>
-                <span className="tabular-nums text-muted-foreground">
-                  {mode === "prob" ? `${e.value.toFixed(0)}%` : Math.round(e.value)}
-                </span>
-              </div>
-            ))}
+          <div className="w-16 shrink-0 flex flex-col justify-around overflow-hidden pt-2 pb-2">
+            {endLabels.map((e) => {
+              const color = managerColors.get(e.userId) ?? "#94a3b8";
+              const formatted =
+                mode === "prob"
+                  ? `${e.value.toFixed(0)}%`
+                  : Math.round(e.value).toString();
+              return (
+                <div
+                  key={e.userId}
+                  className="flex flex-col leading-tight whitespace-nowrap"
+                >
+                  <span
+                    className="text-[10px] font-semibold leading-tight"
+                    style={{ color }}
+                  >
+                    {shortLabel(e.name)}
+                  </span>
+                  <span
+                    className="text-sm font-bold leading-tight tabular-nums"
+                    style={{ color }}
+                  >
+                    {formatted}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -932,6 +1019,100 @@ export function LeagueChartPanel({
           })}
         </div>
 
+        {/* Manager standings — gradient cards (mobile) */}
+        <div className="md:hidden -mx-3 overflow-x-auto no-scrollbar">
+          <div className="flex gap-2 px-3 after:content-[''] after:shrink-0 after:w-px">
+            {standings.map((s, rank) => (
+              <div
+                key={s.userId}
+                className="shrink-0 w-[140px] rounded-xl overflow-hidden shadow-lg"
+                style={{
+                  background: `linear-gradient(135deg, ${darkenHex(s.color, 0.55)}, ${darkenHex(s.color, 0.35)})`,
+                }}
+              >
+                <div className="p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white text-xs font-bold">
+                      {rank + 1}. {s.name}
+                    </span>
+                    <span className="text-white/90 text-xs font-bold tabular-nums">
+                      {mode === "prob"
+                        ? `${(s.prob * 100).toFixed(1)}%`
+                        : mode === "pts"
+                          ? s.actualPts.toFixed(0)
+                          : s.avgTotal.toFixed(0)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-white/30"
+                      style={{ width: `${Math.max(1, s.prob * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-white/50 tabular-nums">
+                    <span>
+                      {mode === "prob"
+                        ? `${s.actualPts.toFixed(0)} pts`
+                        : `${(s.prob * 100).toFixed(1)}%`}
+                    </span>
+                    <span>
+                      {mode === "prob" || mode === "pts"
+                        ? `${s.avgTotal.toFixed(0)} proj`
+                        : `${s.actualPts.toFixed(0)} pts`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Manager standings — gradient cards (desktop) */}
+        <div className="hidden md:flex gap-1.5 overflow-x-auto no-scrollbar">
+          {standings.map((s, rank) => (
+            <div
+              key={s.userId}
+              className="rounded-xl overflow-hidden shadow-lg min-w-[110px] flex-1 shrink-0"
+              style={{
+                background: `linear-gradient(135deg, ${darkenHex(s.color, 0.55)}, ${darkenHex(s.color, 0.35)})`,
+              }}
+            >
+              <div className="p-2 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-white text-[11px] font-bold">
+                    {rank + 1}. {s.name}
+                  </span>
+                  <span className="text-white/90 text-xs font-bold tabular-nums">
+                    {mode === "prob"
+                      ? `${(s.prob * 100).toFixed(1)}%`
+                      : mode === "pts"
+                        ? s.actualPts.toFixed(0)
+                        : s.avgTotal.toFixed(0)}
+                  </span>
+                </div>
+                <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-white/30"
+                    style={{ width: `${Math.max(1, s.prob * 100)}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-white/50 text-[10px] tabular-nums">
+                  <span>
+                    {mode === "prob"
+                      ? `${s.actualPts.toFixed(0)} pts`
+                      : `${(s.prob * 100).toFixed(1)}%`}
+                  </span>
+                  <span>
+                    {mode === "prob" || mode === "pts"
+                      ? `${s.avgTotal.toFixed(0)} proj`
+                      : `${s.actualPts.toFixed(0)} pts`}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
         {/* Scoreboard of games (past + future) */}
         <div className="-mx-3 px-3 overflow-x-auto no-scrollbar">
           <div className="flex gap-1.5">
@@ -947,9 +1128,9 @@ export function LeagueChartPanel({
           </div>
         </div>
 
-        {/* Play-content row: "F. Last Npts" for the hovered chart point. */}
+        {/* Play-by-play row: full play text + score for the hovered chart point. */}
         {hoveredEvent ? (
-          <div className="text-[11px] text-muted-foreground leading-tight px-0.5">
+          <div className="text-[11px] leading-tight px-0.5">
             {(() => {
               const g = allGames.find((ag) => ag.id === hoveredEvent.gameId);
               const matchup = g && g.awayTeam && g.homeTeam
@@ -958,14 +1139,20 @@ export function LeagueChartPanel({
               const p = hoveredEvent.eventMeta.period;
               const clk = hoveredEvent.eventMeta.clock;
               const qc = p != null && clk ? `Q${p} ${clk}` : "";
-              const detail = compactPlayText(hoveredEvent, playerNameById);
+              const ah = hoveredEvent.eventMeta.awayScore;
+              const hh = hoveredEvent.eventMeta.homeScore;
+              const score = ah != null && hh != null ? `${ah}–${hh}` : "";
+              const detail = playByPlayText(hoveredEvent, playerNameById);
               return (
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 text-muted-foreground">
                   {matchup ? (
-                    <span className="font-medium text-foreground/80 shrink-0">{matchup}</span>
+                    <span className="font-medium text-foreground shrink-0">{matchup}</span>
                   ) : null}
-                  {qc ? <span className="shrink-0">{qc}</span> : null}
-                  <span className="text-foreground/90 truncate">{detail}</span>
+                  {qc ? <span className="shrink-0 tabular-nums">{qc}</span> : null}
+                  {score ? (
+                    <span className="shrink-0 tabular-nums font-mono">{score}</span>
+                  ) : null}
+                  <span className="text-foreground/90 truncate flex-1">{detail}</span>
                 </div>
               );
             })()}
@@ -1078,10 +1265,18 @@ function ScoreboardCard({
     awayTeam: string | null;
     homeScore: number | null;
     awayScore: number | null;
+    period: number | null;
+    displayClock: string | null;
   };
   highlighted: boolean;
   onHoverChange: (hovered: boolean) => void;
-  hoveredState: { homeScore: number; awayScore: number; status: "pre" | "in" | "post" } | null;
+  hoveredState: {
+    homeScore: number;
+    awayScore: number;
+    status: "pre" | "in" | "post";
+    period?: number | null;
+    clock?: string | null;
+  } | null;
 }) {
   // When a chart point is hovered, rewind every card to show the score + status
   // at that moment in time. hoveredState === null ⇒ show current / final.
@@ -1093,6 +1288,15 @@ function ScoreboardCard({
   const isPre = effectiveStatus === "pre";
   const homeWin = h > a;
   const awayWin = a > h;
+  const liveP = hoveredState ? hoveredState.period ?? null : g.period;
+  const liveC = hoveredState ? hoveredState.clock ?? null : g.displayClock;
+  const liveLabel = isLive
+    ? liveP != null && liveC
+      ? `Q${liveP} ${liveC}`
+      : liveP != null
+        ? `Q${liveP}`
+        : "LIVE"
+    : "";
   const timeLabel = g.startTime
     ? new Date(g.startTime).toLocaleDateString("en-US", { month: "numeric", day: "numeric" })
     : "";
@@ -1112,7 +1316,9 @@ function ScoreboardCard({
     >
       <div className="flex items-center justify-between text-[9px] text-muted-foreground">
         <span>{g.gameNum ? `G${g.gameNum}` : ""}</span>
-        <span>{isLive ? "LIVE" : timeLabel}</span>
+        <span className={cn(isLive && "text-red-500 font-semibold tabular-nums")}>
+          {isLive ? liveLabel : timeLabel}
+        </span>
       </div>
       <TeamLine team={g.awayTeam} score={a} isPre={isPre} isWin={awayWin} isLose={isFinal && homeWin} />
       <TeamLine team={g.homeTeam} score={h} isPre={isPre} isWin={homeWin} isLose={isFinal && awayWin} />
@@ -1120,61 +1326,35 @@ function ScoreboardCard({
   );
 }
 
-/** Compact scorer + points for hover: "S. Curry 3pts". Falls back to text. */
-function compactPlayText(
+/** Full play-by-play line: prefer the raw ESPN description, fall back to a
+ *  reconstructed "<scorer> <pts>pt(s)" if no text is available. */
+function playByPlayText(
   ev: ProjectionEvent,
   nameLookup: Map<string, string>,
 ): string {
   if (ev.kind === "end_of_game") {
     const { homeScore, awayScore } = ev.eventMeta;
-    if (homeScore != null && awayScore != null) return `Final · ${awayScore}–${homeScore}`;
+    if (homeScore != null && awayScore != null) {
+      return `Final · ${awayScore}–${homeScore}`;
+    }
     return "Final";
   }
   if (ev.kind === "end_of_half") {
     const p = ev.eventMeta.period ?? 2;
     return p === 2 ? "End Q2 (half)" : `End Q${p}`;
   }
+  // scoring play — prefer the actual ESPN play text when available.
+  const text = ev.eventMeta.text?.trim();
+  if (text) return text;
+  // Fallback: reconstruct from scorer + points if text is missing.
   const pid = ev.eventMeta.playerIds[0];
-  let fullName: string | null = pid ? nameLookup.get(pid) ?? null : null;
-  if (!fullName && ev.eventMeta.text) {
-    const m = ev.eventMeta.text.match(
-      /^([A-Z][A-Za-z'.\-]+(?: [A-Z][A-Za-z'.\-]+)+?)\s+(makes|misses|hits|drives|dunks|free throw|layup)/,
-    );
-    if (m) fullName = m[1];
-  }
+  const fullName: string | null = pid ? nameLookup.get(pid) ?? null : null;
   const sv = ev.eventMeta.scoreValue;
   const ptsSuffix = sv != null && sv > 0 ? ` ${sv}pt${sv === 1 ? "" : "s"}` : "";
   if (fullName) {
-    const parts = fullName.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      const last = parts[parts.length - 1];
-      return `${parts[0][0]}. ${last}${ptsSuffix}`;
-    }
-    return `${fullName}${ptsSuffix}`;
+    return `${fullName}${ptsSuffix}`.trim();
   }
-  const text = ev.eventMeta.text ?? "scoring play";
-  return text.length > 60 ? `${text.slice(0, 58)}…` : text;
-}
-
-function eventLineText(ev: ProjectionEvent): string {
-  if (ev.kind === "end_of_game") {
-    const s = ev.eventMeta;
-    if (s.homeScore != null && s.awayScore != null) {
-      return `Final · ${s.awayScore}–${s.homeScore}`;
-    }
-    return "Final";
-  }
-  if (ev.kind === "end_of_half") {
-    const period = ev.eventMeta.period ?? 2;
-    return period === 2 ? "End Q2 (half)" : `End Q${period}`;
-  }
-  // scoring
-  const text = ev.eventMeta.text ?? "";
-  const short = text.length > 40 ? `${text.slice(0, 38)}…` : text;
-  const period = ev.eventMeta.period;
-  const clock = ev.eventMeta.clock;
-  const prefix = period != null && clock ? `Q${period} ${clock} · ` : "";
-  return `${prefix}${short || "scoring play"}`;
+  return "scoring play";
 }
 
 function TeamLine({
