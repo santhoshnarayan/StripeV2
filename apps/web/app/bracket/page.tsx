@@ -33,8 +33,11 @@ export default function BracketPage() {
     async function load() {
       setLoading(true);
       try {
-        const data = await appApiFetch<SimData>(`/sim-data?v=${Date.now()}`);
-        if (active) setSimData(data);
+        const [data, live] = await Promise.all([
+          appApiFetch<SimData>(`/sim-data?v=${Date.now()}`),
+          appApiFetch<{ games: SimData["liveGames"] }>(`/nba/sim-live-games`).catch(() => ({ games: [] })),
+        ]);
+        if (active) setSimData({ ...data, liveGames: live.games });
       } catch (e) {
         if (active) setError(e instanceof Error ? e.message : "Failed to load");
       } finally {

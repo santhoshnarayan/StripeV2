@@ -29,6 +29,13 @@
       "when": 1776474829216,
       "tag": "0003_bouncy_deadpool",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776530672634,
+      "tag": "0004_fixed_the_leader",
+      "breakpoints": true
     }
   ]
 }

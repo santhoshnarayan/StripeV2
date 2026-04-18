@@ -15,6 +15,11 @@ import {
   leagueInvite,
   leagueAction,
   leagueMember,
+  nbaGame,
+  nbaPlay,
+  nbaPlayerGameStats,
+  nbaTeamGameStats,
+  nbaWinProb,
   rosterEntry,
   snakeState,
   user,
@@ -39,6 +44,7 @@ import {
   type AuctionConfig,
   type PlayerPoolEntry,
 } from "../lib/player-pool.js";
+import { computeLivePointsByPlayer } from "../lib/espn-nba/ingest.js";
 
 const LEAGUE_CREATOR_EMAIL = "santhoshnarayan@gmail.com";
 const MAX_ACTIVE_MEMBERS = 16;
@@ -164,6 +170,184 @@ appRouter.get("/sim-data", async (c) => {
     "content-type": "application/json",
     "cache-control": "public, max-age=300",
   });
+});
+
+// ───────────────────────── Live NBA scoring (additive) ─────────────────────
+
+appRouter.get("/nba/live-ticker", async (c) => {
+  // Show today's + recently-ended games. Compact payload for the header ticker.
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const endOfTomorrow = new Date(start);
+  endOfTomorrow.setDate(start.getDate() + 2);
+
+  const rows = await db
+    .select()
+    .from(nbaGame)
+    .where(and(sql`${nbaGame.date} >= ${start}`, sql`${nbaGame.date} < ${endOfTomorrow}`))
+    .orderBy(asc(nbaGame.startTime));
+
+  return c.json({
+    games: rows.map((g) => ({
+      id: g.id,
+      date: g.date,
+      startTime: g.startTime,
+      homeTeam: g.homeTeamAbbrev,
+      awayTeam: g.awayTeamAbbrev,
+      homeScore: g.homeScore,
+      awayScore: g.awayScore,
+      status: g.status,
+      period: g.period,
+      displayClock: g.displayClock,
+      broadcast: g.broadcast,
+      seriesKey: g.seriesKey,
+      gameNum: g.gameNum,
+    })),
+  });
+});
+
+appRouter.get("/nba/scoreboard", async (c) => {
+  const dateParam = c.req.query("date");
+  let dayStart: Date;
+  if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+    dayStart = new Date(`${dateParam}T00:00:00`);
+  } else {
+    dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+  }
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayStart.getDate() + 1);
+  const rows = await db
+    .select()
+    .from(nbaGame)
+    .where(and(sql`${nbaGame.date} >= ${dayStart}`, sql`${nbaGame.date} < ${dayEnd}`))
+    .orderBy(asc(nbaGame.startTime));
+  return c.json({ date: dayStart.toISOString(), games: rows });
+});
+
+appRouter.get("/nba/games/:eventId", async (c) => {
+  const eventId = c.req.param("eventId");
+  const [game] = await db.select().from(nbaGame).where(eq(nbaGame.id, eventId)).limit(1);
+  if (!game) return c.json({ error: "not_found" }, 404);
+  const teamStats = await db
+    .select()
+    .from(nbaTeamGameStats)
+    .where(eq(nbaTeamGameStats.gameId, eventId));
+  const playerStats = await db
+    .select()
+    .from(nbaPlayerGameStats)
+    .where(eq(nbaPlayerGameStats.gameId, eventId));
+  return c.json({ game, teamStats, playerStats });
+});
+
+appRouter.get("/nba/games/:eventId/pbp", async (c) => {
+  const eventId = c.req.param("eventId");
+  const plays = await db
+    .select()
+    .from(nbaPlay)
+    .where(eq(nbaPlay.gameId, eventId))
+    .orderBy(asc(nbaPlay.sequence));
+  return c.json({ plays });
+});
+
+appRouter.get("/nba/games/:eventId/win-probability", async (c) => {
+  const eventId = c.req.param("eventId");
+  const rows = await db
+    .select()
+    .from(nbaWinProb)
+    .where(eq(nbaWinProb.gameId, eventId))
+    .orderBy(asc(nbaWinProb.sequence));
+  return c.json({ points: rows });
+});
+
+appRouter.get("/nba/sim-live-games", async (c) => {
+  // Return LiveGameState-shaped payload for the web simulator.
+  const games = await db
+    .select()
+    .from(nbaGame)
+    .where(sql`${nbaGame.seriesKey} IS NOT NULL AND ${nbaGame.status} IN ('in','post')`)
+    .orderBy(asc(nbaGame.startTime));
+
+  if (games.length === 0) return c.json({ games: [] });
+
+  const gameIds = games.map((g) => g.id);
+  const playerRows = await db
+    .select({
+      gameId: nbaPlayerGameStats.gameId,
+      playerId: nbaPlayerGameStats.playerId,
+      points: nbaPlayerGameStats.points,
+    })
+    .from(nbaPlayerGameStats)
+    .where(inArray(nbaPlayerGameStats.gameId, gameIds));
+
+  const ptsByGame = new Map<string, Record<string, number>>();
+  for (const r of playerRows) {
+    const bag = ptsByGame.get(r.gameId) ?? {};
+    bag[r.playerId] = (bag[r.playerId] ?? 0) + (r.points ?? 0);
+    ptsByGame.set(r.gameId, bag);
+  }
+
+  const computeFrac = (status: string, period: number | null, displayClock: string | null) => {
+    if (status === "post") return 0;
+    if (status === "pre") return 1;
+    if (period == null) return 1;
+    let secondsLeft = 0;
+    if (displayClock) {
+      const [mm, ss] = displayClock.split(":");
+      const m = Number.parseInt(mm ?? "0", 10) || 0;
+      const s = Number.parseFloat(ss ?? "0") || 0;
+      secondsLeft = m * 60 + s;
+    }
+    if (period <= 4) {
+      const remainingQuarters = 4 - period;
+      const remainingSeconds = remainingQuarters * 720 + secondsLeft;
+      return Math.max(0, Math.min(1, remainingSeconds / (48 * 60)));
+    }
+    return Math.max(0, Math.min(0.15, secondsLeft / (48 * 60)));
+  };
+
+  return c.json({
+    games: games.map((g) => ({
+      seriesKey: g.seriesKey,
+      gameNum: g.gameNum,
+      status: g.status,
+      homeTeam: g.homeTeamAbbrev,
+      awayTeam: g.awayTeamAbbrev,
+      homeScore: g.homeScore ?? 0,
+      awayScore: g.awayScore ?? 0,
+      remainingFraction: computeFrac(g.status, g.period, g.displayClock),
+      playerPoints: ptsByGame.get(g.id) ?? {},
+    })),
+  });
+});
+
+appRouter.get("/nba/schedule", async (c) => {
+  const rows = await db
+    .select()
+    .from(nbaGame)
+    .where(sql`${nbaGame.seriesKey} IS NOT NULL`)
+    .orderBy(asc(nbaGame.date));
+  // Group by seriesKey
+  const bySeries: Record<
+    string,
+    Array<{ id: string; gameNum: number | null; date: Date | null; status: string; homeScore: number | null; awayScore: number | null; homeTeam: string | null; awayTeam: string | null }>
+  > = {};
+  for (const g of rows) {
+    if (!g.seriesKey) continue;
+    if (!bySeries[g.seriesKey]) bySeries[g.seriesKey] = [];
+    bySeries[g.seriesKey].push({
+      id: g.id,
+      gameNum: g.gameNum,
+      date: g.date,
+      status: g.status,
+      homeScore: g.homeScore,
+      awayScore: g.awayScore,
+      homeTeam: g.homeTeamAbbrev,
+      awayTeam: g.awayTeamAbbrev,
+    });
+  }
+  return c.json({ series: bySeries });
 });
 
 function computeMaxBid(
@@ -1070,6 +1254,20 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
           .orderBy(desc(leagueAction.sequenceNumber))
           .limit(100)
       : [],
+    livePoints: Object.fromEntries(await computeLivePointsByPlayer()),
+    liveGames: await (async () => {
+      const now = new Date();
+      const start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      const endOfTomorrow = new Date(start);
+      endOfTomorrow.setDate(start.getDate() + 2);
+      const rows = await db
+        .select()
+        .from(nbaGame)
+        .where(and(sql`${nbaGame.date} >= ${start}`, sql`${nbaGame.date} < ${endOfTomorrow}`))
+        .orderBy(asc(nbaGame.startTime));
+      return rows;
+    })(),
   };
 }
 

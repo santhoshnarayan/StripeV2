@@ -18,6 +18,7 @@ import { appApiFetch } from "@/lib/app-api";
 import { useSession } from "@/lib/auth-client";
 import { SimulatorTab } from "@/components/simulator-tab";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
+import { LiveGamesTicker } from "@/components/nba/live-games-ticker";
 
 const POLL_INTERVAL_MS = 8_000;
 const POLL_INACTIVE_TIMEOUT_MS = 3 * 60_000;
@@ -2588,6 +2589,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           {error}
         </p>
       ) : null}
+
+      <LiveGamesTicker />
 
       <section className="rounded-2xl border border-border/80 bg-background/90 p-2">
         <div className="flex flex-nowrap gap-1 overflow-x-auto sm:gap-2">

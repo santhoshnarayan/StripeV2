@@ -183,12 +183,16 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
       setLoading(true);
       setError("");
       try {
-        const data = await appApiFetch<SimData>(`/sim-data?v=${Date.now()}`);
+        const [data, live] = await Promise.all([
+          appApiFetch<SimData>(`/sim-data?v=${Date.now()}`),
+          appApiFetch<{ games: SimData["liveGames"] }>(`/nba/sim-live-games`).catch(() => ({ games: [] })),
+        ]);
         if (!active) return;
-        setSimData(data);
+        const merged: SimData = { ...data, liveGames: live.games };
+        setSimData(merged);
         if (!getCachedSimResults(cacheKey) && !autoRanRef.current) {
           autoRanRef.current = true;
-          void doRunSim(data, DEFAULT_SIM_CONFIG, data.adjustments ?? []);
+          void doRunSim(merged, DEFAULT_SIM_CONFIG, merged.adjustments ?? []);
         }
       } catch (loadError) {
         if (active) {

@@ -11,7 +11,9 @@
  */
 
 import { RNG } from "./rng";
+import { buildLiveGameMap } from "./live-game-utils";
 import type {
+  LiveGameState,
   SimConfig,
   SimData,
   SimPlayer,
@@ -233,6 +235,7 @@ interface SimContext {
   seriesPattern: boolean[];
   aliases: Record<string, string>;
   aliasesRev: Record<string, string>;
+  liveByKey: Map<string, LiveGameState[]>;
 }
 
 function simulateSeries(
@@ -243,6 +246,7 @@ function simulateSeries(
   roundIdx: number,
   accum: SeriesPlayerAccum,
   gameOffset: number,
+  seriesKey?: string,
 ): string {
   const hResult = getTeamRating(higher, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameOffset, ctx.aliases, ctx.aliasesRev);
   const lResult = getTeamRating(lower, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameOffset, ctx.aliases, ctx.aliasesRev);
@@ -252,17 +256,10 @@ function simulateSeries(
   let hWins = 0;
   let lWins = 0;
 
+  const liveGames = seriesKey ? ctx.liveByKey.get(seriesKey) : undefined;
+
   for (let gameNum = 0; gameNum < 7; gameNum++) {
     if (hWins === 4 || lWins === 4) break;
-
-    const higherHome = ctx.seriesPattern[gameNum];
-    const { homeWins, homeScore, awayScore } = higherHome
-      ? simulateGame(hRating, lRating, rng, ctx.config.hca, ctx.config.stdev)
-      : simulateGame(lRating, hRating, rng, ctx.config.hca, ctx.config.stdev);
-
-    const higherWon = higherHome ? homeWins : !homeWins;
-    if (higherWon) hWins++;
-    else lWins++;
 
     // Distribute points to players using Dirichlet
     const trackTeam = (team: string, score: number) => {
@@ -309,6 +306,70 @@ function simulateSeries(
 
     const hTeam = higher;
     const lTeam = lower;
+
+    // ── Live-game injection ────────────────────────────────────────
+    const live = liveGames?.find((g) => g.gameNum === gameNum + 1);
+    if (live) {
+      const liveHigherHome = live.homeTeam.toUpperCase() === higher.toUpperCase();
+      const higherActual = liveHigherHome ? live.homeScore : live.awayScore;
+      const lowerActual = liveHigherHome ? live.awayScore : live.homeScore;
+
+      // Apply accrued actual player points (and count as played game for each)
+      const touched = new Set<string>();
+      for (const [espnId, pts] of Object.entries(live.playerPoints)) {
+        if (!Number.isFinite(pts) || pts <= 0) continue;
+        const pa = accum.playerPointsAccum.get(espnId) ?? [0, 0, 0, 0];
+        pa[roundIdx] = (pa[roundIdx] ?? 0) + pts;
+        accum.playerPointsAccum.set(espnId, pa);
+        touched.add(espnId);
+      }
+      for (const espnId of touched) {
+        const gc = accum.playerGameCounts.get(espnId) ?? [0, 0, 0, 0];
+        gc[roundIdx] = (gc[roundIdx] ?? 0) + 1;
+        accum.playerGameCounts.set(espnId, gc);
+      }
+
+      if (live.status === "post") {
+        if (higherActual > lowerActual) hWins++;
+        else lWins++;
+        continue;
+      }
+
+      if (live.status === "in") {
+        const frac = Math.max(0, Math.min(1, live.remainingFraction));
+        if (frac <= 0.01) {
+          if (higherActual >= lowerActual) hWins++;
+          else lWins++;
+          continue;
+        }
+        // Simulate only the remaining fraction; HCA is already baked into
+        // progress, so we don't re-apply it to the remainder.
+        const scaledStd = ctx.config.stdev * Math.sqrt(frac);
+        const spread = (hRating - lRating) * frac;
+        const margin = rng.normal(spread, scaledStd);
+        const remainingTotal = 220 * frac;
+        const remainderHigher = Math.max(0, Math.round((remainingTotal + margin) / 2));
+        const remainderLower = Math.max(0, Math.round((remainingTotal - margin) / 2));
+        trackTeam(hTeam, remainderHigher);
+        trackTeam(lTeam, remainderLower);
+        const finalHigher = higherActual + remainderHigher;
+        const finalLower = lowerActual + remainderLower;
+        if (finalHigher >= finalLower) hWins++;
+        else lWins++;
+        continue;
+      }
+      // status === "pre" — fall through to normal simulation
+    }
+
+    const higherHome = ctx.seriesPattern[gameNum];
+    const { homeWins, homeScore, awayScore } = higherHome
+      ? simulateGame(hRating, lRating, rng, ctx.config.hca, ctx.config.stdev)
+      : simulateGame(lRating, hRating, rng, ctx.config.hca, ctx.config.stdev);
+
+    const higherWon = higherHome ? homeWins : !homeWins;
+    if (higherWon) hWins++;
+    else lWins++;
+
     if (higherHome) {
       trackTeam(hTeam, homeScore);
       trackTeam(lTeam, awayScore);
@@ -414,6 +475,7 @@ export async function runTournamentSim(
     seriesPattern: bracket.seriesPattern,
     aliases,
     aliasesRev,
+    liveByKey: buildLiveGameMap(data.liveGames),
   };
 
   // Build player index for the sim matrix
@@ -470,69 +532,70 @@ export async function runTournamentSim(
       teamPlayoffSims[t] = (teamPlayoffSims[t] ?? 0) + 1;
     }
 
-    // R1 matchups
-    const eastR1: [string, string][] = [
-      [bracket.eastSeeds[0][1], east8],
-      [bracket.eastSeeds[3][1], bracket.eastSeeds[4][1]],
-      [bracket.eastSeeds[2][1], bracket.eastSeeds[5][1]],
-      [bracket.eastSeeds[1][1], east7],
+    // R1 matchups (seeds → seriesKey)
+    const eastR1: Array<{ pair: [string, string]; key: string }> = [
+      { pair: [bracket.eastSeeds[0][1], east8], key: "r1.east.1v8" },
+      { pair: [bracket.eastSeeds[3][1], bracket.eastSeeds[4][1]], key: "r1.east.4v5" },
+      { pair: [bracket.eastSeeds[2][1], bracket.eastSeeds[5][1]], key: "r1.east.3v6" },
+      { pair: [bracket.eastSeeds[1][1], east7], key: "r1.east.2v7" },
     ];
-    const westR1: [string, string][] = [
-      [bracket.westSeeds[0][1], west8],
-      [bracket.westSeeds[3][1], bracket.westSeeds[4][1]],
-      [bracket.westSeeds[2][1], bracket.westSeeds[5][1]],
-      [bracket.westSeeds[1][1], west7],
+    const westR1: Array<{ pair: [string, string]; key: string }> = [
+      { pair: [bracket.westSeeds[0][1], west8], key: "r1.west.1v8" },
+      { pair: [bracket.westSeeds[3][1], bracket.westSeeds[4][1]], key: "r1.west.4v5" },
+      { pair: [bracket.westSeeds[2][1], bracket.westSeeds[5][1]], key: "r1.west.3v6" },
+      { pair: [bracket.westSeeds[1][1], west7], key: "r1.west.2v7" },
     ];
 
     // Round 1 (gameOffset 2 for availability indexing)
     const e1w: string[] = [];
-    for (const [h, l] of eastR1) {
-      const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2);
+    for (const { pair: [h, l], key } of eastR1) {
+      const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2, key);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
       e1w.push(winner);
     }
     const w1w: string[] = [];
-    for (const [h, l] of westR1) {
-      const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2);
+    for (const { pair: [h, l], key } of westR1) {
+      const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2, key);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
       w1w.push(winner);
     }
 
-    // Round 2
-    const eastR2: [string, string][] = [
-      orderMatchup(e1w[0], e1w[3], allSeeds, allPlayin),
-      orderMatchup(e1w[1], e1w[2], allSeeds, allPlayin),
+    // Round 2: preserve original pairings (e1w: 0=1v8, 1=4v5, 2=3v6, 3=2v7).
+    // top = 1v8-winner vs 2v7-winner (was index 0 × 3), bot = 4v5-winner vs 3v6-winner (1 × 2).
+    const eastR2: Array<{ pair: [string, string]; key: string }> = [
+      { pair: orderMatchup(e1w[0], e1w[3], allSeeds, allPlayin), key: "r2.east.top" },
+      { pair: orderMatchup(e1w[1], e1w[2], allSeeds, allPlayin), key: "r2.east.bot" },
     ];
-    const westR2: [string, string][] = [
-      orderMatchup(w1w[0], w1w[3], allSeeds, allPlayin),
-      orderMatchup(w1w[1], w1w[2], allSeeds, allPlayin),
+    const westR2: Array<{ pair: [string, string]; key: string }> = [
+      { pair: orderMatchup(w1w[0], w1w[3], allSeeds, allPlayin), key: "r2.west.top" },
+      { pair: orderMatchup(w1w[1], w1w[2], allSeeds, allPlayin), key: "r2.west.bot" },
     ];
 
     const e2w: string[] = [];
-    for (const [h, l] of eastR2) {
-      const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9);
+    for (const { pair: [h, l], key } of eastR2) {
+      const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9, key);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
       e2w.push(winner);
     }
     const w2w: string[] = [];
-    for (const [h, l] of westR2) {
-      const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9);
+    for (const { pair: [h, l], key } of westR2) {
+      const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9, key);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
       w2w.push(winner);
     }
 
     // Conference Finals
     const [ecfH, ecfL] = orderMatchup(e2w[0], e2w[1], allSeeds, allPlayin);
-    const ecfWinner = simulateSeries(ecfH, ecfL, ctx, rng, 2, accum, 16);
+    const ecfWinner = simulateSeries(ecfH, ecfL, ctx, rng, 2, accum, 16, "cf.east");
     cfCounts[ecfWinner] = (cfCounts[ecfWinner] ?? 0) + 1;
 
     const [wcfH, wcfL] = orderMatchup(w2w[0], w2w[1], allSeeds, allPlayin);
-    const wcfWinner = simulateSeries(wcfH, wcfL, ctx, rng, 2, accum, 16);
+    const wcfWinner = simulateSeries(wcfH, wcfL, ctx, rng, 2, accum, 16, "cf.west");
     cfCounts[wcfWinner] = (cfCounts[wcfWinner] ?? 0) + 1;
 
     // Finals
     const [finH, finL] = orderMatchup(ecfWinner, wcfWinner, allSeeds, allPlayin);
-    const finWinner = simulateSeries(finH, finL, ctx, rng, 3, accum, 23);
+    const finWinner = simulateSeries(finH, finL, ctx, rng, 3, accum, 23, "finals");
     finalsCounts[finWinner] = (finalsCounts[finWinner] ?? 0) + 1;
     champCounts[finWinner] = (champCounts[finWinner] ?? 0) + 1;
 
