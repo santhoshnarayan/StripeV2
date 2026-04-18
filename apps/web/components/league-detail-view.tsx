@@ -18,12 +18,11 @@ import { appApiFetch } from "@/lib/app-api";
 import { useSession } from "@/lib/auth-client";
 import { SimulatorTab } from "@/components/simulator-tab";
 import {
-  getCachedSimResults,
   computeManagerProjections,
   type ManagerProjection,
   type RosterInput,
-  type SimResults,
 } from "@/lib/sim";
+import { useAutoSim } from "@/lib/use-auto-sim";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { LiveGamesTicker } from "@/components/nba/live-games-ticker";
 import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
@@ -1612,7 +1611,8 @@ function StandingsPanel({
 }) {
   const [sort, setSort] = useState<StandingsSortKey>(isScoring ? "current" : "projected");
   const [dir, setDir] = useState<SortDir>("desc");
-  const simResults: SimResults | null = getCachedSimResults(`league:${leagueId}`);
+  const { simResults, status: simStatus } = useAutoSim(leagueId);
+  const simLoading = simStatus === "loading" || simStatus === "running";
 
   const simPtsByPlayer = useMemo(() => {
     if (!simResults) return null;
@@ -1700,7 +1700,11 @@ function StandingsPanel({
               <>
                 {" "}
                 <span className="text-muted-foreground/80">
-                  Open the Simulator tab to populate win % and sim-based projections.
+                  {simLoading
+                    ? "Computing win probabilities…"
+                    : simStatus === "error"
+                    ? "Could not compute projections — try the Simulator tab."
+                    : "Open the Simulator tab to populate win % and sim-based projections."}
                 </span>
               </>
             ) : null}
@@ -1760,9 +1764,13 @@ function StandingsPanel({
                       {row.current > 0 ? row.current.toLocaleString() : "—"}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-foreground">
-                      {row.winProbability != null
-                        ? `${(row.winProbability * 100).toFixed(1)}%`
-                        : "—"}
+                      {row.winProbability != null ? (
+                        `${(row.winProbability * 100).toFixed(1)}%`
+                      ) : simLoading ? (
+                        <span className="inline-block h-3 w-10 rounded bg-muted animate-pulse align-middle" />
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-foreground">
                       {Math.round(row.projected).toLocaleString()}
