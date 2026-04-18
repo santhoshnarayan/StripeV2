@@ -163,6 +163,8 @@ type LeagueDetail = {
       playerId: string;
       playerName: string;
       playerTeam: string;
+      totalPoints: number | null;
+      suggestedValue: number;
       winnerUserId: string;
       winnerName: string;
       winningBid: number;
@@ -320,6 +322,26 @@ function InjuryBadge({ status }: { status?: string | null }) {
       {label}
     </span>
   );
+}
+
+function formatRunnerUp(name: string): string {
+  const parts = name.split(", ");
+  if (parts.length <= 1) return name;
+  // Try initials first
+  const initials = parts.map((n) => {
+    const words = n.trim().split(/\s+/);
+    return words.map((w) => w[0]?.toUpperCase() ?? "").join("");
+  });
+  if (new Set(initials).size === initials.length) return initials.join(", ");
+  // Initials collide — use first name + last initial
+  const short = parts.map((n) => {
+    const words = n.trim().split(/\s+/);
+    if (words.length <= 1) return words[0] ?? n;
+    return `${words[0]} ${words[words.length - 1]![0]?.toUpperCase()}.`;
+  });
+  if (new Set(short).size === short.length) return short.join(", ");
+  // Still collide — use full names
+  return name;
 }
 
 function formatRelativeTime(input: string | Date | null | undefined, now: number = Date.now()) {
@@ -3840,42 +3862,43 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                   : "No blind auction reveal yet."}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2">
+            <CardContent>
               {data.lastResolvedRound ? (
                 data.lastResolvedRound.results.length ? (
-                  data.lastResolvedRound.results.map((result) => {
-                    const note = result.isAutoAssigned
-                      ? "auto-assigned"
-                      : result.wonByTiebreak
-                        ? "after tiebreak"
-                        : null;
-                    return (
-                      <div
-                        key={result.playerId}
-                        className="flex flex-col gap-2 rounded-xl bg-muted/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-foreground">
-                            <span className="mr-1 text-xs tabular-nums text-muted-foreground">
-                              #{result.order}
-                            </span>
-                            {result.playerName}
-                          </p>
-                          <p className="text-xs text-muted-foreground">{result.playerTeam}</p>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {data.lastResolvedRound.results.map((result) => {
+                      const note = result.isAutoAssigned
+                        ? "auto-assigned"
+                        : result.wonByTiebreak
+                          ? "tiebreak"
+                          : null;
+                      return (
+                        <div
+                          key={result.playerId}
+                          className="flex items-center gap-3 rounded-xl border border-border/60 bg-muted/10 px-3 py-2.5"
+                        >
+                          <PlayerAvatar espnId={result.playerId} team={result.playerTeam} size={40} />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-foreground">
+                              {result.playerName}
+                            </p>
+                            <p className="text-[11px] tabular-nums text-muted-foreground">
+                              {result.playerTeam} · ${result.suggestedValue}
+                              {result.totalPoints != null ? ` · ${result.totalPoints.toFixed(0)} pts` : ""}
+                            </p>
+                            <div className="mt-0.5 flex items-center gap-1.5">
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200">
+                                👑 {result.winnerName} · ${result.winningBid}
+                              </span>
+                              {note ? (
+                                <span className="text-[10px] text-muted-foreground">{note}</span>
+                              ) : null}
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-200">
-                            <span aria-hidden>👑</span>
-                            {result.winnerName}
-                            <span className="tabular-nums">· ${result.winningBid}</span>
-                          </span>
-                          {note ? (
-                            <span className="text-[11px] text-muted-foreground">· {note}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })
+                      );
+                    })}
+                  </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">No players were awarded in the latest round.</p>
                 )
@@ -3990,7 +4013,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   )}
                                   {row.runnerUpName ? (
                                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-400/10 dark:text-amber-200">
-                                      2nd · {row.runnerUpName}
+                                      2nd · {formatRunnerUp(row.runnerUpName)}
                                       {row.runnerUpBid !== null ? (
                                         <span className="tabular-nums">
                                           {" · "}
@@ -4134,8 +4157,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   <td className="px-3 py-3 align-middle">
                                     {row.runnerUpName ? (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-amber-500/10 px-3 py-1.5 dark:bg-amber-400/10">
-                                      <span className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-                                        {row.runnerUpName}
+                                      <span className="text-sm font-semibold text-amber-900 dark:text-amber-100" title={row.runnerUpName}>
+                                        {formatRunnerUp(row.runnerUpName)}
                                       </span>
                                       <span className="text-xs tabular-nums text-amber-700 dark:text-amber-300">
                                         {row.runnerUpBid === null

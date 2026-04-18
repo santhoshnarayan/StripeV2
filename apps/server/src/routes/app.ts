@@ -972,6 +972,8 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
               playerId: entry.playerId,
               playerName: entry.playerName,
               playerTeam: entry.playerTeam,
+              totalPoints: playerMap.get(entry.playerId)?.totalPoints ?? null,
+              suggestedValue: playerMap.get(entry.playerId)?.suggestedValue ?? 0,
               winnerUserId: entry.userId,
               winnerName: historyUserMap.get(entry.userId) ?? "Unknown",
               winningBid: entry.acquisitionBid,
