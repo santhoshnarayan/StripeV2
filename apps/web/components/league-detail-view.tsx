@@ -198,6 +198,18 @@ type LeagueDetail = {
     expiresAt: string | null;
     totalAwards: number;
   } | null;
+  snakeState: {
+    status: string;
+    timed: boolean;
+    pickTimerSeconds: number;
+    pickOrder: string[];
+    currentPickIndex: number;
+    currentPickerUserId: string | null;
+    totalPicks: number;
+    currentRound: number;
+    totalRounds: number;
+    expiresAt: string | null;
+  } | null;
   actions: Array<{
     id: string;
     type: string;
@@ -234,6 +246,13 @@ const ACTION_TYPE_LABELS: Record<string, string> = {
   auction_resume: "Resumed",
   auction_undo_award: "Undo Award",
   auction_end: "Auction Ended",
+  snake_start: "Snake Draft Started",
+  snake_pick: "Snake Pick",
+  snake_auto_pick: "Auto-Pick (Timeout)",
+  snake_pause: "Paused",
+  snake_resume: "Resumed",
+  snake_undo_pick: "Undo Pick",
+  snake_end: "Snake Draft Ended",
 };
 
 type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator" | "commissioner";
@@ -726,6 +745,458 @@ function CountdownTimer({ expiresAt }: { expiresAt: string | null }) {
     >
       {seconds}s
     </span>
+  );
+}
+
+// ============================================================
+// SNAKE DRAFT
+// ============================================================
+
+type SnakeSSEState = {
+  status: string;
+  timed: boolean;
+  pickTimerSeconds: number;
+  pickOrder: string[];
+  currentPickIndex: number;
+  currentPickerUserId: string | null;
+  totalPicks: number;
+  currentRound: number;
+  totalRounds: number;
+  expiresAt: string | null;
+  leagueId: string;
+};
+
+function useSnakeSSE(leagueId: string, enabled: boolean) {
+  const [state, setState] = useState<SnakeSSEState | null>(null);
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const es = new EventSource(`/api/app/leagues/${leagueId}/snake/stream`, {
+      withCredentials: true,
+    });
+
+    es.addEventListener("state", (e) => {
+      setState(JSON.parse(e.data));
+      setConnected(true);
+    });
+    es.addEventListener("pick", (e) => {
+      const d = JSON.parse(e.data);
+      toast.success(`${d.playerName} picked by ${d.pickerUserId}`);
+    });
+    es.addEventListener("auto_pick", (e) => {
+      const d = JSON.parse(e.data);
+      if (d.skipped) {
+        toast("Pick skipped — no players available");
+      } else {
+        toast(`Auto-pick: ${d.playerName}`);
+      }
+    });
+    es.addEventListener("next_pick", (e) => {
+      const d = JSON.parse(e.data);
+      setState((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentPickerUserId: d.pickerUserId,
+              currentPickIndex: d.pickIndex,
+              currentRound: d.round,
+              expiresAt: d.expiresAt,
+            }
+          : prev,
+      );
+    });
+    es.addEventListener("pause", () => {
+      setState((prev) => (prev ? { ...prev, status: "paused", expiresAt: null } : prev));
+    });
+    es.addEventListener("resume", (e) => {
+      const d = JSON.parse(e.data);
+      setState((prev) =>
+        prev
+          ? { ...prev, status: d.status, expiresAt: d.expiresAt }
+          : prev,
+      );
+    });
+    es.addEventListener("end", () => {
+      setState((prev) => (prev ? { ...prev, status: "completed" } : prev));
+    });
+    es.addEventListener("undo_pick", (e) => {
+      const d = JSON.parse(e.data);
+      toast(`Undone: ${d.playerName}`);
+      if (d.rewound) {
+        setState((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentPickerUserId: d.currentPickerUserId,
+                currentPickIndex: d.currentPickIndex,
+                expiresAt: d.expiresAt,
+              }
+            : prev,
+        );
+      }
+    });
+
+    es.onerror = () => {
+      setConnected(false);
+    };
+
+    return () => es.close();
+  }, [leagueId, enabled]);
+
+  return { state, connected };
+}
+
+function SnakeDraftPanel({
+  leagueId,
+  data,
+  viewerUserId,
+  onRefresh,
+}: {
+  leagueId: string;
+  data: LeagueDetail;
+  viewerUserId: string;
+  onRefresh: () => void;
+}) {
+  const { state: sseState, connected } = useSnakeSSE(leagueId, true);
+  const [playerSearch, setPlayerSearch] = useState("");
+  const [sortBy, setSortBy] = useState<DraftSortOption>("suggested_desc");
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
+
+  const memberMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const mem of data.members) m.set(mem.userId, mem.name);
+    return m;
+  }, [data.members]);
+
+  const rosteredPlayerIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of data.rosters) {
+      for (const p of r.players) ids.add(p.playerId);
+    }
+    return ids;
+  }, [data.rosters]);
+
+  const availablePlayers = useMemo(() => {
+    const filtered = (data.availablePlayers ?? []).filter(
+      (p) => !rosteredPlayerIds.has(p.id),
+    );
+    const searched = playerSearch
+      ? filtered.filter(
+          (p) =>
+            p.name.toLowerCase().includes(playerSearch.toLowerCase()) ||
+            p.team.toLowerCase().includes(playerSearch.toLowerCase()),
+        )
+      : filtered;
+    return sortDraftPlayers(searched, sortBy);
+  }, [data.availablePlayers, rosteredPlayerIds, playerSearch, sortBy]);
+
+  if (!sseState) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-muted-foreground">
+          Connecting to snake draft...
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const isMyTurn = sseState.currentPickerUserId === viewerUserId;
+  const currentPickerName = sseState.currentPickerUserId
+    ? memberMap.get(sseState.currentPickerUserId) ?? "Unknown"
+    : "—";
+  const isCommissioner = data.league.isCommissioner;
+  const isPaused = sseState.status === "paused";
+  const isCompleted = sseState.status === "completed";
+  const pickOrder = sseState.pickOrder as string[];
+  const memberCount = new Set(pickOrder).size;
+
+  async function handlePick(player: { id: string; name: string; team: string }) {
+    try {
+      const result = await appApiFetch<{ ok: boolean; error?: string }>(
+        `/leagues/${leagueId}/snake/pick`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            playerId: player.id,
+            playerName: player.name,
+            playerTeam: player.team,
+          }),
+        },
+      );
+      if (result.ok) {
+        onRefresh();
+      } else {
+        toast.error(result.error ?? "Failed to pick");
+      }
+    } catch {
+      toast.error("Failed to pick");
+    }
+  }
+
+  async function handleSnakeAction(action: string) {
+    try {
+      const result = await appApiFetch<{ ok: boolean; error?: string }>(
+        `/leagues/${leagueId}/snake/${action}`,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      if (!result.ok) {
+        toast.error(result.error ?? `Failed to ${action}`);
+      } else {
+        onRefresh();
+      }
+    } catch {
+      toast.error(`Failed to ${action}`);
+    }
+  }
+
+  if (isCompleted) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center">
+          <p className="text-lg font-semibold mb-2">Snake Draft Complete</p>
+          <p className="text-muted-foreground">
+            {sseState.totalPicks} picks made across {sseState.totalRounds} rounds.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-lg">
+                Snake Draft — Round {sseState.currentRound} of {sseState.totalRounds}
+              </CardTitle>
+              <CardDescription>
+                Pick {sseState.currentPickIndex + 1} of {pickOrder.length}
+                {!connected && " (reconnecting...)"}
+              </CardDescription>
+            </div>
+            {isCommissioner && (
+              <div className="flex gap-2">
+                {sseState.timed && !isPaused && (
+                  <Button size="sm" variant="outline" onClick={() => handleSnakeAction("pause")}>
+                    Pause
+                  </Button>
+                )}
+                {isPaused && (
+                  <Button size="sm" variant="outline" onClick={() => handleSnakeAction("resume")}>
+                    Resume
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={() => handleSnakeAction("undo-pick")}>
+                  Undo Last
+                </Button>
+                <Button size="sm" variant="destructive" onClick={() => setShowEndConfirm(true)}>
+                  End Draft
+                </Button>
+              </div>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-4">
+            <div className="flex-1">
+              {isPaused ? (
+                <p className="text-amber-500 font-semibold">Draft Paused</p>
+              ) : isMyTurn ? (
+                <p className="text-green-600 font-semibold text-lg">Your turn to pick!</p>
+              ) : (
+                <p className="text-muted-foreground">
+                  Waiting for <span className="font-medium text-foreground">{currentPickerName}</span>...
+                </p>
+              )}
+            </div>
+            {sseState.timed && !isPaused && sseState.expiresAt && (
+              <div className="text-right">
+                <span className="text-xs text-muted-foreground mr-1">Timer:</span>
+                <CountdownTimer expiresAt={sseState.expiresAt} />
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Pick Order Visual */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Pick Order</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-1">
+            {pickOrder.slice(
+              Math.max(0, sseState.currentPickIndex - 3),
+              sseState.currentPickIndex + memberCount + 3,
+            ).map((userId, i) => {
+              const actualIndex = Math.max(0, sseState.currentPickIndex - 3) + i;
+              const isCurrent = actualIndex === sseState.currentPickIndex;
+              const isPast = actualIndex < sseState.currentPickIndex;
+              const name = memberMap.get(userId) ?? "?";
+              return (
+                <span
+                  key={`${actualIndex}-${userId}`}
+                  className={`inline-flex items-center px-2 py-0.5 rounded text-xs ${
+                    isCurrent
+                      ? "bg-green-600 text-white font-bold"
+                      : isPast
+                        ? "bg-muted text-muted-foreground line-through"
+                        : "bg-muted/50 text-foreground"
+                  }`}
+                >
+                  {name}
+                </span>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Manager Status */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Manager Status</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+            {data.members.map((m) => {
+              const rosterCount = data.rosters.find((r) => r.userId === m.userId)?.players.length ?? 0;
+              return (
+                <div
+                  key={m.userId}
+                  className={`rounded-lg border px-3 py-2 text-sm ${
+                    m.userId === sseState.currentPickerUserId
+                      ? "border-green-500 bg-green-500/10"
+                      : "border-border"
+                  }`}
+                >
+                  <p className="font-medium truncate">{m.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {rosterCount} / {data.league.rosterSize} players
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Available Players — only show full list when it's my turn */}
+      {isMyTurn && !isPaused ? (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Available Players — Click to Pick</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-2 mb-3">
+              <Input
+                placeholder="Search players..."
+                value={playerSearch}
+                onChange={(e) => setPlayerSearch(e.target.value)}
+                className="max-w-xs"
+              />
+              <SelectField
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as DraftSortOption)}
+              >
+                <option value="suggested_desc">Value (high)</option>
+                <option value="projected_desc">Projected Pts</option>
+                <option value="name_asc">Name (A-Z)</option>
+                <option value="team_asc">Team</option>
+              </SelectField>
+            </div>
+            <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-muted-foreground text-left">
+                    <th className="py-1.5 pr-3">Player</th>
+                    <th className="py-1.5 pr-3">Team</th>
+                    <th className="py-1.5 pr-3 text-right">Value</th>
+                    <th className="py-1.5 pr-3 text-right">Proj Pts</th>
+                    <th className="py-1.5"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {availablePlayers.slice(0, 50).map((p) => (
+                    <tr key={p.id} className="border-b border-border/50 hover:bg-muted/30">
+                      <td className="py-1.5 pr-3 font-medium">{p.name}</td>
+                      <td className="py-1.5 pr-3 text-muted-foreground">{p.team}</td>
+                      <td className="py-1.5 pr-3 text-right">${p.suggestedValue}</td>
+                      <td className="py-1.5 pr-3 text-right">{p.totalPoints ?? "—"}</td>
+                      <td className="py-1.5 text-right">
+                        <Button
+                          size="sm"
+                          variant="default"
+                          onClick={() => handlePick({ id: p.id, name: p.name, team: p.team })}
+                        >
+                          Pick
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Available Players</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-2 mb-3">
+              <Input
+                placeholder="Search players..."
+                value={playerSearch}
+                onChange={(e) => setPlayerSearch(e.target.value)}
+                className="max-w-xs"
+              />
+            </div>
+            <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-muted-foreground text-left">
+                    <th className="py-1.5 pr-3">Player</th>
+                    <th className="py-1.5 pr-3">Team</th>
+                    <th className="py-1.5 pr-3 text-right">Value</th>
+                    <th className="py-1.5 text-right">Proj Pts</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {availablePlayers.slice(0, 50).map((p) => (
+                    <tr key={p.id} className="border-b border-border/50">
+                      <td className="py-1.5 pr-3">{p.name}</td>
+                      <td className="py-1.5 pr-3 text-muted-foreground">{p.team}</td>
+                      <td className="py-1.5 pr-3 text-right">${p.suggestedValue}</td>
+                      <td className="py-1.5 text-right">{p.totalPoints ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <ConfirmDialog
+        open={showEndConfirm}
+        title="End Snake Draft?"
+        description="This will end the draft immediately. Remaining picks won't be made."
+        confirmLabel="End Draft"
+        destructive
+        onCancel={() => setShowEndConfirm(false)}
+        onConfirm={() => {
+          setShowEndConfirm(false);
+          handleSnakeAction("end");
+        }}
+      />
+    </div>
   );
 }
 
@@ -2421,7 +2892,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         />
       ) : null}
 
-      {activeTab === "draft" && !data.auctionState ? (
+      {activeTab === "draft" && data.snakeState && viewerUserId ? (
+        <SnakeDraftPanel
+          leagueId={leagueId}
+          data={data}
+          viewerUserId={viewerUserId}
+          onRefresh={() => loadLeague({ silent: true })}
+        />
+      ) : null}
+
+      {activeTab === "draft" && !data.auctionState && !data.snakeState ? (
         <>
           {data.currentRound ? (
             <Card>
@@ -3358,7 +3838,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                 <p className="text-sm text-muted-foreground">
                   {data.league.phase === "scoring"
                     ? "The draft is complete and the league is now in scoring."
-                    : "The commissioner has not opened the next batch auction yet."}
+                    : "The commissioner has not started a draft yet. Check the Commissioner tab to start a sealed-bid round, live auction, or snake draft."}
                 </p>
               </CardContent>
             </Card>
@@ -3874,7 +4354,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
             </CardHeader>
             <CardContent className="space-y-6">
               {/* Start Auction Draft */}
-              {!data.currentRound && !data.auctionState && data.league.phase !== "scoring" ? (
+              {!data.currentRound && !data.auctionState && !data.snakeState && data.league.phase !== "scoring" ? (
                 <div>
                   <h3 className="text-sm font-semibold text-foreground mb-3">Start Live Auction Draft</h3>
                   <p className="text-xs text-muted-foreground mb-4">
@@ -3925,6 +4405,65 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       </select>
                     </div>
                     <Button type="submit">Start Auction</Button>
+                  </form>
+                </div>
+              ) : null}
+
+              {/* Start Snake Draft */}
+              {!data.currentRound && !data.auctionState && !data.snakeState && data.league.phase !== "scoring" ? (
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground mb-3">Start Snake Draft</h3>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    Managers take turns picking players in a serpentine order. Each round reverses the pick direction.
+                  </p>
+                  <form
+                    className="flex flex-wrap gap-3 items-end"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const fd = new FormData(e.currentTarget);
+                      const timed = fd.get("timed") === "true";
+                      try {
+                        const result = await appApiFetch<{ ok: boolean; error?: string }>(
+                          `/leagues/${leagueId}/snake/start`,
+                          {
+                            method: "POST",
+                            body: JSON.stringify({
+                              timed,
+                              pickTimerSeconds: parseInt(fd.get("pickTimer") as string) || 30,
+                              orderMode: fd.get("orderMode") || "draft_priority",
+                            }),
+                          },
+                        );
+                        if (result.ok) {
+                          toast.success("Snake draft started!");
+                          loadLeague();
+                        } else {
+                          toast.error(result.error ?? "Failed to start snake draft");
+                        }
+                      } catch {
+                        toast.error("Failed to start snake draft");
+                      }
+                    }}
+                  >
+                    <div>
+                      <Label className="text-xs">Mode</Label>
+                      <select name="timed" className="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        <option value="true">Timed</option>
+                        <option value="false">Untimed</option>
+                      </select>
+                    </div>
+                    <div>
+                      <Label className="text-xs">Pick Timer (sec)</Label>
+                      <Input type="number" name="pickTimer" defaultValue={30} min={10} max={120} className="w-24" />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Order</Label>
+                      <select name="orderMode" className="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        <option value="draft_priority">Draft Priority</option>
+                        <option value="random">Random</option>
+                      </select>
+                    </div>
+                    <Button type="submit">Start Snake Draft</Button>
                   </form>
                 </div>
               ) : null}

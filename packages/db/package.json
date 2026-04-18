@@ -14,15 +14,15 @@
     "db:push": "dotenv -e ../../.env -- drizzle-kit push"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^0.10",
-    "drizzle-orm": "^0.41",
-    "postgres": "^3.4"
+    "@neondatabase/serverless": "0.10.4",
+    "drizzle-orm": "0.41.0",
+    "postgres": "3.4.9"
   },
   "devDependencies": {
     "@repo/tsconfig": "workspace:*",
-    "@types/node": "^22",
-    "dotenv-cli": "^8",
-    "drizzle-kit": "^0.30",
-    "typescript": "^5.7"
+    "@types/node": "22.19.17",
+    "dotenv-cli": "8.0.0",
+    "drizzle-kit": "0.30.6",
+    "typescript": "5.9.3"
   }
 }

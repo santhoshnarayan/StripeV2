@@ -254,6 +254,43 @@ export const auctionState = pgTable(
   }),
 );
 
+export const snakeState = pgTable(
+  "snake_state",
+  {
+    id: text("id").primaryKey(),
+    leagueId: text("league_id")
+      .notNull()
+      .references(() => league.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("picking"),
+    // Mode
+    timed: boolean("timed").notNull().default(true),
+    // Timer config (only used when timed = true)
+    pickTimerSeconds: integer("pick_timer_seconds").notNull().default(30),
+    bufferMs: integer("buffer_ms").notNull().default(500),
+    // Pick order: pre-computed flat array of userIds in snake order
+    pickOrder: jsonb("pick_order").notNull(),
+    currentPickIndex: integer("current_pick_index").notNull().default(0),
+    currentPickerUserId: text("current_picker_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    // Tracking
+    totalPicks: integer("total_picks").notNull().default(0),
+    currentRound: integer("current_round").notNull().default(1),
+    totalRounds: integer("total_rounds").notNull(),
+    // Timer
+    expiresAt: timestamp("expires_at"),
+    // Pause support
+    pausedAt: timestamp("paused_at"),
+    statusBeforePause: text("status_before_pause"),
+    // Timestamps
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    leagueUnique: uniqueIndex("snake_state_league_unique").on(table.leagueId),
+  }),
+);
+
 export const rosterEntry = pgTable(
   "roster_entry",
   {

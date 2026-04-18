@@ -16,6 +16,7 @@ import {
   leagueAction,
   leagueMember,
   rosterEntry,
+  snakeState,
   user,
 } from "@repo/db";
 import { auth } from "../auth.js";
@@ -26,6 +27,11 @@ import {
   startAuction,
   type EventResult,
 } from "../lib/auction-queue.js";
+import {
+  getSnakeDraft,
+  startSnakeDraft,
+  generateSnakeOrder,
+} from "../lib/snake-queue.js";
 import {
   auctionConfigFromLeague,
   getPlayerPoolForAuction,
@@ -953,6 +959,32 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         highBidUserId: row.highBidUserId,
         expiresAt: row.expiresAt?.toISOString() ?? null,
         totalAwards: row.totalAwards,
+      };
+    })(),
+    snakeState: await (async () => {
+      const rows = await db
+        .select()
+        .from(snakeState)
+        .where(
+          and(
+            eq(snakeState.leagueId, leagueId),
+            inArray(snakeState.status, ["picking", "paused"]),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row) return null;
+      return {
+        status: row.status,
+        timed: row.timed,
+        pickTimerSeconds: row.pickTimerSeconds,
+        pickOrder: row.pickOrder,
+        currentPickIndex: row.currentPickIndex,
+        currentPickerUserId: row.currentPickerUserId,
+        totalPicks: row.totalPicks,
+        currentRound: row.currentRound,
+        totalRounds: row.totalRounds,
+        expiresAt: row.expiresAt?.toISOString() ?? null,
       };
     })(),
     actions: access.isCommissioner
@@ -2598,6 +2630,21 @@ appRouter.post("/leagues/:leagueId/auction/start", async (c) => {
     return c.json({ error: "An auction is already active" }, 400);
   }
 
+  // Check no active snake draft
+  const existingSnake = await db
+    .select({ id: snakeState.id })
+    .from(snakeState)
+    .where(
+      and(
+        eq(snakeState.leagueId, leagueId),
+        inArray(snakeState.status, ["picking", "paused"]),
+      ),
+    )
+    .limit(1);
+  if (existingSnake.length > 0) {
+    return c.json({ error: "A snake draft is already active" }, 400);
+  }
+
   const body = startAuctionSchema.parse(await c.req.json());
   const members = await getLeagueMembers(leagueId);
 
@@ -2828,6 +2875,293 @@ appRouter.post("/leagues/:leagueId/auction/end", async (c) => {
 
   const engine = getAuction(leagueId);
   if (!engine) return c.json({ error: "No active auction" }, 404);
+
+  const result = await engine.enqueue({ type: "end", actorUserId: session.user.id });
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// ============================================================
+// SNAKE DRAFT
+// ============================================================
+
+const startSnakeSchema = z.object({
+  timed: z.boolean().default(true),
+  pickTimerSeconds: z.number().int().min(10).max(120).default(30),
+  orderMode: z.enum(["draft_priority", "random"]).default("draft_priority"),
+});
+
+const snakePickSchema = z.object({
+  playerId: z.string(),
+  playerName: z.string(),
+  playerTeam: z.string(),
+});
+
+const snakeUndoPickSchema = z.object({
+  playerId: z.string().optional(),
+});
+
+// Start snake draft
+appRouter.post("/leagues/:leagueId/snake/start", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  if (access.league.phase === "scoring") {
+    return c.json({ error: "League is already in scoring phase" }, 400);
+  }
+
+  // Check no active auction
+  const existingAuction = await db
+    .select({ id: auctionState.id })
+    .from(auctionState)
+    .where(
+      and(
+        eq(auctionState.leagueId, leagueId),
+        inArray(auctionState.status, ["nominating", "bidding", "paused"]),
+      ),
+    )
+    .limit(1);
+  if (existingAuction.length > 0) {
+    return c.json({ error: "An auction is already active" }, 400);
+  }
+
+  // Check no active snake draft
+  const existingSnake = await db
+    .select({ id: snakeState.id })
+    .from(snakeState)
+    .where(
+      and(
+        eq(snakeState.leagueId, leagueId),
+        inArray(snakeState.status, ["picking", "paused"]),
+      ),
+    )
+    .limit(1);
+  if (existingSnake.length > 0) {
+    return c.json({ error: "A snake draft is already active" }, 400);
+  }
+
+  const body = startSnakeSchema.parse(await c.req.json());
+  const members = await getLeagueMembers(leagueId);
+
+  if (members.length < 2) {
+    return c.json({ error: "Need at least 2 members" }, 400);
+  }
+
+  const now = new Date();
+  let orderedUserIds: string[];
+
+  if (body.orderMode === "random") {
+    orderedUserIds = shuffle(members.map((m) => m.userId));
+  } else {
+    const sorted = await db.transaction(async (tx) => {
+      return ensureDraftPriorityOrder(tx, leagueId, members, now);
+    });
+    orderedUserIds = sorted.map((m) => m.userId);
+  }
+
+  const totalRounds = access.league.rosterSize;
+  const pickOrder = generateSnakeOrder(orderedUserIds, totalRounds);
+  const firstPicker = pickOrder[0];
+
+  const snakeId = randomUUID();
+  let expiresAt: Date | null = null;
+  if (body.timed) {
+    expiresAt = new Date(now.getTime() + body.pickTimerSeconds * 1000);
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.insert(snakeState).values({
+      id: snakeId,
+      leagueId,
+      status: "picking",
+      timed: body.timed,
+      pickTimerSeconds: body.pickTimerSeconds,
+      pickOrder,
+      currentPickIndex: 0,
+      currentPickerUserId: firstPicker,
+      totalPicks: 0,
+      currentRound: 1,
+      totalRounds,
+      expiresAt,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const seq = await nextSequenceNumber(tx, leagueId);
+    await tx.insert(leagueAction).values({
+      id: randomUUID(),
+      leagueId,
+      type: "snake_start",
+      actorUserId: session.user.id,
+      sequenceNumber: seq,
+      metadata: {
+        timed: body.timed,
+        pickTimerSeconds: body.pickTimerSeconds,
+        pickOrder,
+        totalRounds,
+      },
+      createdAt: now,
+    });
+
+    await tx
+      .update(league)
+      .set({ phase: "draft", updatedAt: now })
+      .where(eq(league.id, leagueId));
+  });
+
+  // Fetch the inserted row and start the engine
+  const [stateRow] = await db.select().from(snakeState).where(eq(snakeState.id, snakeId));
+  const engine = startSnakeDraft(leagueId, stateRow);
+  if (body.timed && expiresAt) {
+    engine.restartPickTimer(body.pickTimerSeconds * 1000, expiresAt);
+  }
+
+  return c.json({ ok: true, snakeId });
+});
+
+// SSE stream
+appRouter.get("/leagues/:leagueId/snake/stream", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+
+  const engine = getSnakeDraft(leagueId);
+  if (!engine) return c.json({ error: "No active snake draft" }, 404);
+
+  return streamSSE(c, async (stream) => {
+    engine.addClient(stream);
+
+    await stream.writeSSE({
+      event: "state",
+      data: JSON.stringify(engine.getStateSnapshot()),
+    });
+
+    stream.onAbort(() => {
+      engine.removeClient(stream);
+    });
+
+    while (true) {
+      await stream.sleep(30_000);
+      await stream.writeSSE({ event: "ping", data: "" });
+    }
+  });
+});
+
+// Current state (non-SSE fallback)
+appRouter.get("/leagues/:leagueId/snake/state", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+
+  const engine = getSnakeDraft(leagueId);
+  if (!engine) return c.json({ error: "No active snake draft" }, 404);
+
+  return c.json(engine.getStateSnapshot());
+});
+
+// Pick
+appRouter.post("/leagues/:leagueId/snake/pick", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+
+  const engine = getSnakeDraft(leagueId);
+  if (!engine) return c.json({ error: "No active snake draft" }, 404);
+
+  const body = snakePickSchema.parse(await c.req.json());
+  const result = await engine.enqueue({
+    type: "pick",
+    userId: session.user.id,
+    playerId: body.playerId,
+    playerName: body.playerName,
+    playerTeam: body.playerTeam,
+  });
+
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Pause
+appRouter.post("/leagues/:leagueId/snake/pause", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getSnakeDraft(leagueId);
+  if (!engine) return c.json({ error: "No active snake draft" }, 404);
+
+  const result = await engine.enqueue({ type: "pause", actorUserId: session.user.id });
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Resume
+appRouter.post("/leagues/:leagueId/snake/resume", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getSnakeDraft(leagueId);
+  if (!engine) return c.json({ error: "No active snake draft" }, 404);
+
+  const result = await engine.enqueue({ type: "resume", actorUserId: session.user.id });
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Undo pick
+appRouter.post("/leagues/:leagueId/snake/undo-pick", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getSnakeDraft(leagueId);
+  if (!engine) return c.json({ error: "No active snake draft" }, 404);
+
+  const body = snakeUndoPickSchema.parse(await c.req.json());
+  const result = await engine.enqueue({
+    type: "undo_pick",
+    actorUserId: session.user.id,
+    playerId: body.playerId,
+  });
+
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// End snake draft
+appRouter.post("/leagues/:leagueId/snake/end", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const { leagueId } = c.req.param();
+  const access = await getLeagueAccess(session.user.id, leagueId);
+  if (!access) return c.json({ error: "Not found" }, 404);
+  if (!access.isCommissioner) return c.json({ error: "Commissioner only" }, 403);
+
+  const engine = getSnakeDraft(leagueId);
+  if (!engine) return c.json({ error: "No active snake draft" }, 404);
 
   const result = await engine.enqueue({ type: "end", actorUserId: session.user.id });
   return c.json(result, result.ok ? 200 : 400);

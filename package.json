@@ -14,8 +14,8 @@
     "deploy": "./scripts/deploy.sh"
   },
   "devDependencies": {
-    "dotenv-cli": "^8",
-    "turbo": "^2"
+    "dotenv-cli": "8.0.0",
+    "turbo": "2.9.5"
   },
   "packageManager": "pnpm@10.5.1"
 }

@@ -11,6 +11,7 @@ const resend = process.env.RESEND_API_KEY
 const fromEmail = process.env.RESEND_FROM_EMAIL || "noreply@resend.dev";
 
 export const auth = betterAuth({
+  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:4000",
   database: drizzleAdapter(db, {
     provider: "pg",
     schema,

@@ -9,6 +9,7 @@ import { appRouter } from "./routes/app.js";
 import { startCronJobs } from "./cron/index.js";
 import { startWorker } from "./tasks/queue.js";
 import { recoverAuctions } from "./lib/auction-queue.js";
+import { recoverSnakeDrafts } from "./lib/snake-queue.js";
 
 const app = new Hono();
 
@@ -65,7 +66,7 @@ app.use("*", async (c, next) => {
 app.get("/health", (c) => c.json({ status: "ok" }));
 
 // Better Auth
-app.on(["POST", "GET"], "/api/auth/**", (c) => {
+app.all("/api/auth/*", (c) => {
   return auth.handler(c.req.raw);
 });
 
@@ -82,6 +83,7 @@ app.on(["GET", "POST"], "/graphql", async (c) => {
 // Start background services
 startCronJobs();
 recoverAuctions().catch((err) => console.error("[auction] Recovery failed:", err));
+recoverSnakeDrafts().catch((err) => console.error("[snake] Recovery failed:", err));
 
 if (process.env.REDIS_URL) {
   startWorker();
