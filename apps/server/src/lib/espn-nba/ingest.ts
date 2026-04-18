@@ -149,23 +149,6 @@ export async function syncScoreboard(date: Date): Promise<ScoreboardEvent[]> {
   return sb.events ?? [];
 }
 
-const STAT_KEYS = [
-  "minutes", // MIN
-  "fg", // "FG" (e.g. "10-20")
-  "fg3", // 3PT "4-8"
-  "ft", // "2-2"
-  "oreb",
-  "dreb",
-  "reb",
-  "ast",
-  "stl",
-  "blk",
-  "to",
-  "pf",
-  "plusMinus",
-  "pts",
-] as const;
-
 function parseMade(v: string | undefined): { made: number; att: number } {
   if (!v || typeof v !== "string") return { made: 0, att: 0 };
   const parts = v.split("-");
@@ -211,38 +194,57 @@ interface ParsedPlayerStats {
   dnp: boolean;
 }
 
+// ESPN's NBA boxscore is not in a fixed order (differs from NCAAM), so we map
+// by the `keys` array provided alongside the athlete stats. Known keys as of
+// 2026-04: minutes, points, fieldGoalsMade-fieldGoalsAttempted,
+// threePointFieldGoalsMade-threePointFieldGoalsAttempted,
+// freeThrowsMade-freeThrowsAttempted, rebounds, assists, turnovers, steals,
+// blocks, offensiveRebounds, defensiveRebounds, fouls, plusMinus.
+function buildKeyIndex(keys: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  keys.forEach((k, i) => {
+    out[k] = i;
+  });
+  return out;
+}
+
 function parseBoxscorePlayers(
   teamAbbrev: string,
+  keys: string[],
   players: BoxscorePlayer[],
 ): ParsedPlayerStats[] {
+  const idx = buildKeyIndex(keys);
+  const pick = (stats: string[], k: string): string | undefined => {
+    const i = idx[k];
+    return i === undefined ? undefined : stats[i];
+  };
   const out: ParsedPlayerStats[] = [];
   for (const p of players ?? []) {
     const stats = p.stats ?? [];
-    // ESPN order: MIN, FG, 3PT, FT, OREB, DREB, REB, AST, STL, BLK, TO, PF, +/-, PTS
-    const fg = parseMade(stats[1]);
-    const fg3 = parseMade(stats[2]);
-    const ft = parseMade(stats[3]);
+    const fg = parseMade(pick(stats, "fieldGoalsMade-fieldGoalsAttempted"));
+    const fg3 = parseMade(pick(stats, "threePointFieldGoalsMade-threePointFieldGoalsAttempted"));
+    const ft = parseMade(pick(stats, "freeThrowsMade-freeThrowsAttempted"));
     out.push({
       playerId: p.athlete?.id ?? "",
       playerName: p.athlete?.displayName ?? "",
       teamAbbrev,
-      minutes: parseMinutes(stats[0]),
+      minutes: parseMinutes(pick(stats, "minutes")),
       fgm: fg.made,
       fga: fg.att,
       fg3m: fg3.made,
       fg3a: fg3.att,
       ftm: ft.made,
       fta: ft.att,
-      oreb: parseIntOr(stats[4]),
-      dreb: parseIntOr(stats[5]),
-      reb: parseIntOr(stats[6]),
-      ast: parseIntOr(stats[7]),
-      stl: parseIntOr(stats[8]),
-      blk: parseIntOr(stats[9]),
-      to: parseIntOr(stats[10]),
-      pf: parseIntOr(stats[11]),
-      plusMinus: parsePlusMinus(stats[12]),
-      pts: parseIntOr(stats[13]),
+      oreb: parseIntOr(pick(stats, "offensiveRebounds")),
+      dreb: parseIntOr(pick(stats, "defensiveRebounds")),
+      reb: parseIntOr(pick(stats, "rebounds")),
+      ast: parseIntOr(pick(stats, "assists")),
+      stl: parseIntOr(pick(stats, "steals")),
+      blk: parseIntOr(pick(stats, "blocks")),
+      to: parseIntOr(pick(stats, "turnovers")),
+      pf: parseIntOr(pick(stats, "fouls")),
+      plusMinus: parsePlusMinus(pick(stats, "plusMinus")),
+      pts: parseIntOr(pick(stats, "points")),
       starter: p.starter === true,
       dnp: p.didNotPlay === true || !stats.length,
     });
@@ -332,8 +334,10 @@ export async function syncGameDetail(eventId: string): Promise<void> {
   const allPlayerStats: ParsedPlayerStats[] = [];
   for (const sec of sections) {
     const abbrev = sec.team.abbreviation;
-    const athletesList = sec.statistics?.[0]?.athletes ?? [];
-    allPlayerStats.push(...parseBoxscorePlayers(abbrev, athletesList));
+    const stats0 = sec.statistics?.[0];
+    const keys = stats0?.keys ?? [];
+    const athletesList = stats0?.athletes ?? [];
+    allPlayerStats.push(...parseBoxscorePlayers(abbrev, keys, athletesList));
   }
   for (const p of allPlayerStats) {
     await db

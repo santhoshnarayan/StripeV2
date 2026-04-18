@@ -19,6 +19,8 @@ import { useSession } from "@/lib/auth-client";
 import { SimulatorTab } from "@/components/simulator-tab";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { LiveGamesTicker } from "@/components/nba/live-games-ticker";
+import { usePolling } from "@/lib/use-polling";
+import { markUserActive } from "@/lib/use-activity";
 
 const POLL_INTERVAL_MS = 8_000;
 const POLL_INACTIVE_TIMEOUT_MS = 3 * 60_000;
@@ -1657,7 +1659,6 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   // the most recent snapshot is tied to; a new snapshot gets pushed when the
   // source changes (different field, or a discrete action like reset/0/bulk).
   const lastContinuousBidField = useRef<string | null>(null);
-  const lastActivityRef = useRef<number>(Date.now());
 
   const loadLeague = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -1757,42 +1758,23 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   }, [leagueId, data?.league.phase]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    function recordActivity() {
-      lastActivityRef.current = Date.now();
-    }
-
-    function handleVisibility() {
+    if (typeof document === "undefined") return;
+    const onVisible = () => {
       if (document.visibilityState === "visible") {
-        lastActivityRef.current = Date.now();
+        markUserActive();
         void loadLeague({ silent: true });
       }
-    }
-
-    window.addEventListener("pointerdown", recordActivity);
-    window.addEventListener("keydown", recordActivity);
-    document.addEventListener("visibilitychange", handleVisibility);
-
-    const interval = window.setInterval(() => {
-      if (document.hidden) {
-        return;
-      }
-      if (Date.now() - lastActivityRef.current > POLL_INACTIVE_TIMEOUT_MS) {
-        return;
-      }
-      void loadLeague({ silent: true });
-    }, POLL_INTERVAL_MS);
-
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.removeEventListener("pointerdown", recordActivity);
-      window.removeEventListener("keydown", recordActivity);
-      document.removeEventListener("visibilitychange", handleVisibility);
-      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [loadLeague]);
+
+  usePolling(() => loadLeague({ silent: true }), {
+    activeMs: POLL_INTERVAL_MS,
+    idleMs: POLL_INACTIVE_TIMEOUT_MS,
+  });
 
   // Build the projected-points ranking across the *full* league pool
   // (undrafted available players + everyone already on a roster). 173 rows

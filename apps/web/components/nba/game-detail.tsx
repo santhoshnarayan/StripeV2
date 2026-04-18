@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { appApiFetch } from "@/lib/app-api";
 import { cn } from "@/lib/utils";
 import { TeamLogo } from "@/components/sim/player-avatar";
 import { WinProbabilityChart, type WinProbPoint } from "@/components/nba/win-probability-chart";
+import { usePolling } from "@/lib/use-polling";
 
 type GameRow = {
   id: string;
@@ -189,7 +190,8 @@ function TeamStatsPanel({ rows, home, away }: { rows: TeamStatsRow[]; home: stri
   const awayRow = rows.find((r) => r.teamAbbrev === away);
   if (!homeRow && !awayRow) return null;
 
-  const fmtPct = (v: number | null | undefined) => (v == null ? "-" : `${(v * 100).toFixed(1)}%`);
+  // ESPN returns the pct already scaled 0–100 (e.g. "63" for 63%), so don't multiply again.
+  const fmtPct = (v: number | null | undefined) => (v == null ? "-" : `${v.toFixed(1)}%`);
   const row = (label: string, a: string | number, h: string | number) => (
     <div className="grid grid-cols-3 gap-2 text-xs py-1 border-t border-border/20">
       <span className="tabular-nums text-right">{a}</span>
@@ -254,42 +256,46 @@ export function GameDetail({ eventId, onClose }: { eventId: string; onClose: () 
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"box" | "pbp" | "chart">("box");
 
+  const cancelledRef = useRef(false);
+  const loadRef = useRef(async () => {
+    try {
+      const [d, p, w] = await Promise.all([
+        appApiFetch<GameDetailData>(`/nba/games/${encodeURIComponent(eventId)}`),
+        appApiFetch<{ plays: PlayRow[] }>(`/nba/games/${encodeURIComponent(eventId)}/pbp`),
+        appApiFetch<{ points: WinProbRow[] }>(`/nba/games/${encodeURIComponent(eventId)}/win-probability`),
+      ]);
+      if (cancelledRef.current) return;
+      setData(d);
+      setPlays(p.plays ?? []);
+      setWinProb(
+        (w.points ?? [])
+          .filter((pt) => pt.homeWinPct != null)
+          .map((pt) => ({
+            sequence: String(pt.sequence),
+            period: pt.period,
+            clock: pt.clock,
+            homeWinPct: pt.homeWinPct as number,
+          })),
+      );
+      setError(null);
+    } catch (err) {
+      if (!cancelledRef.current) setError((err as Error).message);
+    }
+  });
+
   useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const [d, p, w] = await Promise.all([
-          appApiFetch<GameDetailData>(`/nba/games/${encodeURIComponent(eventId)}`),
-          appApiFetch<{ plays: PlayRow[] }>(`/nba/games/${encodeURIComponent(eventId)}/pbp`),
-          appApiFetch<{ points: WinProbRow[] }>(`/nba/games/${encodeURIComponent(eventId)}/win-probability`),
-        ]);
-        if (cancelled) return;
-        setData(d);
-        setPlays(p.plays ?? []);
-        setWinProb(
-          (w.points ?? [])
-            .filter((pt) => pt.homeWinPct != null)
-            .map((pt) => ({
-              sequence: String(pt.sequence),
-              period: pt.period,
-              clock: pt.clock,
-              homeWinPct: pt.homeWinPct as number,
-            })),
-        );
-        setError(null);
-      } catch (err) {
-        if (!cancelled) setError((err as Error).message);
-      }
-    };
-
-    void load();
-    const t = setInterval(load, 60_000);
+    cancelledRef.current = false;
+    void loadRef.current();
     return () => {
-      cancelled = true;
-      clearInterval(t);
+      cancelledRef.current = true;
     };
   }, [eventId]);
+
+  const isLive = data?.game.status === "in";
+  usePolling(() => loadRef.current(), {
+    activeMs: isLive ? 60_000 : 300_000,
+    enabled: data?.game.status !== "post",
+  });
 
   return (
     <div
