@@ -2014,6 +2014,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
   const body = submitBidsSchema.safeParse(await c.req.json().catch(() => null));
 
   if (!body.success) {
+    console.warn(`[submission] 400 invalid body: user=${session.user.id}`, body.error.errors[0]?.message);
     return c.json({ error: body.error.errors[0]?.message ?? "Invalid request" }, 400);
   }
 
@@ -2035,6 +2036,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
   const viewerState = memberStates.get(session.user.id);
 
   if (!viewerState || viewerState.remainingRosterSlots <= 0) {
+    console.warn(`[submission] 400 roster full: user=${session.user.id} slots=${viewerState?.remainingRosterSlots ?? "no state"}`);
     return c.json({ error: "Your roster is already full" }, 400);
   }
 
@@ -2046,6 +2048,7 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
 
   for (const [playerId, amount] of Object.entries(body.data.bids)) {
     if (!eligiblePlayerIds.has(playerId)) {
+      console.warn(`[submission] 400 player not in round: user=${session.user.id} player=${playerId}`);
       return c.json({ error: "You can only bid on players in the active round" }, 400);
     }
 
@@ -2055,11 +2058,13 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/submission", async (c) 
     }
 
     if (amount < access.league.minBid) {
+      console.warn(`[submission] 400 below min: user=${session.user.id} player=${playerId} bid=${amount} min=${access.league.minBid}`);
       return c.json({ error: "Bids must be at least the league minimum" }, 400);
     }
 
     if (amount > maxAllowed) {
       const playerName = playerMap.get(playerId)?.name ?? "player";
+      console.warn(`[submission] 400 over max: user=${session.user.id} player=${playerId} bid=${amount} max=${maxAllowed} budget=${viewerState.remainingBudget} slots=${viewerState.remainingRosterSlots}`);
       return c.json({
         error: `Bid for ${playerName} exceeds your max allowed bid of $${maxAllowed}`,
       }, 400);
