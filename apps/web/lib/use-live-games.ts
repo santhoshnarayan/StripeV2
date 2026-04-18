@@ -10,6 +10,8 @@ export type TickerGame = {
   startTime: string | null;
   homeTeam: string;
   awayTeam: string;
+  homeSeed: number | null;
+  awaySeed: number | null;
   homeScore: number;
   awayScore: number;
   status: "pre" | "in" | "post";

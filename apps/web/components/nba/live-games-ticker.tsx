@@ -71,16 +71,16 @@ function RosterRotator({ players }: { players: RosteredGamePlayer[] }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-1.5 transition-opacity duration-200 min-w-0",
+        "flex items-center gap-1.5 transition-opacity duration-200 min-w-0 leading-none",
         fading ? "opacity-0" : "opacity-100",
       )}
     >
       <PlayerHeadshot espnId={p.playerId} size={16} />
-      <span className="text-[10px] truncate flex-1 min-w-0">
+      <span className="text-[10px] truncate flex-1 min-w-0 leading-none">
         <span className="font-medium text-foreground/80">{shortPlayerName(p.playerName)}</span>
         <span className="text-muted-foreground/70 tabular-nums"> {Math.round(p.livePoints)}pts</span>
       </span>
-      <span className="text-[9px] text-muted-foreground/60 truncate shrink-0">
+      <span className="text-[10px] text-muted-foreground/60 truncate shrink-0 leading-none">
         {p.managerShortName}
       </span>
     </div>
@@ -111,28 +111,43 @@ function GameCard({
         isPre && "border-border hover:bg-muted/30",
       )}
     >
-      <div className="flex items-center justify-between text-[10px]">
-        <span className="text-muted-foreground font-medium">
-          {game.seriesKey ? `${game.seriesKey.split(".").slice(-1)[0]}${game.gameNum ? ` · G${game.gameNum}` : ""}` : ""}
+      <div className="flex items-center justify-between gap-2 text-[10px]">
+        <span className="text-muted-foreground font-medium truncate">
+          {[
+            game.gameNum ? `G${game.gameNum}` : null,
+            game.broadcast,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </span>
         {isLive ? (
-          <span className="text-red-500 font-semibold tabular-nums">{clock}</span>
+          <span className="text-red-500 font-semibold tabular-nums shrink-0">{clock}</span>
         ) : (
-          <span className="text-muted-foreground font-medium">{clock}</span>
+          <span className="text-muted-foreground font-medium shrink-0">{clock}</span>
         )}
       </div>
 
-      <TeamRow team={game.awayTeam} score={game.awayScore} isPre={isPre} isWinning={awayWin} isLosing={isFinal && homeWin} />
-      <TeamRow team={game.homeTeam} score={game.homeScore} isPre={isPre} isWinning={homeWin} isLosing={isFinal && awayWin} />
+      <TeamRow
+        team={game.awayTeam}
+        seed={game.awaySeed}
+        score={game.awayScore}
+        isPre={isPre}
+        isWinning={awayWin}
+        isLosing={isFinal && homeWin}
+      />
+      <TeamRow
+        team={game.homeTeam}
+        seed={game.homeSeed}
+        score={game.homeScore}
+        isPre={isPre}
+        isWinning={homeWin}
+        isLosing={isFinal && awayWin}
+      />
 
       {rosteredGamePlayers && rosteredGamePlayers.length > 0 ? (
         <div className="pt-1 border-t border-border/30 -mx-1 px-1">
           <RosterRotator players={rosteredGamePlayers} />
         </div>
-      ) : null}
-
-      {game.broadcast ? (
-        <div className="text-[9px] text-muted-foreground/60 truncate">{game.broadcast}</div>
       ) : null}
     </Link>
   );
@@ -140,12 +155,14 @@ function GameCard({
 
 function TeamRow({
   team,
+  seed,
   score,
   isPre,
   isWinning,
   isLosing,
 }: {
   team: string;
+  seed: number | null;
   score: number;
   isPre: boolean;
   isWinning: boolean;
@@ -161,6 +178,9 @@ function TeamRow({
           isWinning && "font-semibold",
         )}
       >
+        {seed != null ? (
+          <span className="text-muted-foreground/70 font-normal mr-1">({seed})</span>
+        ) : null}
         {team}
       </span>
       {!isPre && (

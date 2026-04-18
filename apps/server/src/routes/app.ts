@@ -174,6 +174,32 @@ appRouter.get("/sim-data", async (c) => {
 
 // ───────────────────────── Live NBA scoring (additive) ─────────────────────
 
+// Team-abbrev → seed lookup built from the bracket JSON. Includes both conference
+// seeds and play-in seeds (9 and 10) so every rostered team has a seed label.
+let teamSeedCache: Map<string, number> | null = null;
+async function getTeamSeedMap(): Promise<Map<string, number>> {
+  if (teamSeedCache) return teamSeedCache;
+  const dataDir = path.resolve(process.cwd(), "src/data");
+  const raw = await readFile(path.join(dataDir, "nba-bracket-2026.json"), "utf8");
+  const bracket = JSON.parse(raw) as {
+    eastSeeds: Array<[number, string]>;
+    westSeeds: Array<[number, string]>;
+    eastPlayin?: Array<[number, string]>;
+    westPlayin?: Array<[number, string]>;
+  };
+  const map = new Map<string, number>();
+  for (const [seed, team] of [
+    ...bracket.eastSeeds,
+    ...bracket.westSeeds,
+    ...(bracket.eastPlayin ?? []),
+    ...(bracket.westPlayin ?? []),
+  ]) {
+    map.set(team, seed);
+  }
+  teamSeedCache = map;
+  return map;
+}
+
 appRouter.get("/nba/live-ticker", async (c) => {
   // Show today's + recently-ended games. Compact payload for the header ticker.
   const now = new Date();
@@ -182,11 +208,14 @@ appRouter.get("/nba/live-ticker", async (c) => {
   const endOfTomorrow = new Date(start);
   endOfTomorrow.setDate(start.getDate() + 2);
 
-  const rows = await db
-    .select()
-    .from(nbaGame)
-    .where(and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)))
-    .orderBy(asc(nbaGame.startTime));
+  const [rows, seedByTeam] = await Promise.all([
+    db
+      .select()
+      .from(nbaGame)
+      .where(and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)))
+      .orderBy(asc(nbaGame.startTime)),
+    getTeamSeedMap(),
+  ]);
 
   return c.json({
     games: rows.map((g) => ({
@@ -195,6 +224,8 @@ appRouter.get("/nba/live-ticker", async (c) => {
       startTime: g.startTime,
       homeTeam: g.homeTeamAbbrev,
       awayTeam: g.awayTeamAbbrev,
+      homeSeed: g.homeTeamAbbrev ? seedByTeam.get(g.homeTeamAbbrev) ?? null : null,
+      awaySeed: g.awayTeamAbbrev ? seedByTeam.get(g.awayTeamAbbrev) ?? null : null,
       homeScore: g.homeScore,
       awayScore: g.awayScore,
       status: g.status,
@@ -348,6 +379,68 @@ appRouter.get("/nba/schedule", async (c) => {
     });
   }
   return c.json({ series: bySeries });
+});
+
+// Per-player per-game point log for every rostered player in a league.
+// Powers the "detailed scoring" view — rows are players, columns are games.
+appRouter.get("/leagues/:leagueId/game-logs", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+
+  const rosterRows = await db
+    .select({ userId: rosterEntry.userId, playerId: rosterEntry.playerId })
+    .from(rosterEntry)
+    .where(eq(rosterEntry.leagueId, access.league.id));
+
+  const rosteredPlayerIds = Array.from(new Set(rosterRows.map((r) => r.playerId)));
+  if (rosteredPlayerIds.length === 0) {
+    return c.json({ games: [], statsByPlayer: {} });
+  }
+
+  const games = await db
+    .select({
+      id: nbaGame.id,
+      date: nbaGame.date,
+      startTime: nbaGame.startTime,
+      homeTeamAbbrev: nbaGame.homeTeamAbbrev,
+      awayTeamAbbrev: nbaGame.awayTeamAbbrev,
+      homeScore: nbaGame.homeScore,
+      awayScore: nbaGame.awayScore,
+      status: nbaGame.status,
+      seriesKey: nbaGame.seriesKey,
+      gameNum: nbaGame.gameNum,
+    })
+    .from(nbaGame)
+    .where(sql`${nbaGame.seriesKey} IS NOT NULL`)
+    .orderBy(asc(nbaGame.date));
+
+  const stats = await db
+    .select({
+      playerId: nbaPlayerGameStats.playerId,
+      gameId: nbaPlayerGameStats.gameId,
+      points: nbaPlayerGameStats.points,
+      minutes: nbaPlayerGameStats.minutes,
+      dnp: nbaPlayerGameStats.dnp,
+      teamAbbrev: nbaPlayerGameStats.teamAbbrev,
+    })
+    .from(nbaPlayerGameStats)
+    .where(inArray(nbaPlayerGameStats.playerId, rosteredPlayerIds));
+
+  const statsByPlayer: Record<string, Record<string, { points: number; minutes: number | null; dnp: boolean; teamAbbrev: string | null }>> = {};
+  for (const s of stats) {
+    const bag = statsByPlayer[s.playerId] ?? {};
+    bag[s.gameId] = {
+      points: s.points ?? 0,
+      minutes: s.minutes,
+      dnp: s.dnp ?? false,
+      teamAbbrev: s.teamAbbrev,
+    };
+    statsByPlayer[s.playerId] = bag;
+  }
+
+  return c.json({ games, statsByPlayer });
 });
 
 function computeMaxBid(
