@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { BracketView } from "@/components/sim/bracket-view";
+import { BracketMobileView } from "@/components/sim/bracket-mobile-view";
 import { appApiFetch } from "@/lib/app-api";
 import {
   runTournamentSim,
@@ -156,7 +157,14 @@ export default function BracketPage() {
       </Card>
 
       {simData ? (
-        <BracketView simData={simData} simResults={simResults} />
+        <>
+          <div className="md:hidden">
+            <BracketMobileView simData={simData} simResults={simResults} />
+          </div>
+          <div className="hidden md:block">
+            <BracketView simData={simData} simResults={simResults} />
+          </div>
+        </>
       ) : null}
 
       {simResults ? (
