@@ -325,22 +325,23 @@ function InjuryBadge({ status }: { status?: string | null }) {
 }
 
 function formatRunnerUp(name: string): string {
-  const parts = name.split(", ");
+  const parts = name.split(", ").map((n) => n.trim());
   if (parts.length <= 1) return name;
-  // Try initials first
-  const initials = parts.map((n) => {
-    const words = n.trim().split(/\s+/);
-    return words.map((w) => w[0]?.toUpperCase() ?? "").join("");
+  // Try first names only
+  const firsts = parts.map((n) => n.split(/\s+/)[0] ?? n);
+  if (new Set(firsts).size === firsts.length) return firsts.join(", ");
+  // First names collide — add last name letters progressively
+  const parsed = parts.map((n) => {
+    const w = n.split(/\s+/);
+    return { first: w[0] ?? n, last: w.slice(1).join(" ") };
   });
-  if (new Set(initials).size === initials.length) return initials.join(", ");
-  // Initials collide — use first name + last initial
-  const short = parts.map((n) => {
-    const words = n.trim().split(/\s+/);
-    if (words.length <= 1) return words[0] ?? n;
-    return `${words[0]} ${words[words.length - 1]![0]?.toUpperCase()}.`;
-  });
-  if (new Set(short).size === short.length) return short.join(", ");
-  // Still collide — use full names
+  const maxLast = Math.max(...parsed.map((p) => p.last.length));
+  for (let len = 1; len <= maxLast; len++) {
+    const abbrs = parsed.map((p) =>
+      p.last ? `${p.first} ${p.last.slice(0, len)}.` : p.first,
+    );
+    if (new Set(abbrs).size === abbrs.length) return abbrs.join(", ");
+  }
   return name;
 }
 
