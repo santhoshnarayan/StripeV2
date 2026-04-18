@@ -443,6 +443,88 @@ appRouter.get("/leagues/:leagueId/game-logs", async (c) => {
   return c.json({ games, statsByPlayer });
 });
 
+// Cumulative fantasy points per manager over the postseason calendar.
+// Each point on the timeline = one completed game's contribution (per manager)
+// bucketed by game date. Powers the "scoring over time" overlay chart.
+appRouter.get("/leagues/:leagueId/scoring-timeline", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+
+  const rosterRows = await db
+    .select({ userId: rosterEntry.userId, playerId: rosterEntry.playerId })
+    .from(rosterEntry)
+    .where(eq(rosterEntry.leagueId, access.league.id));
+
+  if (rosterRows.length === 0) {
+    return c.json({ managers: [], points: [] });
+  }
+
+  const members = await getLeagueMembers(access.league.id);
+  const managersById = new Map<string, MemberRow>();
+  for (const m of members) {
+    if (m.userId) managersById.set(m.userId, m);
+  }
+
+  const rosteredPlayerIds = Array.from(new Set(rosterRows.map((r) => r.playerId)));
+  const playerToUser = new Map<string, string>();
+  for (const r of rosterRows) playerToUser.set(r.playerId, r.userId);
+
+  const statRows = await db
+    .select({
+      playerId: nbaPlayerGameStats.playerId,
+      gameId: nbaPlayerGameStats.gameId,
+      points: nbaPlayerGameStats.points,
+      gameDate: nbaGame.date,
+      status: nbaGame.status,
+    })
+    .from(nbaPlayerGameStats)
+    .innerJoin(nbaGame, eq(nbaGame.id, nbaPlayerGameStats.gameId))
+    .where(
+      and(
+        inArray(nbaPlayerGameStats.playerId, rosteredPlayerIds),
+        sql`${nbaGame.status} = 'post'`,
+        isNotNull(nbaGame.seriesKey),
+      ),
+    );
+
+  // Bucket points by day (YYYY-MM-DD) and manager.
+  const byDay = new Map<string, Map<string, number>>();
+  for (const s of statRows) {
+    const userId = playerToUser.get(s.playerId);
+    if (!userId) continue;
+    if (!s.gameDate) continue;
+    const day = new Date(s.gameDate).toISOString().slice(0, 10);
+    const dayMap = byDay.get(day) ?? new Map<string, number>();
+    dayMap.set(userId, (dayMap.get(userId) ?? 0) + (s.points ?? 0));
+    byDay.set(day, dayMap);
+  }
+
+  const managers = Array.from(managersById.values()).map((m) => ({
+    userId: m.userId,
+    name: m.name,
+  }));
+
+  // Build running totals: each timeline point is a day with cumulative totals per manager.
+  const sortedDays = Array.from(byDay.keys()).sort();
+  const cumulative = new Map<string, number>();
+  for (const mgr of managers) cumulative.set(mgr.userId, 0);
+  const points = sortedDays.map((day) => {
+    const dayMap = byDay.get(day)!;
+    for (const [userId, pts] of dayMap.entries()) {
+      cumulative.set(userId, (cumulative.get(userId) ?? 0) + pts);
+    }
+    const snapshot: Record<string, number> = {};
+    for (const [userId, total] of cumulative.entries()) {
+      snapshot[userId] = total;
+    }
+    return { date: day, totals: snapshot };
+  });
+
+  return c.json({ managers, points });
+});
+
 function computeMaxBid(
   remainingBudget: number,
   remainingRosterSlots: number,
