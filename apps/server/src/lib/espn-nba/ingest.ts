@@ -4,6 +4,7 @@ import {
   nbaAthlete,
   nbaGame,
   nbaPlay,
+  nbaPlayParticipant,
   nbaPlayerGameStats,
   nbaSyncState,
   nbaTeamGameStats,
@@ -55,6 +56,21 @@ async function upsertSyncState(patch: Partial<typeof nbaSyncState.$inferInsert>)
       target: nbaSyncState.id,
       set: { ...patch, updatedAt: new Date() },
     });
+}
+
+/** Returns true when the global sync-state row has paused=true. Cron handlers
+ *  should early-return while paused (used during schema migrations). */
+export async function isSyncPaused(): Promise<boolean> {
+  const row = await db
+    .select({ paused: nbaSyncState.paused, reason: nbaSyncState.pausedReason })
+    .from(nbaSyncState)
+    .where(eq(nbaSyncState.id, "global"))
+    .limit(1);
+  return row[0]?.paused === true;
+}
+
+export async function setSyncPaused(paused: boolean, reason?: string): Promise<void> {
+  await upsertSyncState({ paused, pausedReason: paused ? reason ?? null : null });
 }
 
 /** Sync the day's scoreboard into nba_game, setting seriesKey via bracket matcher. */
@@ -395,45 +411,98 @@ export async function syncGameDetail(eventId: string): Promise<void> {
   try {
     const pbp = await getGamePlayByPlay(eventId);
     for (const item of pbp.items ?? []) {
-      const seq = parseIntOr(item.sequenceNumber);
-      if (!seq) continue;
-      const teamAbbrev = item.team?.$ref?.match(/teams\/(\w+)/)?.[1] ?? null;
-      const playerIds: string[] = [];
+      if (!item.id) continue;
+      const playId = item.id;
+      const seq = parseIntOr(item.sequenceNumber) ?? null;
+      const teamId = item.team?.$ref?.match(/teams\/(\d+)/)?.[1] ?? null;
+      const teamAbbrevMatch = item.team?.$ref?.match(/teams\/(\w+)/)?.[1] ?? null;
+      // $ref can yield either numeric id or abbreviation depending on endpoint.
+      const teamAbbrev = teamAbbrevMatch && !/^\d+$/.test(teamAbbrevMatch)
+        ? teamAbbrevMatch
+        : null;
+      const participants: Array<{
+        athleteId: string;
+        positionId: string | null;
+        participantType: string | null;
+      }> = [];
       for (const p of item.participants ?? []) {
         const m = p.athlete?.$ref?.match(/athletes\/(\d+)/);
-        if (m) playerIds.push(m[1]);
+        if (m) {
+          participants.push({
+            athleteId: m[1],
+            positionId: null,
+            participantType: typeof p.type === "string" ? p.type : null,
+          });
+        }
       }
+      const playerIds = participants.map((p) => p.athleteId);
+      const wallclock =
+        item.wallclock && !Number.isNaN(Date.parse(item.wallclock))
+          ? new Date(item.wallclock)
+          : null;
+      const coordinateX =
+        typeof item.coordinate?.x === "number" ? item.coordinate.x : null;
+      const coordinateY =
+        typeof item.coordinate?.y === "number" ? item.coordinate.y : null;
+      const playFields = {
+        gameId: eventId,
+        sequenceNumber: seq,
+        typeId: item.type?.id ?? null,
+        typeText: item.type?.text ?? null,
+        text: item.text ?? item.shortText ?? null,
+        shortText: item.shortText ?? null,
+        alternativeText: null,
+        shortAlternativeText: null,
+        periodNumber: item.period?.number ?? null,
+        clockValue: typeof item.clock?.value === "number" ? item.clock.value : null,
+        clockDisplay: item.clock?.displayValue ?? null,
+        periodDisplayValue: null,
+        awayScore: item.awayScore ?? null,
+        homeScore: item.homeScore ?? null,
+        isScoringPlay: item.scoringPlay === true,
+        scoreValue: item.scoreValue ?? null,
+        shootingPlay: item.shootingPlay ?? null,
+        pointsAttempted: null,
+        teamId,
+        possessionTeamId: null,
+        coordinateX,
+        coordinateY,
+        homeWinProbability:
+          typeof item.homeWinPercentage === "number" ? item.homeWinPercentage : null,
+        tieProbability:
+          typeof item.tieWinPercentage === "number" ? item.tieWinPercentage : null,
+        wallclock,
+        valid: null,
+        priority: null,
+        modified: null,
+        teamAbbrev,
+        playerIds,
+        updatedAt: new Date(),
+      };
       await db
         .insert(nbaPlay)
-        .values({
-          gameId: eventId,
-          sequence: seq,
-          period: item.period?.number ?? null,
-          clock: item.clock?.displayValue ?? null,
-          scoringPlay: item.scoringPlay === true,
-          scoreValue: item.scoreValue ?? null,
-          text: item.text ?? item.shortText ?? null,
-          homeScore: item.homeScore ?? null,
-          awayScore: item.awayScore ?? null,
-          teamAbbrev,
-          playerIds,
-          updatedAt: new Date(),
-        })
+        .values({ id: playId, ...playFields })
         .onConflictDoUpdate({
-          target: [nbaPlay.gameId, nbaPlay.sequence],
-          set: {
-            period: item.period?.number ?? null,
-            clock: item.clock?.displayValue ?? null,
-            scoringPlay: item.scoringPlay === true,
-            scoreValue: item.scoreValue ?? null,
-            text: item.text ?? item.shortText ?? null,
-            homeScore: item.homeScore ?? null,
-            awayScore: item.awayScore ?? null,
-            teamAbbrev,
-            playerIds,
-            updatedAt: new Date(),
-          },
+          target: nbaPlay.id,
+          set: playFields,
         });
+
+      // Replace participants for this play (ESPN can reorder/adjust).
+      await db
+        .delete(nbaPlayParticipant)
+        .where(eq(nbaPlayParticipant.playId, playId));
+      if (participants.length > 0) {
+        await db.insert(nbaPlayParticipant).values(
+          participants.map((p, i) => ({
+            playId,
+            athleteId: p.athleteId,
+            positionId: p.positionId,
+            participantOrder: i,
+            participantType: p.participantType,
+            updatedAt: new Date(),
+          })),
+        );
+      }
     }
   } catch (err) {
     console.warn("[espn-nba] PBP fetch failed for", eventId, (err as Error).message);

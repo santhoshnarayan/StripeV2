@@ -89,7 +89,7 @@ async function loadGames(): Promise<GameMeta[]> {
   const lastSeqRows = await db
     .select({
       gameId: nbaPlay.gameId,
-      lastSeq: sql<number>`max(${nbaPlay.sequence})`,
+      lastSeq: sql<number>`max(${nbaPlay.sequenceNumber})`,
     })
     .from(nbaPlay)
     .where(
@@ -120,14 +120,15 @@ async function loadPlays(gameIds: string[]): Promise<PlayEvent[]> {
     .select()
     .from(nbaPlay)
     .where(inArray(nbaPlay.gameId, gameIds))
-    .orderBy(asc(nbaPlay.updatedAt), asc(nbaPlay.gameId), asc(nbaPlay.sequence));
+    .orderBy(asc(nbaPlay.updatedAt), asc(nbaPlay.gameId), asc(nbaPlay.sequenceNumber));
   return rows.map((r) => ({
     gameId: r.gameId,
-    sequence: r.sequence,
-    period: r.period,
-    clock: r.clock,
+    sequence: r.sequenceNumber ?? 0,
+    period: r.periodNumber,
+    clock: r.clockDisplay,
     updatedAt: r.updatedAt,
-    scoringPlay: r.scoringPlay,
+    wallclock: r.wallclock,
+    scoringPlay: r.isScoringPlay === true,
     scoreValue: r.scoreValue,
     homeScore: r.homeScore,
     awayScore: r.awayScore,
@@ -315,20 +316,83 @@ async function runProjectionRebuild(
   const { rosters } = await loadRosters(params.leagueId);
 
   const mode = params.mode ?? "incremental";
-  if (mode === "full") {
-    await db
-      .delete(nbaEventProjection)
-      .where(eq(nbaEventProjection.leagueId, params.leagueId));
-  }
-  const existingKeys =
-    mode === "incremental"
-      ? await loadExistingProjectionKeys(params.leagueId)
-      : new Set<string>();
 
   await db
     .update(nbaProjectionJob)
     .set({ totalEvents: snapshots.length, updatedAt: new Date() })
     .where(eq(nbaProjectionJob.id, jobId));
+
+  if (mode === "full") {
+    // Atomic replace: compute every projection row first (slow Monte Carlo
+    // work happens outside of any transaction), then DELETE + bulk INSERT
+    // inside a single transaction. Readers see either the full old table
+    // or the full new table — never a half-rebuilt chart.
+    const computed: Array<Awaited<ReturnType<typeof buildSnapshotRow>>> = [];
+    let processed = 0;
+    for (const snap of snapshots) {
+      computed.push(await buildSnapshotRow(params.leagueId, snap, rosters, baseSimData));
+      processed++;
+      if (processed % 10 === 0) {
+        await db
+          .update(nbaProjectionJob)
+          .set({ processedEvents: processed, updatedAt: new Date() })
+          .where(eq(nbaProjectionJob.id, jobId));
+      }
+    }
+
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(nbaEventProjection)
+        .where(eq(nbaEventProjection.leagueId, params.leagueId));
+      for (let i = 0; i < computed.length; i += 100) {
+        const batch = computed.slice(i, i + 100);
+        if (batch.length > 0) await tx.insert(nbaEventProjection).values(batch);
+      }
+    });
+
+    await db
+      .update(nbaProjectionJob)
+      .set({
+        processedEvents: processed,
+        status: "completed",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(nbaProjectionJob.id, jobId));
+    return;
+  }
+
+  // Incremental: only compute + upsert rows we don't already have, and delete
+  // any stale rows whose (gameId, sequence) is no longer in the current
+  // snapshot set (e.g., plays corrected/removed upstream).
+  const existingKeys = await loadExistingProjectionKeys(params.leagueId);
+  const currentKeys = new Set(
+    snapshots.map((s) => `${s.event.gameId}|${s.event.sequence}`),
+  );
+  const staleKeys = [...existingKeys].filter((k) => !currentKeys.has(k));
+  if (staleKeys.length > 0) {
+    const tuples = staleKeys.map((k) => {
+      const [gameId, seqStr] = k.split("|");
+      return { gameId, sequence: Number(seqStr) };
+    });
+    const byGame = new Map<string, number[]>();
+    for (const t of tuples) {
+      const arr = byGame.get(t.gameId) ?? [];
+      arr.push(t.sequence);
+      byGame.set(t.gameId, arr);
+    }
+    for (const [gameId, seqs] of byGame.entries()) {
+      await db
+        .delete(nbaEventProjection)
+        .where(
+          and(
+            eq(nbaEventProjection.leagueId, params.leagueId),
+            eq(nbaEventProjection.gameId, gameId),
+            inArray(nbaEventProjection.sequence, seqs),
+          ),
+        );
+    }
+  }
 
   let processed = 0;
   for (const snap of snapshots) {
@@ -358,38 +422,52 @@ async function runProjectionRebuild(
     .where(eq(nbaProjectionJob.id, jobId));
 }
 
+function snapshotEventMeta(snap: EventSnapshot) {
+  return {
+    text: snap.event.text,
+    teamAbbrev: snap.event.teamAbbrev,
+    playerIds: snap.event.playerIds,
+    scoreValue: snap.event.scoreValue,
+    period: snap.event.period,
+    clock: snap.event.clock,
+    homeScore: snap.event.homeScore,
+    awayScore: snap.event.awayScore,
+    wallclock: snap.event.wallclock ? snap.event.wallclock.toISOString() : null,
+  };
+}
+
+async function buildSnapshotRow(
+  leagueId: string,
+  snap: EventSnapshot,
+  rosters: RosterInput[],
+  baseSimData: StaticSimData,
+) {
+  const actualPoints = rosterActualPoints(rosters, snap.cumulativePointsByPlayer);
+  const projectedPoints = await runSnapshotSim(baseSimData, snap.liveGames, rosters);
+  return {
+    leagueId,
+    gameId: snap.event.gameId,
+    sequence: snap.event.sequence,
+    updatedAtEvent: snap.event.updatedAt,
+    kind: snap.event.kind,
+    actualPoints,
+    projectedPoints,
+    eventMeta: snapshotEventMeta(snap),
+    gamesSnapshot: snap.liveGames,
+    simCount: SIM_COUNT_PER_EVENT,
+  };
+}
+
 async function processSnapshot(
   leagueId: string,
   snap: EventSnapshot,
   rosters: RosterInput[],
   baseSimData: StaticSimData,
 ): Promise<void> {
-  const actualPoints = rosterActualPoints(rosters, snap.cumulativePointsByPlayer);
-  const projectedPoints = await runSnapshotSim(baseSimData, snap.liveGames, rosters);
-
+  const row = await buildSnapshotRow(leagueId, snap, rosters, baseSimData);
   await db
     .insert(nbaEventProjection)
-    .values({
-      leagueId,
-      gameId: snap.event.gameId,
-      sequence: snap.event.sequence,
-      updatedAtEvent: snap.event.updatedAt,
-      kind: snap.event.kind,
-      actualPoints,
-      projectedPoints,
-      eventMeta: {
-        text: snap.event.text,
-        teamAbbrev: snap.event.teamAbbrev,
-        playerIds: snap.event.playerIds,
-        scoreValue: snap.event.scoreValue,
-        period: snap.event.period,
-        clock: snap.event.clock,
-        homeScore: snap.event.homeScore,
-        awayScore: snap.event.awayScore,
-      },
-      gamesSnapshot: snap.liveGames,
-      simCount: SIM_COUNT_PER_EVENT,
-    })
+    .values(row)
     .onConflictDoUpdate({
       target: [
         nbaEventProjection.leagueId,
@@ -397,22 +475,13 @@ async function processSnapshot(
         nbaEventProjection.sequence,
       ],
       set: {
-        updatedAtEvent: snap.event.updatedAt,
-        kind: snap.event.kind,
-        actualPoints,
-        projectedPoints,
-        eventMeta: {
-          text: snap.event.text,
-          teamAbbrev: snap.event.teamAbbrev,
-          playerIds: snap.event.playerIds,
-          scoreValue: snap.event.scoreValue,
-          period: snap.event.period,
-          clock: snap.event.clock,
-          homeScore: snap.event.homeScore,
-          awayScore: snap.event.awayScore,
-        },
-        gamesSnapshot: snap.liveGames,
-        simCount: SIM_COUNT_PER_EVENT,
+        updatedAtEvent: row.updatedAtEvent,
+        kind: row.kind,
+        actualPoints: row.actualPoints,
+        projectedPoints: row.projectedPoints,
+        eventMeta: row.eventMeta,
+        gamesSnapshot: row.gamesSnapshot,
+        simCount: row.simCount,
         computedAt: new Date(),
       },
     });

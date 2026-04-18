@@ -418,26 +418,89 @@ export const nbaTeamGameStats = pgTable(
   }),
 );
 
+// ─── Plays ──────────────────────────────────────────────────────────
+// Shape mirrors the ESPN SDK schema in explore/.../nba/db/schema/plays.ts —
+// PK is ESPN's stable play `id` (not a composite of gameId+sequence), and
+// column naming (periodNumber, clockDisplay, isScoringPlay, teamId,
+// possessionTeamId, etc.) matches ESPN's payload field names so readers can
+// map 1:1 without renaming.
+
 export const nbaPlay = pgTable(
   "nba_play",
   {
+    id: text("id").primaryKey(),
     gameId: text("game_id")
       .notNull()
       .references(() => nbaGame.id, { onDelete: "cascade" }),
-    sequence: integer("sequence").notNull(),
-    period: integer("period"),
-    clock: text("clock"),
-    scoringPlay: boolean("scoring_play").notNull().default(false),
-    scoreValue: integer("score_value"),
+    sequenceNumber: integer("sequence_number"),
+    typeId: text("type_id"),
+    typeText: text("type_text"),
     text: text("text"),
-    homeScore: integer("home_score"),
+    shortText: text("short_text"),
+    alternativeText: text("alternative_text"),
+    shortAlternativeText: text("short_alternative_text"),
+    periodNumber: integer("period_number"),
+    /** ESPN: clock.value (seconds remaining in the period). */
+    clockValue: doublePrecision("clock_value"),
+    /** ESPN: clock.displayValue. */
+    clockDisplay: text("clock_display"),
+    periodDisplayValue: text("period_display_value"),
     awayScore: integer("away_score"),
+    homeScore: integer("home_score"),
+    isScoringPlay: boolean("is_scoring_play"),
+    scoreValue: integer("score_value"),
+    shootingPlay: boolean("shooting_play"),
+    pointsAttempted: integer("points_attempted"),
+    teamId: text("team_id"),
+    possessionTeamId: text("possession_team_id"),
+    coordinateX: integer("coordinate_x"),
+    coordinateY: integer("coordinate_y"),
+    homeWinProbability: doublePrecision("home_win_probability"),
+    tieProbability: doublePrecision("tie_probability"),
+    /** ESPN's wall-clock timestamp of when the play occurred. */
+    wallclock: timestamp("wallclock"),
+    valid: boolean("valid"),
+    priority: boolean("priority"),
+    modified: text("modified"),
+    /** Denormalized team abbrev derived from teamId at ingest time — read path
+     *  (chart, ticker) keys off this so we don't re-join on every render. */
     teamAbbrev: text("team_abbrev"),
+    /** Denormalized athlete ids for this play, in participant order. Canonical
+     *  source is `nba_play_participant`; this mirror lets snapshot builders
+     *  avoid a per-play join. */
     playerIds: jsonb("player_ids"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.gameId, table.sequence] }),
+    gameSeqIdx: index("nba_play_game_seq_idx").on(table.gameId, table.sequenceNumber),
+    gameWallclockIdx: index("nba_play_game_wallclock_idx").on(
+      table.gameId,
+      table.wallclock,
+    ),
+    scoringIdx: index("nba_play_scoring_idx").on(table.gameId, table.isScoringPlay),
+  }),
+);
+
+export const nbaPlayParticipant = pgTable(
+  "nba_play_participant",
+  {
+    playId: text("play_id")
+      .notNull()
+      .references(() => nbaPlay.id, { onDelete: "cascade" }),
+    athleteId: text("athlete_id").notNull(),
+    positionId: text("position_id"),
+    participantOrder: integer("participant_order").notNull(),
+    /** e.g. "shooter", "rebounder", "fouler". */
+    participantType: text("participant_type"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.playId, table.athleteId, table.participantOrder],
+    }),
+    athleteIdx: index("nba_play_participant_athlete_idx").on(table.athleteId),
   }),
 );
 
@@ -463,6 +526,10 @@ export const nbaSyncState = pgTable("nba_sync_state", {
   lastScoreboardAt: timestamp("last_scoreboard_at"),
   lastLiveCheckAt: timestamp("last_live_check_at"),
   lastError: text("last_error"),
+  /** When true, cron ingest jobs early-return. Used by migration scripts to
+   *  quiesce syncs, do heavy schema work, backfill, then resume. */
+  paused: boolean("paused").notNull().default(false),
+  pausedReason: text("paused_reason"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

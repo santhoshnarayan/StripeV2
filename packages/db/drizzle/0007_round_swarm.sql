@@ -1,0 +1,1 @@
+ALTER TABLE "nba_play" ADD COLUMN "espn_play_id" text;

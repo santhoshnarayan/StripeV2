@@ -64,23 +64,46 @@ export function SimulatorLeaderboard({
     return m;
   })();
 
-  const sortRows = (rows: TeamExposureRow[]): TeamExposureRow[] => {
-    return rows.slice().sort((a, b) => {
-      const ao = teamOrder.get(a.team);
-      const bo = teamOrder.get(b.team);
-      if (!ao && !bo) return a.team.localeCompare(b.team);
-      if (!ao) return 1;
-      if (!bo) return -1;
-      if (ao.conf !== bo.conf) return ao.conf === "east" ? -1 : 1;
-      return ao.seed - bo.seed;
-    });
+  // Build the full playoff team list in display order: East 1→8, then West 1→8.
+  // We show ALL teams per manager — teams with zero rostered players display a
+  // dash for the round cells. This keeps every manager's card aligned so you
+  // can scan conference-by-conference without teams disappearing.
+  const allTeamsInOrder: Array<{ team: string; conf: "east" | "west"; seed: number }> = (() => {
+    if (!simData) return [];
+    const out: Array<{ team: string; conf: "east" | "west"; seed: number }> = [];
+    for (const [seed, team] of simData.bracket.eastSeeds) out.push({ team, conf: "east", seed });
+    for (const [seed, team] of simData.bracket.westSeeds) out.push({ team, conf: "west", seed });
+    return out;
+  })();
+
+  const fillRows = (rows: TeamExposureRow[]): TeamExposureRow[] => {
+    // Index existing rows by team abbrev (plus aliased form) so exposure rows
+    // land on the right seeded slot regardless of which abbrev the sim emits.
+    const aliases = simData?.bracket.teamAliases ?? {};
+    const byTeam = new Map<string, TeamExposureRow>();
+    for (const r of rows) {
+      byTeam.set(r.team, r);
+      const aliased = aliases[r.team];
+      if (aliased) byTeam.set(aliased, r);
+    }
+    return allTeamsInOrder.map(
+      ({ team }) =>
+        byTeam.get(team) ?? {
+          team,
+          playerCount: 0,
+          playerNames: [],
+          winByRound: [null, null, null, null, null],
+          baseWin: 0,
+          teamReachPct: [],
+        },
+    );
   };
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
       {sorted.map((mp, idx) => {
         const roster = rosters.find((r) => r.userId === mp.userId);
-        const rows = sortRows(exposure?.rowsByManager.get(mp.userId) ?? []);
+        const rows = fillRows(exposure?.rowsByManager.get(mp.userId) ?? []);
         const isViewer = mp.userId === viewerUserId;
         const gradient = GRADIENT_PALETTE[idx % GRADIENT_PALETTE.length];
         return (

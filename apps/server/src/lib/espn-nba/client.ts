@@ -173,15 +173,22 @@ export interface PlayItem {
   id: string;
   sequenceNumber: string;
   period?: { number?: number };
-  clock?: { displayValue?: string };
+  clock?: { displayValue?: string; value?: number };
   scoringPlay?: boolean;
+  shootingPlay?: boolean;
   scoreValue?: number;
+  type?: { id?: string; text?: string };
   text?: string;
   shortText?: string;
   homeScore?: number;
   awayScore?: number;
   team?: EspnRef;
   participants?: { athlete?: EspnRef; type?: string }[];
+  coordinate?: { x?: number; y?: number };
+  homeWinPercentage?: number;
+  tieWinPercentage?: number;
+  /** ISO-8601 server-side timestamp of when the play occurred. */
+  wallclock?: string;
 }
 
 export interface WinProbItem {

@@ -9,6 +9,9 @@ export interface PlayEvent {
   period: number | null;
   clock: string | null;
   updatedAt: Date;
+  /** ESPN-provided wall-clock time of the play. null for older rows
+   *  ingested before the wallclock column existed. */
+  wallclock: Date | null;
   scoringPlay: boolean;
   scoreValue: number | null;
   homeScore: number | null;
@@ -39,7 +42,10 @@ export interface EventDescriptor {
   kind: EventKind;
   gameId: string;
   sequence: number;
+  /** DB ingest/write time (cron batch). Kept for backfill/debug. */
   updatedAt: Date;
+  /** True play time from ESPN. Prefer this for chart x-axis. */
+  wallclock: Date | null;
   text: string | null;
   teamAbbrev: string | null;
   playerIds: string[];
@@ -174,6 +180,7 @@ export function buildEventSnapshots(params: {
         gameId: play.gameId,
         sequence: play.sequence,
         updatedAt: play.updatedAt,
+        wallclock: play.wallclock,
         text: play.text,
         teamAbbrev: play.teamAbbrev,
         playerIds: play.playerIds,

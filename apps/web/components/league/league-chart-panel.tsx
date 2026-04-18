@@ -82,6 +82,7 @@ type ProjectionEvent = {
     clock: string | null;
     homeScore: number | null;
     awayScore: number | null;
+    wallclock: string | null;
   };
   gamesSnapshot: Array<{
     seriesKey: string;
@@ -506,13 +507,16 @@ export function LeagueChartPanel({
             else if (mode === "proj") values[uid] = ev.projectedPoints[uid]?.mean ?? 0;
             else values[uid] = (ev.projectedPoints[uid]?.winProb ?? 0) * 100;
           }
-          const playT = synthPlayTime(
-            gameStartTimeById.get(ev.gameId),
-            ev.eventMeta.period,
-            ev.eventMeta.clock,
-          );
+          const wallclockT = ev.eventMeta.wallclock;
+          const synthT =
+            wallclockT ??
+            synthPlayTime(
+              gameStartTimeById.get(ev.gameId),
+              ev.eventMeta.period,
+              ev.eventMeta.clock,
+            );
           return {
-            t: playT ?? ev.updatedAtEvent,
+            t: synthT ?? ev.updatedAtEvent,
             values,
             gameId: ev.gameId,
             eventKey: `${ev.gameId}|${ev.sequence}`,

@@ -377,11 +377,32 @@ appRouter.get("/nba/games/:eventId", async (c) => {
 
 appRouter.get("/nba/games/:eventId/pbp", async (c) => {
   const eventId = c.req.param("eventId");
-  const plays = await db
+  const rows = await db
     .select()
     .from(nbaPlay)
     .where(eq(nbaPlay.gameId, eventId))
-    .orderBy(asc(nbaPlay.sequence));
+    .orderBy(asc(nbaPlay.sequenceNumber));
+  // Map DB schema (matches ESPN SDK shape) onto the API response the frontend
+  // game-detail view consumes. Keeps FE decoupled from DB column renames.
+  const plays = rows.map((r) => ({
+    id: r.id,
+    gameId: r.gameId,
+    sequence: r.sequenceNumber,
+    period: r.periodNumber,
+    clock: r.clockDisplay,
+    scoringPlay: r.isScoringPlay === true,
+    scoreValue: r.scoreValue,
+    text: r.text,
+    shortText: r.shortText,
+    typeText: r.typeText,
+    homeScore: r.homeScore,
+    awayScore: r.awayScore,
+    teamAbbrev: r.teamAbbrev,
+    playerIds: r.playerIds,
+    coordinateX: r.coordinateX,
+    coordinateY: r.coordinateY,
+    wallclock: r.wallclock,
+  }));
   return c.json({ plays });
 });
 
@@ -715,9 +736,9 @@ appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
   const plays = await db
     .select({
       gameId: nbaPlay.gameId,
-      sequence: nbaPlay.sequence,
-      period: nbaPlay.period,
-      clock: nbaPlay.clock,
+      sequence: nbaPlay.sequenceNumber,
+      period: nbaPlay.periodNumber,
+      clock: nbaPlay.clockDisplay,
       scoreValue: nbaPlay.scoreValue,
       playerIds: nbaPlay.playerIds,
       text: nbaPlay.text,
@@ -725,8 +746,8 @@ appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
       awayScore: nbaPlay.awayScore,
     })
     .from(nbaPlay)
-    .where(and(inArray(nbaPlay.gameId, gameIds), eq(nbaPlay.scoringPlay, true)))
-    .orderBy(asc(nbaPlay.gameId), asc(nbaPlay.sequence));
+    .where(and(inArray(nbaPlay.gameId, gameIds), eq(nbaPlay.isScoringPlay, true)))
+    .orderBy(asc(nbaPlay.gameId), asc(nbaPlay.sequenceNumber));
 
   type Checkpoint = {
     t: string;
