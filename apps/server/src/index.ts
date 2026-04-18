@@ -6,7 +6,6 @@ import { createYoga } from "graphql-yoga";
 import { schema } from "./graphql/schema.js";
 import { auth } from "./auth.js";
 import { appRouter } from "./routes/app.js";
-import { adminRouter } from "./routes/admin.js";
 import { startCronJobs } from "./cron/index.js";
 import { startWorker } from "./tasks/queue.js";
 import { recoverAuctions } from "./lib/auction-queue.js";
@@ -85,10 +84,6 @@ app.all("/api/auth/*", (c) => {
 
 // App API
 app.route("/api/app", appRouter);
-
-// Admin API (DB inspection + Railway log proxy). Gated by better-auth session
-// and a hard-coded admin email allowlist inside the router.
-app.route("/api/admin", adminRouter);
 
 // GraphQL Yoga
 const yoga = createYoga({ schema });
