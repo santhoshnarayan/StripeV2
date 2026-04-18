@@ -985,3 +985,132 @@ export function computeEquilibriumBids(
     iterations,
   };
 }
+
+// ─── Team exposure matrix ──────────────────────────────────────────
+// For each manager, for each team they have exposure to (via any rostered
+// player on that team), compute the manager's championship win probability
+// conditional on that team reaching at least round R. Round levels:
+//   1 = reached R1 (in the playoffs)
+//   2 = won R1 (reached R2)
+//   3 = won R2 (reached Conf Finals)
+//   4 = won CF (reached NBA Finals)
+//   5 = NBA Champion
+
+export interface TeamExposureRow {
+  team: string;
+  /** Number of rostered players this manager has on this team. */
+  playerCount: number;
+  /** Names of rostered players on this team (max 5 shown). */
+  playerNames: string[];
+  /**
+   * winByRound[r-1] = P(manager wins championship | team reaches round >= r).
+   * null if the conditional sample is too small (< 1% of sims).
+   */
+  winByRound: (number | null)[];
+  /** Baseline championship win prob for this manager (unconditional). */
+  baseWin: number;
+  /** Fraction of sims this team reached each round (>= r). Length 5. */
+  teamReachPct: number[];
+}
+
+export interface TeamExposureResult {
+  /** Indexed by manager userId. */
+  rowsByManager: Map<string, TeamExposureRow[]>;
+}
+
+export function computeTeamExposureMatrix(
+  simResults: SimResults,
+  rosters: RosterInput[],
+  playerTeamByEspnId: Map<string, string>,
+  playerNameByEspnId: Map<string, string>,
+): TeamExposureResult {
+  const { simMatrix, playerIndex, numSims, teamRoundReached } = simResults;
+  const numPlayers = playerIndex.size;
+
+  // Per-manager per-sim totals + winner per sim.
+  const managerTotals = rosters.map((r) =>
+    rosterSimTotals(simMatrix, playerIndex, r.playerIds, numSims, numPlayers),
+  );
+  const winners = new Uint32Array(numSims);
+  for (let s = 0; s < numSims; s++) {
+    let bestIdx = 0;
+    let bestTotal = managerTotals[0][s];
+    for (let m = 1; m < rosters.length; m++) {
+      if (managerTotals[m][s] > bestTotal) {
+        bestIdx = m;
+        bestTotal = managerTotals[m][s];
+      }
+    }
+    winners[s] = bestIdx;
+  }
+  const winCounts = new Uint32Array(rosters.length);
+  for (let s = 0; s < numSims; s++) winCounts[winners[s]]++;
+
+  const rowsByManager = new Map<string, TeamExposureRow[]>();
+  const minSampleFrac = 0.01;
+  const minSample = Math.max(1, Math.floor(numSims * minSampleFrac));
+
+  for (let m = 0; m < rosters.length; m++) {
+    const roster = rosters[m];
+    const baseWin = winCounts[m] / numSims;
+
+    // Group rostered players by team.
+    const teamsForManager = new Map<string, string[]>();
+    for (const pid of roster.playerIds) {
+      const team = playerTeamByEspnId.get(pid);
+      if (!team) continue;
+      const list = teamsForManager.get(team) ?? [];
+      const pname = playerNameByEspnId.get(pid);
+      if (pname) list.push(pname);
+      teamsForManager.set(team, list);
+    }
+
+    const rows: TeamExposureRow[] = [];
+    for (const [team, playerNames] of teamsForManager) {
+      const reached = teamRoundReached[team];
+      if (!reached) continue;
+
+      const winByRound: (number | null)[] = [];
+      const teamReachPct: number[] = [];
+      for (let r = 1; r <= 5; r++) {
+        let conditioned = 0;
+        let winsConditioned = 0;
+        for (let s = 0; s < numSims; s++) {
+          if (reached[s] >= r) {
+            conditioned++;
+            if (winners[s] === m) winsConditioned++;
+          }
+        }
+        teamReachPct.push(conditioned / numSims);
+        winByRound.push(conditioned >= minSample ? winsConditioned / conditioned : null);
+      }
+
+      rows.push({
+        team,
+        playerCount: playerNames.length,
+        playerNames: playerNames.slice(0, 5),
+        winByRound,
+        baseWin,
+        teamReachPct,
+      });
+    }
+
+    // Sort by largest lift at any round vs baseline (descending).
+    rows.sort((a, b) => {
+      const aLift = Math.max(
+        ...a.winByRound.filter((v): v is number => v != null).map((v) => v - a.baseWin),
+        -Infinity,
+      );
+      const bLift = Math.max(
+        ...b.winByRound.filter((v): v is number => v != null).map((v) => v - b.baseWin),
+        -Infinity,
+      );
+      if (bLift !== aLift) return bLift - aLift;
+      return b.playerCount - a.playerCount;
+    });
+
+    rowsByManager.set(roster.userId, rows);
+  }
+
+  return { rowsByManager };
+}

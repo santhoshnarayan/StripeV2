@@ -138,6 +138,15 @@ export interface SimResults {
   /** Map from espnId → column index in simMatrix. */
   playerIndex: Map<string, number>;
   numSims: number;
+  /** Per-sim max round a team reached. Values:
+   *    0 = eliminated in play-in / not in playoffs
+   *    1 = reached R1 (lost R1)
+   *    2 = won R1, reached R2
+   *    3 = won R2, reached Conference Finals
+   *    4 = won CF, reached NBA Finals
+   *    5 = NBA Champion
+   */
+  teamRoundReached: Record<string, Uint8Array>;
 }
 
 // ─── Draft optimizer types ─────────────────────────────────────────

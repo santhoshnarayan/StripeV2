@@ -31,12 +31,14 @@ import {
   computeManagerProjectionsWithDraftSim,
   computeMarginalValuesWithDraftSim,
   computeEquilibriumBids,
+  computeTeamExposureMatrix,
   type RosterInput,
   type ManagerBudgetInfo,
   type EquilibriumResult,
+  type TeamExposureRow,
 } from "@/lib/sim/draft";
 
-type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor";
+type SimSubTab = "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor" | "exposure";
 
 export interface LeagueRosterData {
   rosters: Array<{
@@ -75,6 +77,94 @@ interface SimulatorTabProps {
   leagueId: string;
   leagueName: string;
   leagueData?: LeagueRosterData;
+}
+
+const EXPOSURE_ROUND_LABELS = ["R1", "R2", "CF", "Finals", "Champ"] as const;
+
+function exposureCellClasses(value: number | null, base: number): string {
+  if (value == null) return "bg-muted/30 text-muted-foreground/50";
+  const delta = value - base;
+  const pct = Math.abs(delta);
+  if (pct < 0.005) return "bg-muted/30 text-foreground";
+  if (delta > 0) {
+    if (pct >= 0.1) return "bg-emerald-500/40 text-emerald-50 dark:text-emerald-50";
+    if (pct >= 0.05) return "bg-emerald-500/25 text-foreground";
+    return "bg-emerald-500/10 text-foreground";
+  }
+  if (pct >= 0.1) return "bg-red-500/40 text-red-50 dark:text-red-50";
+  if (pct >= 0.05) return "bg-red-500/25 text-foreground";
+  return "bg-red-500/10 text-foreground";
+}
+
+function ExposureManagerCard({
+  managerName,
+  baseWin,
+  rows,
+  isViewer,
+}: {
+  managerName: string;
+  baseWin: number;
+  rows: TeamExposureRow[];
+  isViewer: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-xl border px-4 py-3 ${isViewer ? "border-amber-400/50 bg-amber-50/30 dark:bg-amber-900/10" : "border-border/80"}`}
+    >
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <p className="font-medium text-foreground text-sm">
+            {managerName}{isViewer ? " (you)" : ""}
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            Baseline win: {(baseWin * 100).toFixed(1)}% · {rows.length} team{rows.length === 1 ? "" : "s"}
+          </p>
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted-foreground py-2">No rostered players on playoff teams.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <thead className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              <tr>
+                <th className="px-2 py-1 text-left font-medium">Team</th>
+                {EXPOSURE_ROUND_LABELS.map((r) => (
+                  <th key={r} className="px-1 py-1 text-center font-medium">{r}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.team} className="border-t border-border/40">
+                  <td className="px-2 py-1 font-medium text-foreground">
+                    <div className="flex items-center gap-1.5">
+                      <TeamLogo team={row.team} size={16} />
+                      <span className="truncate" title={row.playerNames.join(", ")}>{row.team}</span>
+                      <span className="text-[10px] text-muted-foreground">×{row.playerCount}</span>
+                    </div>
+                  </td>
+                  {row.winByRound.map((v, i) => (
+                    <td
+                      key={i}
+                      className={`px-1 py-1 text-center tabular-nums rounded ${exposureCellClasses(v, row.baseWin)}`}
+                      title={
+                        v == null
+                          ? "Too few sims reach this round"
+                          : `Reach ${(row.teamReachPct[i] * 100).toFixed(0)}% · Win given reach ${(v * 100).toFixed(1)}% (Δ ${((v - row.baseWin) * 100).toFixed(1)}pp)`
+                      }
+                    >
+                      {v == null ? "–" : `${(v * 100).toFixed(0)}`}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabProps) {
@@ -258,6 +348,18 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     return computeManagerProjections(simResults, rosterInputs);
   }, [simResults, rosterInputs, leagueData]);
 
+  // Team-exposure matrix: P(manager wins | a given real team reaches round R).
+  const exposureResult = useMemo(() => {
+    if (!simResults || !rosterInputs.length || !simData) return null;
+    const teamByEspn = new Map<string, string>();
+    const nameByEspn = new Map<string, string>();
+    for (const sp of simData.simPlayers) {
+      teamByEspn.set(sp.espn_id, sp.team);
+      nameByEspn.set(sp.espn_id, sp.name);
+    }
+    return computeTeamExposureMatrix(simResults, rosterInputs, teamByEspn, nameByEspn);
+  }, [simResults, rosterInputs, simData]);
+
   // Marginal values (bid advisor)
   // Advisor is computed lazily — only when the user opens the tab
   const [marginalValues, setMarginalValues] = useState<MarginalValue[] | null>(null);
@@ -341,6 +443,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     { id: "bracket", label: "Bracket" },
     ...(leagueData ? [
       { id: "roster" as SimSubTab, label: "Roster" },
+      { id: "exposure" as SimSubTab, label: "Exposure" },
       { id: "advisor" as SimSubTab, label: "Advisor" },
     ] : []),
     { id: "adjustments", label: "Adjustments" },
@@ -823,6 +926,42 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
       ) : subTab === "roster" && !simResults ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
           {simulating ? `Running simulation... ${Math.round(progress * 100)}%` : "Run a simulation to see roster analysis."}
+        </div>
+      ) : null}
+
+      {/* Team Exposure */}
+      {subTab === "exposure" && exposureResult && managerProjections && leagueData ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Team Exposure</CardTitle>
+            <CardDescription>
+              For each manager, how their championship odds shift conditional on a real NBA team advancing.
+              Green = boost, red = drag vs. their baseline. Rows sorted by biggest lift.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 lg:grid-cols-2">
+              {[...managerProjections]
+                .sort((a, b) => b.winProbability - a.winProbability)
+                .map((mp) => {
+                  const rows = exposureResult.rowsByManager.get(mp.userId) ?? [];
+                  const isViewer = mp.userId === leagueData.viewerUserId;
+                  return (
+                    <ExposureManagerCard
+                      key={mp.userId}
+                      managerName={mp.name}
+                      baseWin={mp.winProbability}
+                      rows={rows}
+                      isViewer={isViewer}
+                    />
+                  );
+                })}
+            </div>
+          </CardContent>
+        </Card>
+      ) : subTab === "exposure" && !simResults ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          {simulating ? `Running simulation... ${Math.round(progress * 100)}%` : "Run a simulation to see team exposure."}
         </div>
       ) : null}
 

@@ -499,6 +499,18 @@ export async function runTournamentSim(
   const totalPlayerPoints = new Map<string, number[]>();
   // Track how many sims each team made the main bracket (for conditioning)
   const teamPlayoffSims: Record<string, number> = {};
+  // Per-sim per-team max round reached (0=not in playoffs, 1=lost R1, 2=lost R2,
+  // 3=lost CF, 4=lost Finals, 5=champ). Allocated lazily per-team to save memory
+  // for teams that never appear in the bracket.
+  const teamRoundReached: Record<string, Uint8Array> = {};
+  const markReached = (team: string, level: number, sim: number) => {
+    let arr = teamRoundReached[team];
+    if (!arr) {
+      arr = new Uint8Array(config.sims);
+      teamRoundReached[team] = arr;
+    }
+    if (arr[sim] < level) arr[sim] = level;
+  };
 
   const allSeeds = [...bracket.eastSeeds, ...bracket.westSeeds];
   const allPlayin = [...(bracket.eastPlayin ?? []), ...(bracket.westPlayin ?? [])];
@@ -532,6 +544,12 @@ export async function runTournamentSim(
       teamPlayoffSims[t] = (teamPlayoffSims[t] ?? 0) + 1;
     }
 
+    // Mark every team that entered the main bracket as "reached R1" (level 1).
+    for (const [seed, team] of allSeeds) {
+      if (seed <= 6) markReached(team, 1, sim);
+    }
+    for (const t of [east7, east8, west7, west8]) markReached(t, 1, sim);
+
     // R1 matchups (seeds → seriesKey)
     const eastR1: Array<{ pair: [string, string]; key: string }> = [
       { pair: [bracket.eastSeeds[0][1], east8], key: "r1.east.1v8" },
@@ -551,12 +569,14 @@ export async function runTournamentSim(
     for (const { pair: [h, l], key } of eastR1) {
       const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2, key);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
+      markReached(winner, 2, sim);
       e1w.push(winner);
     }
     const w1w: string[] = [];
     for (const { pair: [h, l], key } of westR1) {
       const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2, key);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
+      markReached(winner, 2, sim);
       w1w.push(winner);
     }
 
@@ -575,12 +595,14 @@ export async function runTournamentSim(
     for (const { pair: [h, l], key } of eastR2) {
       const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9, key);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
+      markReached(winner, 3, sim);
       e2w.push(winner);
     }
     const w2w: string[] = [];
     for (const { pair: [h, l], key } of westR2) {
       const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9, key);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
+      markReached(winner, 3, sim);
       w2w.push(winner);
     }
 
@@ -588,16 +610,19 @@ export async function runTournamentSim(
     const [ecfH, ecfL] = orderMatchup(e2w[0], e2w[1], allSeeds, allPlayin);
     const ecfWinner = simulateSeries(ecfH, ecfL, ctx, rng, 2, accum, 16, "cf.east");
     cfCounts[ecfWinner] = (cfCounts[ecfWinner] ?? 0) + 1;
+    markReached(ecfWinner, 4, sim);
 
     const [wcfH, wcfL] = orderMatchup(w2w[0], w2w[1], allSeeds, allPlayin);
     const wcfWinner = simulateSeries(wcfH, wcfL, ctx, rng, 2, accum, 16, "cf.west");
     cfCounts[wcfWinner] = (cfCounts[wcfWinner] ?? 0) + 1;
+    markReached(wcfWinner, 4, sim);
 
     // Finals
     const [finH, finL] = orderMatchup(ecfWinner, wcfWinner, allSeeds, allPlayin);
     const finWinner = simulateSeries(finH, finL, ctx, rng, 3, accum, 23, "finals");
     finalsCounts[finWinner] = (finalsCounts[finWinner] ?? 0) + 1;
     champCounts[finWinner] = (champCounts[finWinner] ?? 0) + 1;
+    markReached(finWinner, 5, sim);
 
     // Record per-sim per-player totals into the sim matrix
     for (const [espnId, pts] of accum.playerPointsAccum) {
@@ -719,5 +744,5 @@ export async function runTournamentSim(
 
   players.sort((a, b) => b.projectedPoints - a.projectedPoints);
 
-  return { teams, players, simMatrix, playerIndex, numSims: n };
+  return { teams, players, simMatrix, playerIndex, numSims: n, teamRoundReached };
 }

@@ -18,5 +18,8 @@ export {
   computeManagerProjections,
   computeMarginalValues,
   computeAllManagerMarginals,
+  computeTeamExposureMatrix,
   type RosterInput,
+  type TeamExposureRow,
+  type TeamExposureResult,
 } from "./draft";
