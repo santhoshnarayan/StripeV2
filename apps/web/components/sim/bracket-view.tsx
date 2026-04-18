@@ -148,6 +148,7 @@ function PlayInBracket({
   playin,
   fullNames,
   r1Results,
+  r2Result,
 }: {
   conf: string;
   seeds: [number, string][];
@@ -157,6 +158,7 @@ function PlayInBracket({
     game7v8: { winner: string; loser: string };
     game9v10: { winner: string; loser: string };
   };
+  r2Result?: { winner: string; loser: string };
 }) {
   const s7 = seeds.find(([s]) => s === 7)?.[1] ?? "?";
   const s8 = seeds.find(([s]) => s === 8)?.[1] ?? "?";
@@ -246,7 +248,7 @@ function PlayInBracket({
             className="text-center text-[9px] text-muted-foreground"
             style={{ height: CAPTION_H, lineHeight: `${CAPTION_H}px` }}
           >
-            W → 8 seed
+            {r2Result ? `✓ ${r2Result.winner} → 8 seed` : "W → 8 seed"}
           </div>
         </div>
       </div>
@@ -460,6 +462,7 @@ export function BracketView({
                 playin={simData.bracket.westPlayin}
                 fullNames={fullNames}
                 r1Results={simData.bracket.playinR1?.west}
+                r2Result={simData.bracket.playinR2?.west}
               />
             ) : null}
             {simData.bracket.eastPlayin?.length ? (
@@ -469,6 +472,7 @@ export function BracketView({
                 playin={simData.bracket.eastPlayin}
                 fullNames={fullNames}
                 r1Results={simData.bracket.playinR1?.east}
+                r2Result={simData.bracket.playinR2?.east}
               />
             ) : null}
           </div>

@@ -36,6 +36,20 @@ export interface InjuryEntry {
   availability: number[];
 }
 
+export interface LiveGameState {
+  seriesKey: string;
+  gameNum: number;
+  status: "pre" | "in" | "post";
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  /** Regulation = 48 min. 0 = post (complete), 1 = pre (not started), 0..1 = in-progress. */
+  remainingFraction: number;
+  /** espnId → actual points so far in this game */
+  playerPoints: Record<string, number>;
+}
+
 export interface SimData {
   bracket: {
     eastSeeds: [number, string][];
@@ -52,6 +66,10 @@ export interface SimData {
         game9v10: { winner: string; loser: string };
       };
     };
+    playinR2?: {
+      east?: { winner: string; loser: string };
+      west?: { winner: string; loser: string };
+    };
     seriesPattern: boolean[];
     teamAliases: Record<string, string>;
     teamFullNames: Record<string, string>;
@@ -61,6 +79,7 @@ export interface SimData {
   playoffMinutes: Record<string, Record<string, number>>;
   adjustments: PlayerAdjustment[];
   injuries: Record<string, InjuryEntry>;
+  liveGames?: LiveGameState[];
 }
 
 // ─── Simulation configuration ──────────────────────────────────────
