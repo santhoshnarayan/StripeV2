@@ -269,9 +269,8 @@ function ConferenceBracket({
   fullNames: Record<string, string>;
   flip?: boolean;
 }) {
-  // 7-seed is confirmed from play-in R1; 8-seed is TBD until play-in R2
   const seed7: [number, string] = [7, seeds.find(([s]) => s === 7)?.[1] ?? "Play-In"];
-  const seed8: [number, string] = [8, "Play-In"];
+  const seed8: [number, string] = [8, seeds.find(([s]) => s === 8)?.[1] ?? "Play-In"];
 
   const r1 = [
     { higher: seeds[0], lower: seed8 },      // 1v8

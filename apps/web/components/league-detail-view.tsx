@@ -137,6 +137,7 @@ type LeagueDetail = {
       playerName: string;
       playerTeam: string;
       suggestedValue: number;
+      totalPoints: number | null;
       winnerUserId: string | null;
       winnerName: string | null;
       winningBid: number | null;
@@ -2926,6 +2927,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                       {[...data.currentRound.submissionStatuses]
                         .sort((a, b) => {
+                          const aRoster = data.rosters.find((r) => r.userId === a.userId);
+                          const bRoster = data.rosters.find((r) => r.userId === b.userId);
+                          const aFull = (aRoster?.players.length ?? 0) >= data.league.rosterSize ? 1 : 0;
+                          const bFull = (bRoster?.players.length ?? 0) >= data.league.rosterSize ? 1 : 0;
+                          if (aFull !== bFull) return aFull - bFull;
                           const aBudget = data.members.find((m) => m.userId === a.userId)?.remainingBudget ?? 0;
                           const bBudget = data.members.find((m) => m.userId === b.userId)?.remainingBudget ?? 0;
                           return bBudget - aBudget;
@@ -2934,6 +2940,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                         const submitted = Boolean(submission.submittedAt);
                         const member = data.members.find((m) => m.userId === submission.userId);
                         const roster = data.rosters.find((r) => r.userId === submission.userId);
+                        const rosterFull = (roster?.players.length ?? 0) >= data.league.rosterSize;
                         const priority = data.priorityOrder.find((p) => p.userId === submission.userId);
                         return (
                           <div
@@ -2943,9 +2950,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                             <div
                               className={[
                                 "flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm transition-colors md:cursor-default cursor-pointer",
-                                submitted
-                                  ? "border-emerald-500/40 bg-emerald-500/10 text-foreground"
-                                  : "border-border/70 bg-background",
+                                rosterFull
+                                  ? "border-border/40 bg-muted/30 opacity-50"
+                                  : submitted
+                                    ? "border-emerald-500/40 bg-emerald-500/10 text-foreground"
+                                    : "border-border/70 bg-background",
                                 expandedManagerRoster === submission.userId ? "md:rounded-lg rounded-b-none" : "",
                               ].join(" ")}
                               onClick={() => setExpandedManagerRoster(
@@ -2958,12 +2967,14 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     aria-hidden
                                     className={[
                                       "inline-flex h-1.5 w-1.5 shrink-0 rounded-full",
-                                      submitted
-                                        ? "bg-emerald-500"
-                                        : "animate-pulse bg-amber-500",
+                                      rosterFull
+                                        ? "bg-muted-foreground/40"
+                                        : submitted
+                                          ? "bg-emerald-500"
+                                          : "animate-pulse bg-amber-500",
                                     ].join(" ")}
                                   />
-                                  <span className="truncate">{submission.name}</span>
+                                  <span className={`truncate${rosterFull ? " text-muted-foreground" : ""}`}>{submission.name}</span>
                                 </span>
                                 <span className="flex items-center gap-2 shrink-0 text-[11px] tabular-nums text-muted-foreground">
                                   <span>${member?.remainingBudget ?? "?"}</span>
@@ -2975,9 +2986,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   Tiebreak #{priority?.draftPriority ?? "?"}
                                 </span>
                                 <span>
-                                  {submitted
-                                    ? formatRelativeTime(submission.submittedAt!)
-                                    : "Waiting"}
+                                  {rosterFull
+                                    ? "Roster full"
+                                    : submitted
+                                      ? formatRelativeTime(submission.submittedAt!)
+                                      : "Waiting"}
                                 </span>
                               </div>
                             </div>
@@ -3953,7 +3966,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     {row.playerName}
                                   </p>
                                   <p className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                                    {row.playerTeam} · sug. ${row.suggestedValue}
+                                    {row.playerTeam} · ${row.suggestedValue}
+                                    {row.totalPoints != null ? ` · ${row.totalPoints.toFixed(0)} pts` : ""}
                                   </p>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-1.5">
@@ -4050,12 +4064,13 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                               </th>
                               <th className="px-3 py-2 text-left font-medium">Winner / Bid</th>
                               <th className="px-3 py-2 text-left font-medium">Runner-Up / Bid</th>
-                              {round.participants.map((participant) => {
+                              {round.participants.map((participant, pIdx) => {
                                 const first = participant.name.split(" ")[0] ?? participant.name;
+                                const isLast = pIdx === round.participants.length - 1;
                                 return (
                                   <th
                                     key={participant.userId}
-                                    className="px-2 py-2 text-right font-medium"
+                                    className={`px-2 py-2 text-right font-medium${isLast ? " pr-3" : ""}`}
                                     title={participant.name}
                                   >
                                     {first}
@@ -4088,10 +4103,16 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     </div>
                                     <div className="text-[11px] tabular-nums text-muted-foreground">
                                       {row.playerTeam} · ${row.suggestedValue}
+                                      {row.totalPoints != null ? ` · ${row.totalPoints.toFixed(0)} pts` : ""}
                                     </div>
                                   </td>
                                   <td className="px-3 py-3 align-middle">
-                                    {row.winnerName ? (
+                                    {row.winnerName ? (() => {
+                                      const pts = row.totalPoints ?? 0;
+                                      const bid = row.winningBid ?? 0;
+                                      const ptsPerDollar = bid > 0 ? pts / bid : 0;
+                                      const varpPerDollar = bid > 0 ? Math.max(0, pts - projectionPool.replacementPts) / bid : 0;
+                                      return (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-emerald-500/15 px-3 py-1.5 dark:bg-emerald-400/10">
                                       <span className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
                                         {row.winnerName}
@@ -4099,8 +4120,14 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       <span className="text-xs tabular-nums text-emerald-700 dark:text-emerald-300">
                                         {row.winningBid !== null ? `$${row.winningBid}` : "—"}
                                       </span>
+                                      {row.totalPoints != null && bid > 0 ? (
+                                        <span className="mt-0.5 text-[10px] tabular-nums text-emerald-700/70 dark:text-emerald-300/70">
+                                          {ptsPerDollar.toFixed(1)} pts/$ · {varpPerDollar.toFixed(1)} varp/$
+                                        </span>
+                                      ) : null}
                                     </div>
-                                    ) : (
+                                      );
+                                    })() : (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-muted/40 px-3 py-1.5">
                                       <span className="text-sm font-medium text-muted-foreground">Undrafted</span>
                                       <span className="text-[10px] text-muted-foreground/70">Returned to pool</span>
@@ -4127,7 +4154,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     </div>
                                     )}
                                   </td>
-                                  {row.bids.map((bid) => {
+                                  {row.bids.map((bid, bidIdx) => {
                                     const maxAllowed = bid.maxAllowed ?? Infinity;
                                     const isInvalid = bid.amount != null && bid.amount > 0 && bid.amount > maxAllowed;
                                     const display =
@@ -4139,10 +4166,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     const isWin = bid.isWinningBid;
                                     const isRunnerUp = !isWin && bid.isSecondPlaceBid && !isInvalid;
                                     const isAuto = bid.isAutoDefault;
+                                    const isLastBid = bidIdx === row.bids.length - 1;
                                     return (
                                       <td
                                         key={bid.userId}
-                                        className="px-2 py-3 text-right align-middle"
+                                        className={`px-2 py-3 text-right align-middle${isLastBid ? " pr-3" : ""}`}
                                       >
                                         <span
                                           className={[

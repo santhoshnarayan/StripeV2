@@ -879,17 +879,22 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
           });
         const winnerBid = award?.acquisitionBid ?? rankedBids[0]?.amount ?? null;
         const winnerName = award ? historyUserMap.get(award.userId) ?? "Unknown" : null;
-        const runnerUpAmount =
-          rankedBids.find((bid) => bid.userId !== award?.userId)?.amount ?? null;
-        const runnerUpNames = rankedBids
-          .filter((bid) => bid.userId !== award?.userId && bid.amount === runnerUpAmount)
-          .map((bid) => bid.userName);
+        // No cover/runner-up if the player went undrafted
+        const runnerUpAmount = award
+          ? rankedBids.find((bid) => bid.userId !== award.userId)?.amount ?? null
+          : null;
+        const runnerUpNames = award
+          ? rankedBids
+              .filter((bid) => bid.userId !== award.userId && bid.amount === runnerUpAmount)
+              .map((bid) => bid.userName)
+          : [];
 
         return {
           playerId: player.id,
           playerName: player.name,
           playerTeam: player.team,
           suggestedValue: player.suggestedValue,
+          totalPoints: player.totalPoints ?? null,
           winnerUserId: award?.userId ?? null,
           winnerName,
           winningBid: winnerBid,
