@@ -26,6 +26,7 @@ import {
 } from "@/lib/sim";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { LiveGamesTicker } from "@/components/nba/live-games-ticker";
+import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
 import { usePolling } from "@/lib/use-polling";
 import { markUserActive } from "@/lib/use-activity";
 
@@ -2147,6 +2148,27 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     return { shortNameById: byId, shortNameByFull: byFull };
   }, [data]);
 
+  // Build map of rostered playerId → manager info for box-score highlighting.
+  const rosteredPlayersMap = useMemo(() => {
+    const map = new Map<string, RosteredPlayerInfo>();
+    if (!data) return map;
+    const memberById = new Map(data.members.map((m) => [m.userId, m.name] as const));
+    for (const roster of data.rosters) {
+      const managerName = memberById.get(roster.userId) ?? roster.name ?? "";
+      const managerShortName = shortNameById.get(roster.userId) ?? managerName.split(/\s+/)[0] ?? managerName;
+      const viewerIsManager = viewerUserId === roster.userId;
+      for (const p of roster.players) {
+        map.set(p.playerId, {
+          managerName,
+          managerShortName,
+          managerUserId: roster.userId,
+          viewerIsManager,
+        });
+      }
+    }
+    return map;
+  }, [data, shortNameById, viewerUserId]);
+
   // Compute max allowed bid per user at each row in each resolved round.
   // maxAllowed is now provided per bid by the backend, which replays the
   // full action log (including commissioner removes/adds/adjustments).
@@ -2851,7 +2873,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         </p>
       ) : null}
 
-      <LiveGamesTicker />
+      <LiveGamesTicker rosteredPlayers={rosteredPlayersMap} />
 
       <section className="rounded-2xl border border-border/80 bg-background/90 p-2">
         <div className="flex flex-nowrap gap-1 overflow-x-auto sm:gap-2">

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { TeamLogo } from "@/components/sim/player-avatar";
 import { useLiveGames, type TickerGame } from "@/lib/use-live-games";
 import { cn } from "@/lib/utils";
-import { GameDetail } from "@/components/nba/game-detail";
+import { GameDetail, type RosteredPlayerInfo } from "@/components/nba/game-detail";
 
 function formatClock(t: TickerGame): string {
   if (t.status === "in") {
@@ -103,7 +103,11 @@ function TeamRow({
   );
 }
 
-export function LiveGamesTicker() {
+export function LiveGamesTicker({
+  rosteredPlayers,
+}: {
+  rosteredPlayers?: Map<string, RosteredPlayerInfo>;
+} = {}) {
   const { games } = useLiveGames();
   const [openEventId, setOpenEventId] = useState<string | null>(null);
 
@@ -131,7 +135,11 @@ export function LiveGamesTicker() {
         </div>
       </div>
       {openEventId ? (
-        <GameDetail eventId={openEventId} onClose={() => setOpenEventId(null)} />
+        <GameDetail
+          eventId={openEventId}
+          onClose={() => setOpenEventId(null)}
+          rosteredPlayers={rosteredPlayers}
+        />
       ) : null}
     </>
   );

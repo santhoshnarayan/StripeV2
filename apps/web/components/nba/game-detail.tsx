@@ -87,6 +87,13 @@ type GameDetailData = {
   playerStats: PlayerStatsRow[];
 };
 
+export type RosteredPlayerInfo = {
+  managerName: string;
+  managerShortName: string;
+  managerUserId: string;
+  viewerIsManager: boolean;
+};
+
 function formatStatus(g: GameRow): string {
   if (g.status === "in") {
     const q = g.period && g.period > 4 ? `OT${g.period - 4}` : `Q${g.period ?? 1}`;
@@ -109,10 +116,12 @@ function TeamBox({
   team,
   opposing,
   players,
+  rosteredPlayers,
 }: {
   team: string;
   opposing: string;
   players: PlayerStatsRow[];
+  rosteredPlayers?: Map<string, RosteredPlayerInfo>;
 }) {
   const teamPlayers = players
     .filter((p) => p.teamAbbrev === team && !p.dnp)
@@ -147,10 +156,33 @@ function TeamBox({
             </tr>
           </thead>
           <tbody>
-            {teamPlayers.map((p) => (
-              <tr key={p.playerId} className="border-t border-border/20">
-                <td className={cn("py-1 pl-1 pr-2", p.starter && "font-semibold")}>
-                  {p.playerName}
+            {teamPlayers.map((p) => {
+              const roster = rosteredPlayers?.get(p.playerId);
+              const isViewerPlayer = roster?.viewerIsManager === true;
+              return (
+              <tr
+                key={p.playerId}
+                className={cn(
+                  "border-t border-border/20",
+                  roster && !isViewerPlayer && "bg-primary/5",
+                  isViewerPlayer && "bg-primary/15",
+                )}
+              >
+                <td className={cn("py-1 pl-1 pr-2", (p.starter || roster) && "font-semibold")}>
+                  <span className="whitespace-nowrap">{p.playerName}</span>
+                  {roster ? (
+                    <span
+                      className={cn(
+                        "ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                        isViewerPlayer
+                          ? "bg-primary/20 text-primary"
+                          : "bg-muted text-muted-foreground",
+                      )}
+                      title={`Drafted by ${roster.managerName}`}
+                    >
+                      {roster.managerShortName}
+                    </span>
+                  ) : null}
                 </td>
                 <td className="text-right px-1 py-1 text-muted-foreground">
                   {p.minutes != null ? Math.round(p.minutes) : "-"}
@@ -177,7 +209,8 @@ function TeamBox({
                   {p.plusMinus ?? "-"}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -249,7 +282,15 @@ function PlayByPlay({ plays }: { plays: PlayRow[] }) {
   );
 }
 
-export function GameDetail({ eventId, onClose }: { eventId: string; onClose: () => void }) {
+export function GameDetail({
+  eventId,
+  onClose,
+  rosteredPlayers,
+}: {
+  eventId: string;
+  onClose: () => void;
+  rosteredPlayers?: Map<string, RosteredPlayerInfo>;
+}) {
   const [data, setData] = useState<GameDetailData | null>(null);
   const [plays, setPlays] = useState<PlayRow[]>([]);
   const [winProb, setWinProb] = useState<WinProbPoint[]>([]);
@@ -370,11 +411,13 @@ export function GameDetail({ eventId, onClose }: { eventId: string; onClose: () 
                     team={data.game.awayTeamAbbrev}
                     opposing={data.game.homeTeamAbbrev}
                     players={data.playerStats}
+                    rosteredPlayers={rosteredPlayers}
                   />
                   <TeamBox
                     team={data.game.homeTeamAbbrev}
                     opposing={data.game.awayTeamAbbrev}
                     players={data.playerStats}
+                    rosteredPlayers={rosteredPlayers}
                   />
                 </>
               ) : null}
