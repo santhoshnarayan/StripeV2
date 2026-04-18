@@ -116,7 +116,7 @@ export function LeagueChartPanel({
   leagueId: string;
   rosters: LeagueRoster[];
 }) {
-  const { simResults, status: simStatus } = useAutoSim(leagueId);
+  const { simResults, status: simStatus, pendingEvents } = useAutoSim(leagueId);
   const [timeseries, setTimeseries] = useState<TimeseriesResponse | null>(null);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -486,7 +486,9 @@ export function LeagueChartPanel({
                     strokeWidth={1.75}
                     dot={false}
                     activeDot={{ r: 3 }}
-                    isAnimationActive={false}
+                    isAnimationActive
+                    animationDuration={600}
+                    animationEasing="ease-in-out"
                   />
                 ))}
               </LineChart>
@@ -541,7 +543,11 @@ export function LeagueChartPanel({
         </div>
         {simStatus === "rerunning" ? (
           <p className="text-[10px] text-muted-foreground italic text-right -mt-1">
-            projections updating…
+            projections updating{pendingEvents > 0 ? ` (+${pendingEvents} queued)` : ""}…
+          </p>
+        ) : pendingEvents > 0 ? (
+          <p className="text-[10px] text-muted-foreground italic text-right -mt-1">
+            {pendingEvents} live update{pendingEvents === 1 ? "" : "s"} queued
           </p>
         ) : null}
       </CardContent>
