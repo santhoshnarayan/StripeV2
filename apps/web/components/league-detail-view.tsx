@@ -146,6 +146,7 @@ type LeagueDetail = {
         userId: string;
         userName: string;
         amount: number | null;
+        maxAllowed: number | null;
         isWinningBid: boolean;
         isSecondPlaceBid: boolean;
         isAutoDefault?: boolean;
@@ -1826,40 +1827,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   }, [data]);
 
   // Compute max allowed bid per user at each row in each resolved round.
-  // Used to detect invalid bids in the reveal table.
-  // Key: `${roundId}:${rowIndex}:${userId}` → maxAllowed
-  const maxBidLookup = useMemo(() => {
-    if (!data) return new Map<string, number>();
-    const lookup = new Map<string, number>();
-    const budgetState = new Map(
-      data.members.map((m) => [m.userId, {
-        budget: data.league.budgetPerTeam,
-        slots: data.league.rosterSize,
-      }]),
-    );
-
-    // draftHistory is desc by roundNumber — replay in ascending order
-    const historyAsc = [...data.draftHistory].sort((a, b) => a.roundNumber - b.roundNumber);
-    for (const round of historyAsc) {
-      for (let ri = 0; ri < round.rows.length; ri++) {
-        const row = round.rows[ri];
-        // Snapshot max bid for each user BEFORE this row resolves
-        for (const [uid, s] of budgetState) {
-          const max = s.slots > 0
-            ? Math.max(0, s.budget - (s.slots - 1) * data.league.minBid)
-            : 0;
-          lookup.set(`${round.id}:${ri}:${uid}`, max);
-        }
-        // Deduct the winner's spending
-        if (row.winnerUserId && row.winningBid != null) {
-          const s = budgetState.get(row.winnerUserId);
-          if (s) { s.budget -= row.winningBid; s.slots--; }
-        }
-      }
-    }
-
-    return lookup;
-  }, [data]);
+  // maxAllowed is now provided per bid by the backend, which replays the
+  // full action log (including commissioner removes/adds/adjustments).
 
   const filteredAvailablePlayers = useMemo(() => {
     if (!data) {
@@ -2547,7 +2516,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           {PHASE_LABELS[data.league.phase] ?? data.league.phase}
         </span>
         <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground tabular-nums">
-          <span>{data.members.length} managers · {data.availablePlayers.length} remaining</span>
+          <span>{data.members.length} managers · {data.availablePlayers.length} players · {Math.max(0, data.members.length * data.league.rosterSize - data.rosters.reduce((sum, r) => sum + r.players.length, 0))} picks left</span>
           <span>Roster <span className="font-medium text-foreground">{data.league.rosterSize}</span> · Budget <span className="font-medium text-foreground">${data.league.budgetPerTeam}</span> · Min <span className="font-medium text-foreground">${data.league.minBid}</span></span>
           {data.currentRound ? (
             <span>Round <span className="font-medium text-foreground">{data.currentRound.roundNumber}</span> · Max bid <span className="font-medium text-foreground">${data.currentRound.myMaxBid}</span></span>
@@ -4159,7 +4128,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     )}
                                   </td>
                                   {row.bids.map((bid) => {
-                                    const maxAllowed = maxBidLookup.get(`${round.id}:${rowIndex}:${bid.userId}`) ?? Infinity;
+                                    const maxAllowed = bid.maxAllowed ?? Infinity;
                                     const isInvalid = bid.amount != null && bid.amount > 0 && bid.amount > maxAllowed;
                                     const display =
                                       bid.amount === null

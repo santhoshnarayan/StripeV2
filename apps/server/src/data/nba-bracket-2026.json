@@ -28,7 +28,7 @@
     [10, "GS"]
   ],
   "playinR1": {
-    "_note": "Play-in R1 completed. R2 TBD: East 8 = ORL vs CHA, West 8 = PHX vs GSW.",
+    "_note": "Play-in R1 completed.",
     "east": {
       "game7v8": { "winner": "PHI", "loser": "ORL" },
       "game9v10": { "winner": "CHA", "loser": "MIA" }
@@ -38,7 +38,12 @@
       "game9v10": { "winner": "GS", "loser": "LAC" }
     }
   },
-  "eliminatedTeams": ["MIA", "LAC"],
+  "playinR2": {
+    "_note": "Play-in R2 completed. East 8 = ORL, West 8 = TBD (PHX vs GS).",
+    "east": { "winner": "ORL", "loser": "CHA" },
+    "west": null
+  },
+  "eliminatedTeams": ["MIA", "LAC", "CHA"],
   "seriesPattern": [true, true, false, false, true, false, true],
   "teamAliases": {
     "NY": "NYK",

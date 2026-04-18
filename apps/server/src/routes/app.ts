@@ -685,18 +685,85 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
   }
 
   // Replay budget state across resolved rounds to compute max allowed bids.
-  // budgetStateByRound[roundId][rowIndex] = Map<userId, maxAllowed>
+  // Includes commissioner actions (roster_remove, roster_add, budget_adjust)
+  // and auction results that happen between sealed-bid rounds.
+  const BUDGET_ACTION_TYPES = [
+    "roster_remove", "roster_add", "budget_adjust",
+    "auction_award", "auction_undo_award",
+  ];
+  const budgetActions = await db
+    .select()
+    .from(leagueAction)
+    .where(
+      and(
+        eq(leagueAction.leagueId, leagueId),
+        inArray(leagueAction.type, [...BUDGET_ACTION_TYPES, "round_closed"]),
+      ),
+    )
+    .orderBy(asc(leagueAction.sequenceNumber));
+
+  // Map roundId → sequence number of its round_closed action
+  const roundClosedSeq = new Map<string, number>();
+  for (const action of budgetActions) {
+    if (action.type === "round_closed" && action.roundId) {
+      roundClosedSeq.set(action.roundId, action.sequenceNumber);
+    }
+  }
+  // Only budget-affecting actions (not round_closed)
+  const onlyBudgetActions = budgetActions.filter((a) => BUDGET_ACTION_TYPES.includes(a.type));
+
+  const initBudget = access.league.budgetPerTeam;
+  const initSlots = access.league.rosterSize;
+  const minBidVal = access.league.minBid;
+
   const budgetReplay = new Map<string, number>(
-    members.map((m) => [m.userId, access.league.budgetPerTeam]),
+    members.map((m) => [m.userId, initBudget]),
   );
   const slotsReplay = new Map<string, number>(
-    members.map((m) => [m.userId, access.league.rosterSize]),
+    members.map((m) => [m.userId, initSlots]),
   );
   const maxBidByRoundRow = new Map<string, Map<string, number>>(); // key: `${roundId}:${rowIdx}`
+
+  let budgetActionCursor = 0;
+
+  function applyBudgetActionsUpTo(maxSeq: number) {
+    while (budgetActionCursor < onlyBudgetActions.length) {
+      const action = onlyBudgetActions[budgetActionCursor];
+      if (action.sequenceNumber >= maxSeq) break;
+      budgetActionCursor++;
+      if (!action.userId || action.amount == null) continue;
+
+      const prevBudget = budgetReplay.get(action.userId) ?? initBudget;
+      const prevSlots = slotsReplay.get(action.userId) ?? initSlots;
+
+      switch (action.type) {
+        case "roster_remove":
+        case "auction_undo_award":
+          // Refund: add amount back, free a slot
+          budgetReplay.set(action.userId, prevBudget + action.amount);
+          slotsReplay.set(action.userId, prevSlots + 1);
+          break;
+        case "roster_add":
+        case "auction_award":
+          // Spend: deduct amount, fill a slot
+          budgetReplay.set(action.userId, prevBudget - action.amount);
+          slotsReplay.set(action.userId, prevSlots - 1);
+          break;
+        case "budget_adjust":
+          // Pure budget change, no slot change
+          budgetReplay.set(action.userId, prevBudget + action.amount);
+          break;
+      }
+    }
+  }
 
   // resolvedRounds is desc by roundNumber — replay in ascending order
   const roundsAsc = [...resolvedRounds].sort((a, b) => a.roundNumber - b.roundNumber);
   for (const round of roundsAsc) {
+    // Apply all budget-affecting actions that happened BEFORE this round closed
+    const closedSeq = roundClosedSeq.get(round.id) ?? Infinity;
+    applyBudgetActionsUpTo(closedSeq);
+
     const awardsForReplay = [...(awardsByRoundId.get(round.id) ?? [])].sort(
       (a, b) => a.acquisitionOrder - b.acquisitionOrder,
     );
@@ -705,7 +772,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       const snapshot = new Map<string, number>();
       for (const [uid, budget] of budgetReplay) {
         const slots = slotsReplay.get(uid) ?? 0;
-        snapshot.set(uid, slots > 0 ? Math.max(0, budget - (slots - 1) * access.league.minBid) : 0);
+        snapshot.set(uid, slots > 0 ? Math.max(0, budget - (slots - 1) * minBidVal) : 0);
       }
       maxBidByRoundRow.set(`${round.id}:${ri}`, snapshot);
       // Deduct this award — winner's budget decreases for subsequent rows
@@ -833,6 +900,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
             const isValid = bid.amount !== null && bid.amount > 0 && bid.amount <= bidMaxAllowed;
             return {
               ...bid,
+              maxAllowed: bidMaxAllowed === Infinity ? null : bidMaxAllowed,
               isWinningBid: bid.userId === award?.userId && bid.amount !== null,
               isSecondPlaceBid:
                 isValid &&
