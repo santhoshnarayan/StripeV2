@@ -39,11 +39,11 @@
     }
   },
   "playinR2": {
-    "_note": "Play-in R2 completed. East 8 = ORL, West 8 = TBD (PHX vs GS).",
+    "_note": "Play-in R2 completed. East 8 = ORL, West 8 = PHX.",
     "east": { "winner": "ORL", "loser": "CHA" },
-    "west": null
+    "west": { "winner": "PHX", "loser": "GS" }
   },
-  "eliminatedTeams": ["MIA", "LAC", "CHA"],
+  "eliminatedTeams": ["MIA", "LAC", "CHA", "GS"],
   "seriesPattern": [true, true, false, false, true, false, true],
   "teamAliases": {
     "NY": "NYK",
