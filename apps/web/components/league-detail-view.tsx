@@ -17,6 +17,13 @@ import { Label } from "@/components/ui/label";
 import { appApiFetch } from "@/lib/app-api";
 import { useSession } from "@/lib/auth-client";
 import { SimulatorTab } from "@/components/simulator-tab";
+import {
+  getCachedSimResults,
+  computeManagerProjections,
+  type ManagerProjection,
+  type RosterInput,
+  type SimResults,
+} from "@/lib/sim";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { LiveGamesTicker } from "@/components/nba/live-games-ticker";
 import { usePolling } from "@/lib/use-polling";
@@ -229,6 +236,7 @@ type LeagueDetail = {
     metadata: Record<string, unknown> | null;
     createdAt: string;
   }>;
+  livePoints?: Record<string, number>;
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -1581,6 +1589,277 @@ function AuctionDraftPanel({
               </tbody>
             </table>
           </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+type StandingsSortKey = "current" | "winProb" | "projected";
+type SortDir = "asc" | "desc";
+
+function StandingsPanel({
+  leagueId,
+  rosters,
+  livePoints,
+  isScoring,
+}: {
+  leagueId: string;
+  rosters: LeagueDetail["rosters"];
+  livePoints: Record<string, number>;
+  isScoring: boolean;
+}) {
+  const [sort, setSort] = useState<StandingsSortKey>(isScoring ? "current" : "projected");
+  const [dir, setDir] = useState<SortDir>("desc");
+  const simResults: SimResults | null = getCachedSimResults(`league:${leagueId}`);
+
+  const simPtsByPlayer = useMemo(() => {
+    if (!simResults) return null;
+    return new Map(simResults.players.map((p) => [p.espnId, p.projectedPoints]));
+  }, [simResults]);
+
+  const managerProjections = useMemo<ManagerProjection[] | null>(() => {
+    if (!simResults) return null;
+    const inputs: RosterInput[] = rosters.map((r) => ({
+      userId: r.userId,
+      name: r.name,
+      playerIds: r.players.map((p) => p.playerId),
+    }));
+    return computeManagerProjections(simResults, inputs);
+  }, [simResults, rosters]);
+
+  const rows = useMemo(() => {
+    const projByUser = new Map(managerProjections?.map((p) => [p.userId, p]) ?? []);
+    return rosters.map((r) => {
+      const current = r.players.reduce(
+        (sum, p) => sum + (livePoints[p.playerId] ?? 0),
+        0,
+      );
+      const simProjected = simPtsByPlayer
+        ? r.players.reduce(
+            (sum, p) => sum + (simPtsByPlayer.get(p.playerId) ?? 0),
+            0,
+          )
+        : null;
+      const csvProjected = r.totalPoints;
+      const mp = projByUser.get(r.userId);
+      return {
+        userId: r.userId,
+        name: r.name,
+        players: r.players.length,
+        current,
+        projected: simProjected ?? csvProjected,
+        winProbability: mp?.winProbability ?? null,
+      };
+    });
+  }, [rosters, livePoints, simPtsByPlayer, managerProjections]);
+
+  const sorted = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      let d = 0;
+      if (sort === "current") d = a.current - b.current;
+      else if (sort === "winProb")
+        d = (a.winProbability ?? -1) - (b.winProbability ?? -1);
+      else d = a.projected - b.projected;
+      if (d === 0) d = a.projected - b.projected;
+      if (d === 0) d = a.name.localeCompare(b.name);
+      return dir === "desc" ? -d : d;
+    });
+    return copy;
+  }, [rows, sort, dir]);
+
+  const handleSort = (next: StandingsSortKey) => {
+    if (sort === next) setDir((d) => (d === "desc" ? "asc" : "desc"));
+    else {
+      setSort(next);
+      setDir("desc");
+    }
+  };
+
+  const arrow = (key: StandingsSortKey) =>
+    sort === key ? (dir === "desc" ? " ▼" : " ▲") : "";
+
+  const rosterOrder = sorted.map((r) => r.userId);
+  const rosterByUser = new Map(rosters.map((r) => [r.userId, r]));
+  const hasSim = Boolean(simResults);
+  const hasLivePoints = rows.some((r) => r.current > 0);
+
+  return (
+    <div className="space-y-6">
+      {/* Standings Table */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Standings</CardTitle>
+          <CardDescription>
+            {isScoring || hasLivePoints
+              ? "Live playoff scoring. Click a column to sort."
+              : "Projected rankings. Live scoring begins once games tip off."}
+            {!hasSim ? (
+              <>
+                {" "}
+                <span className="text-muted-foreground/80">
+                  Open the Simulator tab to populate win % and sim-based projections.
+                </span>
+              </>
+            ) : null}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto rounded-xl border border-border/80">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-right font-medium w-8">#</th>
+                  <th className="px-3 py-2 text-left font-medium">Manager</th>
+                  <th className="px-3 py-2 text-right font-medium">Players</th>
+                  <th className="px-3 py-2 text-right font-medium">
+                    <button
+                      type="button"
+                      onClick={() => handleSort("current")}
+                      className="uppercase tracking-wider text-[10px] font-medium hover:text-foreground"
+                    >
+                      Current{arrow("current")}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium">
+                    <button
+                      type="button"
+                      onClick={() => handleSort("winProb")}
+                      className="uppercase tracking-wider text-[10px] font-medium hover:text-foreground"
+                      title={hasSim ? "" : "Run the simulator to populate"}
+                    >
+                      Win %{arrow("winProb")}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium">
+                    <button
+                      type="button"
+                      onClick={() => handleSort("projected")}
+                      className="uppercase tracking-wider text-[10px] font-medium hover:text-foreground"
+                    >
+                      Proj Pts{arrow("projected")}
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((row, idx) => (
+                  <tr key={row.userId} className="border-t border-border/60">
+                    <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                      {idx + 1}
+                    </td>
+                    <td className="px-3 py-2 font-medium text-foreground">
+                      {row.name}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                      {row.players}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
+                      {row.current > 0 ? row.current.toLocaleString() : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                      {row.winProbability != null
+                        ? `${(row.winProbability * 100).toFixed(1)}%`
+                        : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                      {Math.round(row.projected).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Roster Cards */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Rosters</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4 lg:grid-cols-2">
+          {rosterOrder.map((userId) => {
+            const roster = rosterByUser.get(userId);
+            if (!roster) return null;
+            const current = roster.players.reduce(
+              (s, p) => s + (livePoints[p.playerId] ?? 0),
+              0,
+            );
+            return (
+              <div
+                key={roster.userId}
+                className="rounded-xl border border-border/80 px-4 py-4"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-foreground">{roster.name}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {current > 0
+                        ? `${current.toLocaleString()} pts · ${roster.totalPoints.toLocaleString()} projected`
+                        : `${roster.totalPoints.toLocaleString()} projected pts`}
+                    </p>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {roster.players.length} players
+                  </p>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {roster.players.length ? (
+                    [...roster.players]
+                      .sort((a, b) => {
+                        const la = livePoints[a.playerId] ?? 0;
+                        const lb = livePoints[b.playerId] ?? 0;
+                        if (la !== lb) return lb - la;
+                        return b.totalPoints - a.totalPoints;
+                      })
+                      .map((player) => {
+                        const live = livePoints[player.playerId] ?? 0;
+                        return (
+                          <div
+                            key={player.playerId}
+                            className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2 text-sm"
+                          >
+                            <div className="flex items-center gap-2">
+                              <PlayerAvatar
+                                espnId={player.playerId}
+                                team={player.playerTeam}
+                                size={28}
+                              />
+                              <div>
+                                <p className="font-medium text-foreground">
+                                  {player.playerName}
+                                  {player.isAutoAssigned ? (
+                                    <span className="ml-2 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700">
+                                      Auto
+                                    </span>
+                                  ) : null}
+                                </p>
+                                <p className="text-muted-foreground">
+                                  {player.playerTeam}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-right text-muted-foreground">
+                              <p>${player.acquisitionBid}</p>
+                              <p>
+                                {live > 0 ? `${live} pts · ` : ""}
+                                {player.totalPoints} proj
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      No drafted players yet.
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
     </div>
@@ -4294,107 +4573,12 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       ) : null}
 
       {activeTab === "standings" ? (
-        <div className="space-y-6">
-          {/* Standings Table */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Projected Standings</CardTitle>
-              <CardDescription>
-                Rankings use each player&apos;s projected playoff total points from the player pool CSV. Actual playoff scoring will replace these once games begin.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto rounded-xl border border-border/80">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2 text-right font-medium w-8">#</th>
-                      <th className="px-3 py-2 text-left font-medium">Manager</th>
-                      <th className="px-3 py-2 text-right font-medium">Players</th>
-                      <th className="px-3 py-2 text-right font-medium">Proj Pts</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...data.rosters]
-                      .sort((a, b) => b.totalPoints - a.totalPoints)
-                      .map((roster, idx) => (
-                        <tr key={roster.userId} className="border-t border-border/60">
-                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                            {idx + 1}
-                          </td>
-                          <td className="px-3 py-2 font-medium text-foreground">
-                            {roster.name}
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                            {roster.players.length}
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
-                            {roster.totalPoints.toLocaleString()}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Roster Cards */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Rosters</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4 lg:grid-cols-2">
-              {[...data.rosters]
-                .sort((a, b) => b.totalPoints - a.totalPoints)
-                .map((roster) => (
-                  <div key={roster.userId} className="rounded-xl border border-border/80 px-4 py-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="font-medium text-foreground">{roster.name}</p>
-                        <p className="text-sm text-muted-foreground">{roster.totalPoints.toLocaleString()} projected pts</p>
-                      </div>
-                      <p className="text-sm text-muted-foreground">{roster.players.length} players</p>
-                    </div>
-                    <div className="mt-4 space-y-2">
-                      {roster.players.length ? (
-                        roster.players
-                          .slice()
-                          .sort((a, b) => b.totalPoints - a.totalPoints)
-                          .map((player) => (
-                            <div
-                              key={player.playerId}
-                              className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2 text-sm"
-                            >
-                              <div className="flex items-center gap-2">
-                                <PlayerAvatar espnId={player.playerId} team={player.playerTeam} size={28} />
-                                <div>
-                                  <p className="font-medium text-foreground">
-                                    {player.playerName}
-                                    {player.isAutoAssigned ? (
-                                      <span className="ml-2 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700">
-                                        Auto
-                                      </span>
-                                    ) : null}
-                                  </p>
-                                  <p className="text-muted-foreground">{player.playerTeam}</p>
-                                </div>
-                              </div>
-                              <div className="text-right text-muted-foreground">
-                                <p>${player.acquisitionBid}</p>
-                                <p>{player.totalPoints} proj pts</p>
-                              </div>
-                            </div>
-                          ))
-                      ) : (
-                        <p className="text-sm text-muted-foreground">No drafted players yet.</p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-            </CardContent>
-          </Card>
-        </div>
+        <StandingsPanel
+          leagueId={leagueId}
+          rosters={data.rosters}
+          livePoints={data.livePoints ?? {}}
+          isScoring={data.league.phase === "scoring"}
+        />
       ) : null}
 
       {activeTab === "commissioner" && data.league.isCommissioner ? (
