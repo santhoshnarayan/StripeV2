@@ -465,7 +465,7 @@ appRouter.get("/nba/schedule", async (c) => {
   // Group by seriesKey
   const bySeries: Record<
     string,
-    Array<{ id: string; gameNum: number | null; date: Date | null; status: string; homeScore: number | null; awayScore: number | null; homeTeam: string | null; awayTeam: string | null }>
+    Array<{ id: string; gameNum: number | null; date: Date | null; startTime: Date | null; status: string; homeScore: number | null; awayScore: number | null; homeTeam: string | null; awayTeam: string | null }>
   > = {};
   for (const g of rows) {
     if (!g.seriesKey) continue;
@@ -474,6 +474,7 @@ appRouter.get("/nba/schedule", async (c) => {
       id: g.id,
       gameNum: g.gameNum,
       date: g.date,
+      startTime: g.startTime,
       status: g.status,
       homeScore: g.homeScore,
       awayScore: g.awayScore,

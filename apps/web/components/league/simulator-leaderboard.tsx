@@ -5,9 +5,12 @@ import { cn } from "@/lib/utils";
 import type {
   ManagerProjection,
   TeamExposureResult,
+  TeamExposureRow,
+  SimData,
 } from "@/lib/sim";
 
-const ROUND_LABELS = ["R1", "R2", "CF", "Finals", "Champ"] as const;
+// 4 columns now — "Champ" dropped. What matters is making the finals.
+const ROUND_LABELS = ["R1", "R2", "CF", "Finals"] as const;
 
 // Gradient palette ported from NCAAM draft-win-probability — 9 slots cycling.
 const GRADIENT_PALETTE = [
@@ -26,6 +29,7 @@ export function SimulatorLeaderboard({
   managerProjections,
   exposure,
   rosters,
+  simData,
   viewerUserId,
 }: {
   managerProjections: ManagerProjection[];
@@ -35,6 +39,7 @@ export function SimulatorLeaderboard({
     name: string;
     players: Array<{ playerId: string; playerName: string; playerTeam: string; totalPoints: number }>;
   }>;
+  simData: SimData | null;
   viewerUserId?: string;
 }) {
   const sorted = [...managerProjections].sort(
@@ -42,15 +47,40 @@ export function SimulatorLeaderboard({
   );
   const maxWin = sorted[0]?.winProbability ?? 1;
 
+  // Build team→(conference, seed) lookup so we can sort by conf then seed.
+  // Cover both the bracket abbrev (e.g. "NY") and its alias (e.g. "NYK") so
+  // lookups work regardless of which form the exposure row carries.
+  const teamOrder = (() => {
+    const m = new Map<string, { conf: "east" | "west"; seed: number }>();
+    if (!simData) return m;
+    const aliases = simData.bracket.teamAliases ?? {};
+    const put = (team: string, conf: "east" | "west", seed: number) => {
+      m.set(team, { conf, seed });
+      const aliased = aliases[team];
+      if (aliased) m.set(aliased, { conf, seed });
+    };
+    for (const [seed, team] of simData.bracket.eastSeeds) put(team, "east", seed);
+    for (const [seed, team] of simData.bracket.westSeeds) put(team, "west", seed);
+    return m;
+  })();
+
+  const sortRows = (rows: TeamExposureRow[]): TeamExposureRow[] => {
+    return rows.slice().sort((a, b) => {
+      const ao = teamOrder.get(a.team);
+      const bo = teamOrder.get(b.team);
+      if (!ao && !bo) return a.team.localeCompare(b.team);
+      if (!ao) return 1;
+      if (!bo) return -1;
+      if (ao.conf !== bo.conf) return ao.conf === "east" ? -1 : 1;
+      return ao.seed - bo.seed;
+    });
+  };
+
   return (
     <div className="grid gap-3 md:grid-cols-2">
       {sorted.map((mp, idx) => {
         const roster = rosters.find((r) => r.userId === mp.userId);
-        const rows = exposure?.rowsByManager.get(mp.userId) ?? [];
-        const topRows = rows
-          .slice()
-          .sort((a, b) => b.playerCount - a.playerCount)
-          .slice(0, 3);
+        const rows = sortRows(exposure?.rowsByManager.get(mp.userId) ?? []);
         const isViewer = mp.userId === viewerUserId;
         const gradient = GRADIENT_PALETTE[idx % GRADIENT_PALETTE.length];
         return (
@@ -94,10 +124,10 @@ export function SimulatorLeaderboard({
                 </span>
               </div>
 
-              {/* Team exposure matrix — top 3 teams by player count */}
-              {topRows.length > 0 ? (
+              {/* Team exposure matrix — ALL teams with exposure, east-first by seed. */}
+              {rows.length > 0 ? (
                 <div className="pt-1 border-t border-white/15">
-                  <div className="grid grid-cols-[auto_auto_repeat(5,minmax(0,1fr))] gap-x-1.5 gap-y-0.5 items-center text-[10px]">
+                  <div className="grid grid-cols-[auto_auto_repeat(4,minmax(0,1fr))] gap-x-1.5 gap-y-0.5 items-center text-[10px]">
                     <span className="text-white/50 uppercase tracking-wider col-span-2">
                       Team
                     </span>
@@ -106,7 +136,7 @@ export function SimulatorLeaderboard({
                         {r}
                       </span>
                     ))}
-                    {topRows.map((row) => (
+                    {rows.map((row) => (
                       <TeamExposureRowCells key={row.team} row={row} />
                     ))}
                   </div>
@@ -146,7 +176,9 @@ export function SimulatorLeaderboard({
   );
 }
 
-function TeamExposureRowCells({ row }: { row: { team: string; playerCount: number; winByRound: (number | null)[]; baseWin: number } }) {
+function TeamExposureRowCells({ row }: { row: TeamExposureRow }) {
+  // Drop the "Champ" column: show R1..Finals only (winByRound indices 0..3).
+  const cells = row.winByRound.slice(0, 4);
   return (
     <>
       <span className="flex items-center gap-1 min-w-0">
@@ -156,7 +188,7 @@ function TeamExposureRowCells({ row }: { row: { team: string; playerCount: numbe
         {row.team}
         <span className="text-white/50 ml-0.5">×{row.playerCount}</span>
       </span>
-      {row.winByRound.map((v, i) => {
+      {cells.map((v, i) => {
         const delta = v != null ? v - row.baseWin : null;
         const cls =
           v == null

@@ -532,6 +532,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
           managerProjections={managerProjections}
           exposure={exposureResult}
           rosters={leagueData.rosters}
+          simData={simData}
           viewerUserId={leagueData.viewerUserId}
         />
       ) : subTab === "leaderboard" && !simResults ? (

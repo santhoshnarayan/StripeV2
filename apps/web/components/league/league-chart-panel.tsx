@@ -83,6 +83,15 @@ type ProjectionEvent = {
     homeScore: number | null;
     awayScore: number | null;
   };
+  gamesSnapshot: Array<{
+    seriesKey: string;
+    gameNum: number;
+    status: "pre" | "in" | "post";
+    homeTeam: string;
+    awayTeam: string;
+    homeScore: number;
+    awayScore: number;
+  }> | null;
   simCount: number;
   computedAt: string;
 };
@@ -667,6 +676,43 @@ export function LeagueChartPanel({
 
   const hoveredEvent = hoveredEventKey ? eventByKey.get(hoveredEventKey) ?? null : null;
 
+  // Player name lookup for compact "F. Last Npts" hover text.
+  const playerNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of rosters) {
+      for (const p of r.players) m.set(p.playerId, p.playerName);
+    }
+    return m;
+  }, [rosters]);
+
+  // Score snapshot across every game AT the hovered event's moment.
+  // Built from hoveredEvent.gamesSnapshot (keyed by seriesKey+gameNum) →
+  // gameId via the schedule. ScoreboardCards use this to rewind in time.
+  const hoveredGameStateById = useMemo(() => {
+    const m = new Map<
+      string,
+      { homeScore: number; awayScore: number; status: "pre" | "in" | "post" }
+    >();
+    if (!hoveredEvent || !hoveredEvent.gamesSnapshot || !schedule) return m;
+    const byComposite = new Map<string, string>();
+    for (const [seriesKey, games] of Object.entries(schedule.series)) {
+      for (const g of games) {
+        if (g.gameNum != null) byComposite.set(`${seriesKey}|${g.gameNum}`, g.id);
+      }
+    }
+    for (const snap of hoveredEvent.gamesSnapshot) {
+      const gid = byComposite.get(`${snap.seriesKey}|${snap.gameNum}`);
+      if (gid) {
+        m.set(gid, {
+          homeScore: snap.homeScore,
+          awayScore: snap.awayScore,
+          status: snap.status,
+        });
+      }
+    }
+    return m;
+  }, [hoveredEvent, schedule]);
+
   if (error) {
     return (
       <Card>
@@ -846,39 +892,6 @@ export function LeagueChartPanel({
           </div>
         </div>
 
-        {/* Hover readout — full width, always visible so play text has room */}
-        <div className="min-h-[28px] rounded-md border border-border/50 bg-muted/20 px-2.5 py-1 text-[11px] leading-tight">
-          {hoveredEvent ? (() => {
-            const g = allGames.find((ag) => ag.id === hoveredEvent.gameId);
-            const matchup =
-              g && g.awayTeam && g.homeTeam
-                ? `${g.awayTeam} @ ${g.homeTeam}${g.gameNum ? ` · G${g.gameNum}` : ""}`
-                : null;
-            const p = hoveredEvent.eventMeta.period;
-            const clk = hoveredEvent.eventMeta.clock;
-            const qc = p != null && clk ? `Q${p} ${clk}` : null;
-            const home = hoveredEvent.eventMeta.homeScore;
-            const away = hoveredEvent.eventMeta.awayScore;
-            const score = home != null && away != null ? `${away}–${home}` : null;
-            return (
-              <div className="flex items-center gap-2 min-w-0">
-                {matchup ? (
-                  <span className="font-medium text-foreground/90 shrink-0">{matchup}</span>
-                ) : null}
-                {qc ? <span className="text-muted-foreground shrink-0">{qc}</span> : null}
-                {score ? <span className="tabular-nums shrink-0">{score}</span> : null}
-                <span className="text-muted-foreground truncate">
-                  {eventLineText(hoveredEvent)}
-                </span>
-              </div>
-            );
-          })() : (
-            <span className="text-muted-foreground italic">
-              hover the chart to see each play
-            </span>
-          )}
-        </div>
-
         {/* Round filter */}
         <div className="grid grid-cols-4 gap-1">
           {ROUND_OPTIONS.map((r) => {
@@ -910,11 +923,36 @@ export function LeagueChartPanel({
                 g={g}
                 highlighted={hoveredGameId === g.id}
                 onHoverChange={(v) => setHoveredGameId(v ? g.id : null)}
-                hoveredEvent={hoveredGameId === g.id ? hoveredEvent : null}
+                hoveredState={hoveredGameStateById.get(g.id) ?? null}
               />
             ))}
           </div>
         </div>
+
+        {/* Play-content row: "F. Last Npts" for the hovered chart point. */}
+        {hoveredEvent ? (
+          <div className="text-[11px] text-muted-foreground leading-tight px-0.5">
+            {(() => {
+              const g = allGames.find((ag) => ag.id === hoveredEvent.gameId);
+              const matchup = g && g.awayTeam && g.homeTeam
+                ? `${g.awayTeam} @ ${g.homeTeam}${g.gameNum ? ` G${g.gameNum}` : ""}`
+                : "";
+              const p = hoveredEvent.eventMeta.period;
+              const clk = hoveredEvent.eventMeta.clock;
+              const qc = p != null && clk ? `Q${p} ${clk}` : "";
+              const detail = compactPlayText(hoveredEvent, playerNameById);
+              return (
+                <div className="flex items-center gap-2 min-w-0">
+                  {matchup ? (
+                    <span className="font-medium text-foreground/80 shrink-0">{matchup}</span>
+                  ) : null}
+                  {qc ? <span className="shrink-0">{qc}</span> : null}
+                  <span className="text-foreground/90 truncate">{detail}</span>
+                </div>
+              );
+            })()}
+          </div>
+        ) : null}
         {isCommissionerViewer ? (
           <div className="flex items-center justify-between text-[10px] text-muted-foreground -mt-1">
             <span>
@@ -1010,7 +1048,7 @@ function ScoreboardCard({
   g,
   highlighted,
   onHoverChange,
-  hoveredEvent,
+  hoveredState,
 }: {
   g: {
     id: string;
@@ -1025,23 +1063,21 @@ function ScoreboardCard({
   };
   highlighted: boolean;
   onHoverChange: (hovered: boolean) => void;
-  hoveredEvent: ProjectionEvent | null;
+  hoveredState: { homeScore: number; awayScore: number; status: "pre" | "in" | "post" } | null;
 }) {
-  const isLive = g.status === "in";
-  const isFinal = g.status === "post";
-  const isPre = g.status === "pre";
-  const h = g.homeScore ?? 0;
-  const a = g.awayScore ?? 0;
+  // When a chart point is hovered, rewind every card to show the score + status
+  // at that moment in time. hoveredState === null ⇒ show current / final.
+  const effectiveStatus = hoveredState?.status ?? g.status;
+  const h = hoveredState ? hoveredState.homeScore : g.homeScore ?? 0;
+  const a = hoveredState ? hoveredState.awayScore : g.awayScore ?? 0;
+  const isLive = effectiveStatus === "in";
+  const isFinal = effectiveStatus === "post";
+  const isPre = effectiveStatus === "pre";
   const homeWin = h > a;
   const awayWin = a > h;
   const timeLabel = g.startTime
     ? new Date(g.startTime).toLocaleDateString("en-US", { month: "numeric", day: "numeric" })
     : "";
-
-  const showEvent = !!hoveredEvent && hoveredEvent.gameId === g.id;
-  const eventLine = showEvent
-    ? eventLineText(hoveredEvent!)
-    : null;
 
   return (
     <Link
@@ -1062,13 +1098,44 @@ function ScoreboardCard({
       </div>
       <TeamLine team={g.awayTeam} score={a} isPre={isPre} isWin={awayWin} isLose={isFinal && homeWin} />
       <TeamLine team={g.homeTeam} score={h} isPre={isPre} isWin={homeWin} isLose={isFinal && awayWin} />
-      {eventLine ? (
-        <div className="text-[9px] text-muted-foreground truncate leading-tight border-t border-border/40 mt-0.5 pt-0.5">
-          {eventLine}
-        </div>
-      ) : null}
     </Link>
   );
+}
+
+/** Compact scorer + points for hover: "S. Curry 3pts". Falls back to text. */
+function compactPlayText(
+  ev: ProjectionEvent,
+  nameLookup: Map<string, string>,
+): string {
+  if (ev.kind === "end_of_game") {
+    const { homeScore, awayScore } = ev.eventMeta;
+    if (homeScore != null && awayScore != null) return `Final · ${awayScore}–${homeScore}`;
+    return "Final";
+  }
+  if (ev.kind === "end_of_half") {
+    const p = ev.eventMeta.period ?? 2;
+    return p === 2 ? "End Q2 (half)" : `End Q${p}`;
+  }
+  const pid = ev.eventMeta.playerIds[0];
+  let fullName: string | null = pid ? nameLookup.get(pid) ?? null : null;
+  if (!fullName && ev.eventMeta.text) {
+    const m = ev.eventMeta.text.match(
+      /^([A-Z][A-Za-z'.\-]+(?: [A-Z][A-Za-z'.\-]+)+?)\s+(makes|misses|hits|drives|dunks|free throw|layup)/,
+    );
+    if (m) fullName = m[1];
+  }
+  const sv = ev.eventMeta.scoreValue;
+  const ptsSuffix = sv != null && sv > 0 ? ` ${sv}pt${sv === 1 ? "" : "s"}` : "";
+  if (fullName) {
+    const parts = fullName.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      const last = parts[parts.length - 1];
+      return `${parts[0][0]}. ${last}${ptsSuffix}`;
+    }
+    return `${fullName}${ptsSuffix}`;
+  }
+  const text = ev.eventMeta.text ?? "scoring play";
+  return text.length > 60 ? `${text.slice(0, 58)}…` : text;
 }
 
 function eventLineText(ev: ProjectionEvent): string {
