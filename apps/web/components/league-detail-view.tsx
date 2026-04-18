@@ -324,25 +324,9 @@ function InjuryBadge({ status }: { status?: string | null }) {
   );
 }
 
-function formatRunnerUp(name: string): string {
+function shortenNames(name: string, nameToShort: Map<string, string>): string {
   const parts = name.split(", ").map((n) => n.trim());
-  if (parts.length <= 1) return name;
-  // Try first names only
-  const firsts = parts.map((n) => n.split(/\s+/)[0] ?? n);
-  if (new Set(firsts).size === firsts.length) return firsts.join(", ");
-  // First names collide — add last name letters progressively
-  const parsed = parts.map((n) => {
-    const w = n.split(/\s+/);
-    return { first: w[0] ?? n, last: w.slice(1).join(" ") };
-  });
-  const maxLast = Math.max(...parsed.map((p) => p.last.length));
-  for (let len = 1; len <= maxLast; len++) {
-    const abbrs = parsed.map((p) =>
-      p.last ? `${p.first} ${p.last.slice(0, len)}.` : p.first,
-    );
-    if (new Set(abbrs).size === abbrs.length) return abbrs.join(", ");
-  }
-  return name;
+  return parts.map((n) => nameToShort.get(n) ?? n).join(", ");
 }
 
 function formatRelativeTime(input: string | Date | null | undefined, now: number = Date.now()) {
@@ -1849,6 +1833,56 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
     const replacementPts = Math.max(0, Math.round(replacement?.totalPoints ?? 0));
 
     return { rankById, replacementPts };
+  }, [data]);
+
+  // Build maps of userId → short name and fullName → short name for all members.
+  const { shortNameById, shortNameByFull } = useMemo(() => {
+    const byId = new Map<string, string>();
+    const byFull = new Map<string, string>();
+    if (!data) return { shortNameById: byId, shortNameByFull: byFull };
+    const members = data.members.map((m) => ({
+      userId: m.userId,
+      full: m.name,
+      first: m.name.split(/\s+/)[0] ?? m.name,
+      last: m.name.split(/\s+/).slice(1).join(" "),
+    }));
+    // Try first names
+    const firstCounts = new Map<string, number>();
+    for (const m of members) firstCounts.set(m.first, (firstCounts.get(m.first) ?? 0) + 1);
+    for (const m of members) {
+      if (firstCounts.get(m.first) === 1) {
+        byId.set(m.userId, m.first);
+        byFull.set(m.full, m.first);
+      }
+    }
+    // For collisions, add last name characters progressively
+    const colliders = members.filter((m) => !byId.has(m.userId));
+    if (colliders.length > 0) {
+      const maxLast = Math.max(...colliders.map((m) => m.last.length));
+      for (let len = 1; len <= maxLast; len++) {
+        const remaining = colliders.filter((m) => !byId.has(m.userId));
+        const abbrs = remaining.map((m) => ({
+          ...m,
+          short: m.last ? `${m.first} ${m.last.slice(0, len)}.` : m.first,
+        }));
+        const counts = new Map<string, number>();
+        for (const a of abbrs) counts.set(a.short, (counts.get(a.short) ?? 0) + 1);
+        for (const a of abbrs) {
+          if (counts.get(a.short) === 1) {
+            byId.set(a.userId, a.short);
+            byFull.set(a.full, a.short);
+          }
+        }
+      }
+      // Fallback: full name
+      for (const m of colliders) {
+        if (!byId.has(m.userId)) {
+          byId.set(m.userId, m.full);
+          byFull.set(m.full, m.full);
+        }
+      }
+    }
+    return { shortNameById: byId, shortNameByFull: byFull };
   }, [data]);
 
   // Compute max allowed bid per user at each row in each resolved round.
@@ -4014,7 +4048,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                   )}
                                   {row.runnerUpName ? (
                                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-400/10 dark:text-amber-200">
-                                      2nd · {formatRunnerUp(row.runnerUpName)}
+                                      2nd · {shortenNames(row.runnerUpName, shortNameByFull)}
                                       {row.runnerUpBid !== null ? (
                                         <span className="tabular-nums">
                                           {" · "}
@@ -4159,7 +4193,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                     {row.runnerUpName ? (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-amber-500/10 px-3 py-1.5 dark:bg-amber-400/10">
                                       <span className="text-sm font-semibold text-amber-900 dark:text-amber-100" title={row.runnerUpName}>
-                                        {formatRunnerUp(row.runnerUpName)}
+                                        {shortenNames(row.runnerUpName, shortNameByFull)}
                                       </span>
                                       <span className="text-xs tabular-nums text-amber-700 dark:text-amber-300">
                                         {row.runnerUpBid === null
