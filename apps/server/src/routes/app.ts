@@ -15,9 +15,11 @@ import {
   leagueInvite,
   leagueAction,
   leagueMember,
+  nbaEventProjection,
   nbaGame,
   nbaPlay,
   nbaPlayerGameStats,
+  nbaProjectionJob,
   nbaTeamGameStats,
   nbaWinProb,
   rosterEntry,
@@ -45,6 +47,7 @@ import {
   type PlayerPoolEntry,
 } from "../lib/player-pool.js";
 import { computeLivePointsByPlayer } from "../lib/espn-nba/ingest.js";
+import { enqueueProjectionRebuild } from "../lib/projections/rebuild.js";
 
 const LEAGUE_CREATOR_EMAIL = "santhoshnarayan@gmail.com";
 const MAX_ACTIVE_MEMBERS = 16;
@@ -630,6 +633,13 @@ appRouter.get("/leagues/:leagueId/scoring-timeline", async (c) => {
 // with cumulative per-manager fantasy points and the associated game context.
 // Frontend filters by resolution (game / half / scoring). Projected points
 // and win prob are computed client-side from the sim.
+//
+// Play-in games are excluded: seriesKey matching can misattribute play-in
+// games to r1 series when a seed overlap exists (e.g., a 7v8 play-in between
+// the 7-seed and the play-in-winner 8-seed looks like the 2v7 R1 matchup's
+// teams). We filter by R1_FLOOR_DATE below, which is the day the first real
+// R1 playoff game tipped off — 2026-04-19 for the 2026 bracket.
+const R1_FLOOR_DATE = new Date("2026-04-19T00:00:00Z");
 appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
   const session = getRequiredSession(c);
   if (!session) return c.json({ error: "Unauthorized" }, 401);
@@ -669,7 +679,7 @@ appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
       gameNum: nbaGame.gameNum,
     })
     .from(nbaGame)
-    .where(isNotNull(nbaGame.seriesKey))
+    .where(and(isNotNull(nbaGame.seriesKey), gte(nbaGame.date, R1_FLOOR_DATE)))
     .orderBy(asc(nbaGame.startTime));
 
   const finishedOrLive = games.filter((g) => g.status === "post" || g.status === "in");
@@ -709,6 +719,9 @@ appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
       clock: nbaPlay.clock,
       scoreValue: nbaPlay.scoreValue,
       playerIds: nbaPlay.playerIds,
+      text: nbaPlay.text,
+      homeScore: nbaPlay.homeScore,
+      awayScore: nbaPlay.awayScore,
     })
     .from(nbaPlay)
     .where(and(inArray(nbaPlay.gameId, gameIds), eq(nbaPlay.scoringPlay, true)))
@@ -721,9 +734,12 @@ appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
     gameNum: number | null;
     homeTeam: string | null;
     awayTeam: string | null;
+    homeScore: number | null;
+    awayScore: number | null;
     period: number | null;
     clock: string | null;
     label: "play" | "half" | "end";
+    eventText: string | null;
     pointsDelta: Record<string, number>;
   };
 
@@ -762,9 +778,12 @@ appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
         gameNum: g.gameNum,
         homeTeam: g.homeTeam,
         awayTeam: g.awayTeam,
+        homeScore: p.homeScore ?? null,
+        awayScore: p.awayScore ?? null,
         period: p.period,
         clock: p.clock,
         label: "play",
+        eventText: p.text ?? null,
         pointsDelta: delta,
       });
 
@@ -799,9 +818,12 @@ appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
         gameNum: g.gameNum,
         homeTeam: g.homeTeam,
         awayTeam: g.awayTeam,
+        homeScore: g.homeScore ?? null,
+        awayScore: g.awayScore ?? null,
         period: null,
         clock: null,
         label: "end",
+        eventText: "Final",
         pointsDelta: reconcile,
       });
     }
@@ -3895,4 +3917,115 @@ appRouter.post("/leagues/:leagueId/snake/end", async (c) => {
 
   const result = await engine.enqueue({ type: "end", actorUserId: session.user.id });
   return c.json(result, result.ok ? 200 : 400);
+});
+
+// ─── Event-level projections (per-event sim cache) ────────────────
+
+appRouter.get("/leagues/:leagueId/projections-timeline", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+
+  const rows = await db
+    .select()
+    .from(nbaEventProjection)
+    .where(eq(nbaEventProjection.leagueId, access.league.id))
+    .orderBy(
+      asc(nbaEventProjection.updatedAtEvent),
+      asc(nbaEventProjection.gameId),
+      asc(nbaEventProjection.sequence),
+    );
+
+  const members = await getLeagueMembers(access.league.id);
+  const managers = members
+    .filter((m) => m.userId)
+    .map((m) => ({ userId: m.userId, name: m.name }));
+
+  const latestJobRows = await db
+    .select()
+    .from(nbaProjectionJob)
+    .where(eq(nbaProjectionJob.leagueId, access.league.id))
+    .orderBy(desc(nbaProjectionJob.createdAt))
+    .limit(1);
+  const latestJob = latestJobRows[0] ?? null;
+
+  return c.json({
+    managers,
+    events: rows.map((r) => ({
+      gameId: r.gameId,
+      sequence: r.sequence,
+      updatedAtEvent: r.updatedAtEvent.toISOString(),
+      kind: r.kind,
+      actualPoints: r.actualPoints,
+      projectedPoints: r.projectedPoints,
+      eventMeta: r.eventMeta,
+      gamesSnapshot: r.gamesSnapshot,
+      simCount: r.simCount,
+      computedAt: r.computedAt.toISOString(),
+    })),
+    latestJob: latestJob
+      ? {
+          id: latestJob.id,
+          status: latestJob.status,
+          totalEvents: latestJob.totalEvents,
+          processedEvents: latestJob.processedEvents,
+          startedAt: latestJob.startedAt?.toISOString() ?? null,
+          finishedAt: latestJob.finishedAt?.toISOString() ?? null,
+          lastError: latestJob.lastError,
+          createdAt: latestJob.createdAt.toISOString(),
+        }
+      : null,
+  });
+});
+
+appRouter.post("/leagues/:leagueId/rebuild-projections", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (normalizeEmail(session.user.email) !== LEAGUE_CREATOR_EMAIL) {
+    return c.json({ error: "Restricted to the commissioner account" }, 403);
+  }
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+
+  const body = (await c.req.json().catch(() => ({}))) as { mode?: "full" | "incremental" };
+  const mode = body.mode === "full" ? "full" : "incremental";
+
+  const jobId = await enqueueProjectionRebuild({
+    leagueId: access.league.id,
+    requestedByUserId: session.user.id,
+    mode,
+  });
+
+  return c.json({ jobId, mode });
+});
+
+appRouter.get("/leagues/:leagueId/projection-job/:jobId", async (c) => {
+  const session = getRequiredSession(c);
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  if (!access) return c.json({ error: "League not found" }, 404);
+
+  const rows = await db
+    .select()
+    .from(nbaProjectionJob)
+    .where(
+      and(
+        eq(nbaProjectionJob.id, c.req.param("jobId")),
+        eq(nbaProjectionJob.leagueId, access.league.id),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row) return c.json({ error: "Job not found" }, 404);
+  return c.json({
+    id: row.id,
+    status: row.status,
+    totalEvents: row.totalEvents,
+    processedEvents: row.processedEvents,
+    startedAt: row.startedAt?.toISOString() ?? null,
+    finishedAt: row.finishedAt?.toISOString() ?? null,
+    lastError: row.lastError,
+    createdAt: row.createdAt.toISOString(),
+  });
 });

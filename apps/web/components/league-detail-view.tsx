@@ -4643,6 +4643,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       {activeTab === "chart" ? (
         <LeagueChartPanel
           leagueId={leagueId}
+          viewerEmail={session?.user?.email ?? null}
           rosters={data.rosters.map((r) => ({
             userId: r.userId,
             name: r.name,

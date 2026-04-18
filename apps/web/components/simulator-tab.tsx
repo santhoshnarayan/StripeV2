@@ -38,7 +38,7 @@ import {
   type ManagerBudgetInfo,
   type EquilibriumResult,
   type TeamExposureRow,
-} from "@/lib/sim/draft";
+} from "@/lib/sim";
 
 type SimSubTab = "leaderboard" | "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor" | "exposure";
 

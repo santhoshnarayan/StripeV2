@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Line,
   LineChart,
+  ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -62,6 +63,47 @@ type LeagueRoster = {
   players: Array<{ playerId: string; playerName: string; playerTeam: string }>;
 };
 
+type ProjectionEvent = {
+  gameId: string;
+  sequence: number;
+  updatedAtEvent: string;
+  kind: "scoring" | "end_of_half" | "end_of_game";
+  actualPoints: Record<string, number>;
+  projectedPoints: Record<
+    string,
+    { mean: number; stddev: number; p10: number; p90: number; winProb: number }
+  >;
+  eventMeta: {
+    text: string | null;
+    teamAbbrev: string | null;
+    playerIds: string[];
+    scoreValue: number | null;
+    period: number | null;
+    clock: string | null;
+    homeScore: number | null;
+    awayScore: number | null;
+  };
+  simCount: number;
+  computedAt: string;
+};
+
+type ProjectionJobSummary = {
+  id: string;
+  status: string;
+  totalEvents: number | null;
+  processedEvents: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+};
+
+type ProjectionsResponse = {
+  managers: Array<{ userId: string; name: string }>;
+  events: ProjectionEvent[];
+  latestJob: ProjectionJobSummary | null;
+};
+
 type ChartMode = "prob" | "pts" | "proj";
 type Resolution = "game" | "half" | "scoring";
 type Round = "r1" | "r2" | "cf" | "finals";
@@ -107,46 +149,124 @@ function roundFromSeriesKey(key: string | null): Round | null {
   return null;
 }
 
+// Parse NBA game clock ("12:34", "0:34.5", "34.5") to seconds remaining in the period.
+function clockToSecondsRemaining(clock: string | null): number | null {
+  if (!clock) return null;
+  const parts = clock.split(":");
+  if (parts.length === 2) {
+    const m = parseInt(parts[0], 10);
+    const s = parseFloat(parts[1]);
+    if (Number.isFinite(m) && Number.isFinite(s)) return m * 60 + s;
+  } else if (parts.length === 1) {
+    const s = parseFloat(parts[0]);
+    if (Number.isFinite(s)) return s;
+  }
+  return null;
+}
+
+/** Approximate wall-clock time a play occurred: game.startTime + elapsed game time.
+ *  Ignores halftime/timeouts/reviews, but is far more useful than the ingest
+ *  timestamp (which clumps events by sync batch). */
+function synthPlayTime(
+  startTime: string | null | undefined,
+  period: number | null,
+  clock: string | null,
+): string | null {
+  if (!startTime || period == null) return null;
+  const startMs = new Date(startTime).getTime();
+  if (!Number.isFinite(startMs)) return null;
+  const periodLen = 12 * 60;
+  const remaining = clockToSecondsRemaining(clock) ?? periodLen;
+  const elapsed = (period - 1) * periodLen + (periodLen - remaining);
+  return new Date(startMs + elapsed * 1000).toISOString();
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export function LeagueChartPanel({
   leagueId,
   rosters,
+  viewerEmail,
 }: {
   leagueId: string;
   rosters: LeagueRoster[];
+  viewerEmail?: string | null;
 }) {
   const { simResults, status: simStatus, pendingEvents } = useAutoSim(leagueId);
   const [timeseries, setTimeseries] = useState<TimeseriesResponse | null>(null);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
+  const [projections, setProjections] = useState<ProjectionsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [mode, setMode] = useState<ChartMode>("pts");
   const [resolution, setResolution] = useState<Resolution>("game");
   const [activeRound, setActiveRound] = useState<Round | null>(null);
+  const [hoveredGameId, setHoveredGameId] = useState<string | null>(null);
+  const [hoveredEventKey, setHoveredEventKey] = useState<string | null>(null);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
+
+  const isCommissionerViewer =
+    typeof viewerEmail === "string" &&
+    viewerEmail.trim().toLowerCase() === "santhoshnarayan@gmail.com";
+
+  const refetchData = useCallback(async () => {
+    try {
+      const [t, s, p] = await Promise.all([
+        appApiFetch<TimeseriesResponse>(
+          `/leagues/${encodeURIComponent(leagueId)}/timeseries`,
+        ),
+        appApiFetch<ScheduleResponse>(`/nba/schedule`),
+        appApiFetch<ProjectionsResponse>(
+          `/leagues/${encodeURIComponent(leagueId)}/projections-timeline`,
+        ).catch(() => null),
+      ]);
+      setTimeseries(t);
+      setSchedule(s);
+      setProjections(p);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [leagueId]);
+
+  const triggerRebuild = useCallback(
+    async (mode: "full" | "incremental") => {
+      if (rebuildBusy) return;
+      setRebuildBusy(true);
+      try {
+        await appApiFetch(`/leagues/${encodeURIComponent(leagueId)}/rebuild-projections`, {
+          method: "POST",
+          body: JSON.stringify({ mode }),
+        });
+        await refetchData();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setRebuildBusy(false);
+      }
+    },
+    [leagueId, rebuildBusy, refetchData],
+  );
 
   useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    Promise.all([
-      appApiFetch<TimeseriesResponse>(
-        `/leagues/${encodeURIComponent(leagueId)}/timeseries`,
-      ),
-      appApiFetch<ScheduleResponse>(`/nba/schedule`),
-    ])
-      .then(([t, s]) => {
-        if (cancelled) return;
-        setTimeseries(t);
-        setSchedule(s);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError((e as Error).message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [leagueId]);
+    void refetchData();
+  }, [refetchData]);
+
+  // Re-pull timeseries whenever the sim just finished a live rerun — that's
+  // when new game-end checkpoints exist on the server that the chart hasn't
+  // yet rendered. Also poll every 60s as a fallback.
+  const prevSimStatusRef = useRef(simStatus);
+  useEffect(() => {
+    if (prevSimStatusRef.current === "rerunning" && simStatus === "ready") {
+      void refetchData();
+    }
+    prevSimStatusRef.current = simStatus;
+  }, [simStatus, refetchData]);
+
+  useEffect(() => {
+    const id = setInterval(() => void refetchData(), 60_000);
+    return () => clearInterval(id);
+  }, [refetchData]);
 
   // Per-manager projection totals (mean + win prob) from the sim.
   const managerProjections = useMemo(() => {
@@ -243,18 +363,22 @@ export function LeagueChartPanel({
     });
   }, [schedule]);
 
-  // Projected remaining points per manager, spread across future games.
-  const projectedRemainingByDate = useMemo(() => {
+  // Projection steps: a time-ordered list of points to add to the running total
+  // after the last actual checkpoint, one per future game plus synthetic
+  // anchors for any round with no scheduled games yet.
+  //
+  // Each step has a time `t`, an optional `gameId` (for hover-syncing with the
+  // scoreboard), and a per-manager increment. The sum of all increments per
+  // manager equals the manager's projected remaining points — so the chart's
+  // endpoint Y lands on the sim mean rather than undercounting.
+  const projectionSteps = useMemo(() => {
     if (!managerProjections || !simResults) return null;
     const now = Date.now();
     const futureGames = allGames.filter((g) => {
       const t = g.startTime ? new Date(g.startTime).getTime() : 0;
       return g.status === "pre" || (g.status === "in" && t > now);
     });
-    if (futureGames.length === 0) return null;
 
-    // Per round: mean projected remaining per manager (approx: use sim result's
-    // projectedPointsByRound summed over roster, assumed to still be upcoming).
     const roundIdx = { r1: 0, r2: 1, cf: 2, finals: 3 };
     const perManagerPerRound = new Map<string, number[]>();
     for (const r of rosters) {
@@ -268,43 +392,140 @@ export function LeagueChartPanel({
       perManagerPerRound.set(r.userId, totals);
     }
 
-    // Bucket future games by round.
-    const gamesByRound = { r1: [] as typeof futureGames, r2: [] as typeof futureGames, cf: [] as typeof futureGames, finals: [] as typeof futureGames };
+    const gamesByRound = {
+      r1: [] as typeof futureGames,
+      r2: [] as typeof futureGames,
+      cf: [] as typeof futureGames,
+      finals: [] as typeof futureGames,
+    };
     for (const g of futureGames) gamesByRound[g.round].push(g);
 
-    // Per-game increment per manager.
-    const byGameId = new Map<string, Record<string, number>>();
+    // Anchor date for rounds with no scheduled games — start from the latest
+    // known game time and add a per-round offset (rough NBA postseason pacing).
+    const lastKnownT = allGames.reduce((acc, g) => {
+      const t = g.startTime ? new Date(g.startTime).getTime() : 0;
+      return t > acc ? t : acc;
+    }, now);
+    const DAY = 24 * 60 * 60 * 1000;
+    const roundAnchorOffsetDays: Record<Round, number> = { r1: 3, r2: 14, cf: 28, finals: 42 };
+
+    const steps: Array<{ t: string; gameId?: string; inc: Record<string, number> }> = [];
     for (const r of ["r1", "r2", "cf", "finals"] as const) {
       const gs = gamesByRound[r];
-      if (gs.length === 0) continue;
-      for (const g of gs) {
+      if (gs.length === 0) {
+        // No scheduled games → emit a single anchor for the whole round.
+        const t = new Date(lastKnownT + roundAnchorOffsetDays[r] * DAY).toISOString();
         const inc: Record<string, number> = {};
         for (const [userId, rounds] of perManagerPerRound) {
-          inc[userId] = rounds[roundIdx[r]] / gs.length;
+          inc[userId] = rounds[roundIdx[r]];
         }
-        byGameId.set(g.id, inc);
+        steps.push({ t, inc });
+      } else {
+        for (const g of gs) {
+          const t = g.startTime ?? g.date ?? new Date(lastKnownT).toISOString();
+          const inc: Record<string, number> = {};
+          for (const [userId, rounds] of perManagerPerRound) {
+            inc[userId] = rounds[roundIdx[r]] / gs.length;
+          }
+          steps.push({ t, gameId: g.id, inc });
+        }
       }
     }
-    return byGameId;
+    steps.sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
+    return steps;
   }, [managerProjections, simResults, allGames, rosters]);
 
-  // Final chart series data, depending on `mode`.
-  const { chartData, yLabel, activeManagerIds } = useMemo(() => {
+  const hasCachedProjections = !!(projections && projections.events.length > 0);
+
+  // Map gameId → startTime so we can synthesize play-time from period + clock.
+  const gameStartTimeById = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!schedule) return m;
+    for (const games of Object.values(schedule.series)) {
+      for (const g of games) {
+        if (g.startTime) m.set(g.id, g.startTime);
+      }
+    }
+    return m;
+  }, [schedule]);
+
+  // Final chart series data, depending on `mode`. When cached per-event
+  // projections are available, the chart uses them (x-axis = event time,
+  // y-axis = actualPoints | projected.mean | winProb*100). Otherwise falls
+  // back to the old schedule-derived cumulative view.
+  const { chartData, activeManagerIds } = useMemo(() => {
+    if (hasCachedProjections && projections) {
+      const managerIds = projections.managers.map((m) => m.userId);
+      // Filter by resolution: per-game = end_of_game only, per-half = halves +
+      // end_of_game, scoring = everything.
+      let filtered = projections.events;
+      if (resolution === "half") {
+        filtered = filtered.filter(
+          (ev) => ev.kind === "end_of_half" || ev.kind === "end_of_game",
+        );
+      } else if (resolution === "game") {
+        filtered = filtered.filter((ev) => ev.kind === "end_of_game");
+      }
+      type Row = {
+        t: string;
+        values: Record<string, number>;
+        gameId: string;
+        eventKey: string;
+      };
+      const rows: Row[] = filtered
+        .map((ev) => {
+          const values: Record<string, number> = {};
+          for (const uid of managerIds) {
+            if (mode === "pts") values[uid] = ev.actualPoints[uid] ?? 0;
+            else if (mode === "proj") values[uid] = ev.projectedPoints[uid]?.mean ?? 0;
+            else values[uid] = (ev.projectedPoints[uid]?.winProb ?? 0) * 100;
+          }
+          const playT = synthPlayTime(
+            gameStartTimeById.get(ev.gameId),
+            ev.eventMeta.period,
+            ev.eventMeta.clock,
+          );
+          return {
+            t: playT ?? ev.updatedAtEvent,
+            values,
+            gameId: ev.gameId,
+            eventKey: `${ev.gameId}|${ev.sequence}`,
+          };
+        })
+        .sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
+
+      let kept: Row[] = rows;
+      if (kept.length > DEFAULT_CHART_POINT_BUDGET) {
+        const idx = lttbDownsample(
+          kept,
+          DEFAULT_CHART_POINT_BUDGET,
+          (r) => managerIds.reduce((s, m) => s + (r.values[m] ?? 0), 0),
+        );
+        kept = idx.map((i) => rows[i]);
+      }
+      const flat = kept.map((r) => {
+        const out: Record<string, number | string> = {
+          t: r.t,
+          __gameId: r.gameId,
+          __eventKey: r.eventKey,
+        };
+        for (const uid of managerIds) out[uid] = r.values[uid] ?? 0;
+        return out;
+      });
+      return { chartData: flat, activeManagerIds: managerIds };
+    }
+
     if (!timeseries) {
-      return { chartData: [] as Array<Record<string, number | string>>, yLabel: "", activeManagerIds: [] as string[] };
+      return { chartData: [] as Array<Record<string, number | string>>, activeManagerIds: [] as string[] };
     }
     const managerIds = timeseries.managers.map((m) => m.userId);
 
     if (mode === "prob") {
-      // Win % — v1 shows the current sim's win probability as a flat line back
-      // in time. Until we wire per-checkpoint sim replays, this at least shows
-      // rank ordering and current standing.
       const probByUser = new Map<string, number>();
       if (managerProjections) {
         for (const m of managerProjections) probByUser.set(m.userId, m.winProbability * 100);
       }
       const rows: Array<Record<string, number | string>> = [];
-      // Leading anchor.
       const firstT = cumulative[0]?.t ?? new Date().toISOString();
       const nowT = new Date().toISOString();
       const endT = allGames[allGames.length - 1]?.startTime ?? nowT;
@@ -313,30 +534,25 @@ export function LeagueChartPanel({
         for (const uid of managerIds) row[uid] = probByUser.get(uid) ?? 0;
         rows.push(row);
       }
-      return { chartData: rows, yLabel: "Win %", activeManagerIds: managerIds };
+      return { chartData: rows, activeManagerIds: managerIds };
     }
 
-    // Base rows from actual cumulative at each kept checkpoint.
     type Row = { t: string; totals: Record<string, number>; gameId?: string };
     const baseRows: Row[] = cumulative.map((r) => ({ t: r.t, totals: r.totals, gameId: r.cp.gameId }));
 
-    if (mode === "proj" && projectedRemainingByDate) {
-      const lastActual: Record<string, number> = baseRows.length ? { ...baseRows[baseRows.length - 1].totals } : Object.fromEntries(managerIds.map((u) => [u, 0]));
+    if (mode === "proj" && projectionSteps) {
+      const lastActual: Record<string, number> = baseRows.length
+        ? { ...baseRows[baseRows.length - 1].totals }
+        : Object.fromEntries(managerIds.map((u) => [u, 0]));
       const running: Record<string, number> = { ...lastActual };
-      const nowMs = Date.now();
-      const futureGames = allGames.filter((g) => {
-        const t = g.startTime ? new Date(g.startTime).getTime() : 0;
-        return g.status === "pre" || (g.status === "in" && t > nowMs);
-      });
-      for (const g of futureGames) {
-        const inc = projectedRemainingByDate.get(g.id);
-        if (!inc) continue;
-        for (const [uid, v] of Object.entries(inc)) running[uid] = (running[uid] ?? 0) + v;
-        baseRows.push({ t: g.startTime ?? new Date(nowMs).toISOString(), totals: { ...running }, gameId: g.id });
+      for (const step of projectionSteps) {
+        for (const [uid, v] of Object.entries(step.inc)) {
+          running[uid] = (running[uid] ?? 0) + v;
+        }
+        baseRows.push({ t: step.t, totals: { ...running }, gameId: step.gameId });
       }
     }
 
-    // Downsample if needed.
     let rows: Row[] = baseRows;
     if (rows.length > DEFAULT_CHART_POINT_BUDGET) {
       const idx = lttbDownsample(
@@ -349,11 +565,23 @@ export function LeagueChartPanel({
 
     const flat = rows.map((r) => {
       const out: Record<string, number | string> = { t: r.t };
+      if (r.gameId) out.__gameId = r.gameId;
       for (const uid of managerIds) out[uid] = r.totals[uid] ?? 0;
       return out;
     });
-    return { chartData: flat, yLabel: mode === "proj" ? "Points" : "Points", activeManagerIds: managerIds };
-  }, [timeseries, cumulative, mode, allGames, managerProjections, projectedRemainingByDate]);
+    return { chartData: flat, activeManagerIds: managerIds };
+  }, [
+    hasCachedProjections,
+    projections,
+    mode,
+    resolution,
+    gameStartTimeById,
+    timeseries,
+    cumulative,
+    allGames,
+    managerProjections,
+    projectionSteps,
+  ]);
 
   // Zoom to the active round's time window.
   const zoomDomain = useMemo(() => {
@@ -368,25 +596,59 @@ export function LeagueChartPanel({
     return [new Date(ts[0]).toISOString(), new Date(ts[ts.length - 1] + 4 * 60 * 60 * 1000).toISOString()] as const;
   }, [activeRound, allGames]);
 
+  const displayManagers = useMemo(() => {
+    if (hasCachedProjections && projections) return projections.managers;
+    return timeseries?.managers ?? [];
+  }, [hasCachedProjections, projections, timeseries]);
+
   const managerColors = useMemo(() => {
     const m = new Map<string, string>();
-    timeseries?.managers.forEach((mgr, i) => m.set(mgr.userId, COLORS[i % COLORS.length]));
+    displayManagers.forEach((mgr, i) => m.set(mgr.userId, COLORS[i % COLORS.length]));
     return m;
-  }, [timeseries]);
+  }, [displayManagers]);
+
+  // Game-end dot positions — one per kept checkpoint labeled "end", placed
+  // at a fixed y above the chart area for a NCAAM-style timeline marker row.
+  const gameEndDots = useMemo(() => {
+    if (!timeseries) return [] as Array<{ t: string; gameId: string; color: string }>;
+    const ends = timeseries.checkpoints.filter((c) => c.label === "end");
+    // Color each dot by the manager who gained the most points from that game.
+    return ends.map((c) => {
+      let bestUid: string | null = null;
+      let bestDelta = 0;
+      for (const [uid, d] of Object.entries(c.pointsDelta)) {
+        if (d > bestDelta) { bestDelta = d; bestUid = uid; }
+      }
+      const color = bestUid ? managerColors.get(bestUid) ?? "#94a3b8" : "#94a3b8";
+      return { t: c.t, gameId: c.gameId, color };
+    });
+  }, [timeseries, managerColors]);
 
   // Right-edge label list sorted by final value descending.
   const endLabels = useMemo(() => {
     if (!chartData.length) return [] as Array<{ userId: string; name: string; value: number }>;
     const last = chartData[chartData.length - 1];
-    const managers = timeseries?.managers ?? [];
-    return managers
+    return displayManagers
       .map((m) => ({
         userId: m.userId,
         name: m.name,
         value: typeof last[m.userId] === "number" ? (last[m.userId] as number) : 0,
       }))
       .sort((a, b) => b.value - a.value);
-  }, [chartData, timeseries]);
+  }, [chartData, displayManagers]);
+
+  // Lookup for hover details → map from eventKey to event.
+  const eventByKey = useMemo(() => {
+    const m = new Map<string, ProjectionEvent>();
+    if (projections) {
+      for (const ev of projections.events) {
+        m.set(`${ev.gameId}|${ev.sequence}`, ev);
+      }
+    }
+    return m;
+  }, [projections]);
+
+  const hoveredEvent = hoveredEventKey ? eventByKey.get(hoveredEventKey) ?? null : null;
 
   if (error) {
     return (
@@ -428,7 +690,24 @@ export function LeagueChartPanel({
         <div className="flex gap-3 items-stretch">
           <div className="flex-1 min-w-0 h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <LineChart
+                data={chartData}
+                margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                onMouseMove={(state: unknown) => {
+                  const s = state as {
+                    activePayload?: Array<{ payload?: { __gameId?: unknown; __eventKey?: unknown } }>;
+                  };
+                  const p = s?.activePayload?.[0]?.payload;
+                  const gid = p && typeof p.__gameId === "string" ? p.__gameId : null;
+                  const ek = p && typeof p.__eventKey === "string" ? p.__eventKey : null;
+                  setHoveredGameId(gid);
+                  setHoveredEventKey(ek);
+                }}
+                onMouseLeave={() => {
+                  setHoveredGameId(null);
+                  setHoveredEventKey(null);
+                }}
+              >
                 <XAxis
                   dataKey="t"
                   type="category"
@@ -459,11 +738,15 @@ export function LeagueChartPanel({
                   }}
                   labelFormatter={(label) => {
                     const t = String(label ?? "");
-                    try { return new Date(t).toLocaleString(); } catch { return t; }
+                    let base: string;
+                    try { base = new Date(t).toLocaleString(); } catch { base = t; }
+                    return pendingEvents > 0
+                      ? `${base}  ·  +${pendingEvents} queued`
+                      : base;
                   }}
                   formatter={(value, key) => {
                     const n = typeof value === "number" ? value : Number(value ?? 0);
-                    const mgr = timeseries.managers.find((m) => m.userId === String(key));
+                    const mgr = displayManagers.find((m) => m.userId === String(key));
                     const label = mode === "prob" ? `${n.toFixed(1)}%` : Math.round(n).toLocaleString();
                     return [label, mgr?.name ?? String(key)];
                   }}
@@ -477,6 +760,30 @@ export function LeagueChartPanel({
                   strokeOpacity={0.35}
                   label={{ value: "now", position: "insideTopLeft", fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                 />
+                {/* Hovered-game vertical line */}
+                {hoveredGameId ? (() => {
+                  const row = chartData.find((r) => r.__gameId === hoveredGameId);
+                  return row ? (
+                    <ReferenceLine
+                      x={row.t as string}
+                      stroke="hsl(var(--foreground))"
+                      strokeOpacity={0.25}
+                      strokeWidth={1}
+                    />
+                  ) : null;
+                })() : null}
+                {/* Game-end dots above the chart */}
+                {mode !== "prob" && gameEndDots.map((d) => (
+                  <ReferenceDot
+                    key={d.gameId}
+                    x={d.t}
+                    y={0}
+                    r={hoveredGameId === d.gameId ? 5 : 3}
+                    fill={d.color}
+                    stroke="none"
+                    ifOverflow="extendDomain"
+                  />
+                ))}
                 {activeManagerIds.map((uid, i) => (
                   <Line
                     key={uid}
@@ -496,6 +803,21 @@ export function LeagueChartPanel({
           </div>
 
           <div className="w-28 shrink-0 flex flex-col text-[11px] overflow-hidden pt-2 pb-2">
+            {hoveredEvent ? (() => {
+              const g = allGames.find((ag) => ag.id === hoveredEvent.gameId);
+              const matchup =
+                g && g.awayTeam && g.homeTeam
+                  ? `${g.awayTeam} @ ${g.homeTeam}${g.gameNum ? ` G${g.gameNum}` : ""}`
+                  : null;
+              return (
+                <div className="text-[9px] text-muted-foreground leading-tight pb-1.5 mb-1 border-b border-border/40 break-words">
+                  {matchup ? (
+                    <div className="font-medium text-foreground/80">{matchup}</div>
+                  ) : null}
+                  <div>{eventLineText(hoveredEvent)}</div>
+                </div>
+              );
+            })() : null}
             {endLabels.slice(0, 12).map((e) => (
               <div key={e.userId} className="flex items-center gap-1.5 leading-tight py-0.5 min-w-0">
                 <span
@@ -537,10 +859,63 @@ export function LeagueChartPanel({
         <div className="-mx-3 px-3 overflow-x-auto no-scrollbar">
           <div className="flex gap-1.5">
             {allGames.map((g) => (
-              <ScoreboardCard key={g.id} g={g} />
+              <ScoreboardCard
+                key={g.id}
+                g={g}
+                highlighted={hoveredGameId === g.id}
+                onHoverChange={(v) => setHoveredGameId(v ? g.id : null)}
+                hoveredEvent={hoveredGameId === g.id ? hoveredEvent : null}
+              />
             ))}
           </div>
         </div>
+        {isCommissionerViewer ? (
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground -mt-1">
+            <span>
+              {projections?.latestJob ? (
+                <>
+                  projections job:{" "}
+                  <span className="font-mono">{projections.latestJob.status}</span>
+                  {projections.latestJob.totalEvents != null
+                    ? ` (${projections.latestJob.processedEvents}/${projections.latestJob.totalEvents})`
+                    : ""}
+                </>
+              ) : hasCachedProjections ? (
+                `${projections?.events.length ?? 0} cached events`
+              ) : (
+                "no cached projections yet"
+              )}
+            </span>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                disabled={rebuildBusy}
+                onClick={() => triggerRebuild("incremental")}
+                className={cn(
+                  "px-2 py-0.5 rounded border text-[10px] transition-colors",
+                  rebuildBusy
+                    ? "border-border text-muted-foreground"
+                    : "border-border hover:bg-muted",
+                )}
+              >
+                {rebuildBusy ? "…" : "rebuild (new events)"}
+              </button>
+              <button
+                type="button"
+                disabled={rebuildBusy}
+                onClick={() => triggerRebuild("full")}
+                className={cn(
+                  "px-2 py-0.5 rounded border text-[10px] transition-colors",
+                  rebuildBusy
+                    ? "border-border text-muted-foreground"
+                    : "border-destructive/60 hover:bg-destructive/10",
+                )}
+              >
+                rebuild all
+              </button>
+            </div>
+          </div>
+        ) : null}
         {simStatus === "rerunning" ? (
           <p className="text-[10px] text-muted-foreground italic text-right -mt-1">
             projections updating{pendingEvents > 0 ? ` (+${pendingEvents} queued)` : ""}…
@@ -587,6 +962,9 @@ function Segmented<T extends string>({
 
 function ScoreboardCard({
   g,
+  highlighted,
+  onHoverChange,
+  hoveredEvent,
 }: {
   g: {
     id: string;
@@ -599,6 +977,9 @@ function ScoreboardCard({
     homeScore: number | null;
     awayScore: number | null;
   };
+  highlighted: boolean;
+  onHoverChange: (hovered: boolean) => void;
+  hoveredEvent: ProjectionEvent | null;
 }) {
   const isLive = g.status === "in";
   const isFinal = g.status === "post";
@@ -611,14 +992,22 @@ function ScoreboardCard({
     ? new Date(g.startTime).toLocaleDateString("en-US", { month: "numeric", day: "numeric" })
     : "";
 
+  const showEvent = !!hoveredEvent && hoveredEvent.gameId === g.id;
+  const eventLine = showEvent
+    ? eventLineText(hoveredEvent!)
+    : null;
+
   return (
     <Link
       href={`/games/${encodeURIComponent(g.id)}`}
+      onMouseEnter={() => onHoverChange(true)}
+      onMouseLeave={() => onHoverChange(false)}
       className={cn(
-        "shrink-0 rounded-md border px-2 py-1.5 w-[92px] flex flex-col gap-0.5 text-[10px]",
+        "shrink-0 rounded-md border px-2 py-1.5 w-[112px] flex flex-col gap-0.5 text-[10px] transition-colors",
         isLive && "border-red-500/60 bg-red-500/5",
         isFinal && "border-border/60 bg-muted/30",
         isPre && "border-border/50",
+        highlighted && "border-red-500 ring-1 ring-red-500/40 bg-red-500/10",
       )}
     >
       <div className="flex items-center justify-between text-[9px] text-muted-foreground">
@@ -627,8 +1016,34 @@ function ScoreboardCard({
       </div>
       <TeamLine team={g.awayTeam} score={a} isPre={isPre} isWin={awayWin} isLose={isFinal && homeWin} />
       <TeamLine team={g.homeTeam} score={h} isPre={isPre} isWin={homeWin} isLose={isFinal && awayWin} />
+      {eventLine ? (
+        <div className="text-[9px] text-muted-foreground truncate leading-tight border-t border-border/40 mt-0.5 pt-0.5">
+          {eventLine}
+        </div>
+      ) : null}
     </Link>
   );
+}
+
+function eventLineText(ev: ProjectionEvent): string {
+  if (ev.kind === "end_of_game") {
+    const s = ev.eventMeta;
+    if (s.homeScore != null && s.awayScore != null) {
+      return `Final · ${s.awayScore}–${s.homeScore}`;
+    }
+    return "Final";
+  }
+  if (ev.kind === "end_of_half") {
+    const period = ev.eventMeta.period ?? 2;
+    return period === 2 ? "End Q2 (half)" : `End Q${period}`;
+  }
+  // scoring
+  const text = ev.eventMeta.text ?? "";
+  const short = text.length > 40 ? `${text.slice(0, 38)}…` : text;
+  const period = ev.eventMeta.period;
+  const clock = ev.eventMeta.clock;
+  const prefix = period != null && clock ? `Q${period} ${clock} · ` : "";
+  return `${prefix}${short || "scoring play"}`;
 }
 
 function TeamLine({

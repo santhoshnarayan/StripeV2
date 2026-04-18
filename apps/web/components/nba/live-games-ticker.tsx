@@ -166,9 +166,6 @@ function LeadersTeamSection({
   playerToManager: Map<string, { name: string; playerName: string }>;
   rostered: Array<{ playerId: string; playerName: string; managerShortName: string }>;
 }) {
-  // Drafted-only, top-3 per team. Leaders are the source of truth for values;
-  // add drafted players missing from that list at value=0 (bench / DNP), then
-  // keep the top 3.
   const rosteredIds = new Set(rostered.map((r) => r.playerId));
   const byId = new Map<string, { playerId: string; playerName: string; value: number }>();
   for (const p of leaders) {
@@ -179,9 +176,7 @@ function LeadersTeamSection({
       byId.set(r.playerId, { playerId: r.playerId, playerName: r.playerName, value: 0 });
     }
   }
-  const rows = Array.from(byId.values())
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 3);
+  const rows = Array.from(byId.values()).sort((a, b) => b.value - a.value);
 
   return (
     <div className="flex flex-col gap-0.5 min-w-0">
