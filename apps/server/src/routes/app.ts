@@ -200,6 +200,36 @@ async function getTeamSeedMap(): Promise<Map<string, number>> {
   return map;
 }
 
+// Top projected scorers by team — used for pre-game hover tooltips on the ticker.
+// Reads the static simPlayers JSON once and caches. Limits to top 5 per team
+// by ppg since that's the universe we ever surface.
+type TopProjected = { playerId: string; playerName: string; ppg: number };
+let topProjectedCache: Map<string, TopProjected[]> | null = null;
+async function getTopProjectedByTeam(): Promise<Map<string, TopProjected[]>> {
+  if (topProjectedCache) return topProjectedCache;
+  const dataDir = path.resolve(process.cwd(), "src/data");
+  const raw = await readFile(path.join(dataDir, "nba-players-2026.json"), "utf8");
+  const rows = JSON.parse(raw) as Array<{
+    espn_id: string;
+    name: string;
+    team: string;
+    ppg: number | null;
+  }>;
+  const byTeam = new Map<string, TopProjected[]>();
+  for (const r of rows) {
+    if (!r.team || !r.espn_id) continue;
+    const arr = byTeam.get(r.team) ?? [];
+    arr.push({ playerId: r.espn_id, playerName: r.name, ppg: r.ppg ?? 0 });
+    byTeam.set(r.team, arr);
+  }
+  for (const [team, arr] of byTeam.entries()) {
+    arr.sort((a, b) => b.ppg - a.ppg);
+    byTeam.set(team, arr.slice(0, 5));
+  }
+  topProjectedCache = byTeam;
+  return byTeam;
+}
+
 appRouter.get("/nba/live-ticker", async (c) => {
   // Show today's + recently-ended games. Compact payload for the header ticker.
   const now = new Date();
@@ -208,33 +238,99 @@ appRouter.get("/nba/live-ticker", async (c) => {
   const endOfTomorrow = new Date(start);
   endOfTomorrow.setDate(start.getDate() + 2);
 
-  const [rows, seedByTeam] = await Promise.all([
+  const [rows, seedByTeam, topProjected] = await Promise.all([
     db
       .select()
       .from(nbaGame)
       .where(and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)))
       .orderBy(asc(nbaGame.startTime)),
     getTeamSeedMap(),
+    getTopProjectedByTeam(),
   ]);
 
+  // Pull actual per-player stats for any live/post games so hover tooltips
+  // can show real leaders instead of projections.
+  const activeIds = rows
+    .filter((g) => g.status === "in" || g.status === "post")
+    .map((g) => g.id);
+  const statsByGame = new Map<
+    string,
+    Array<{ playerId: string; playerName: string; teamAbbrev: string; points: number }>
+  >();
+  if (activeIds.length > 0) {
+    const statRows = await db
+      .select({
+        gameId: nbaPlayerGameStats.gameId,
+        playerId: nbaPlayerGameStats.playerId,
+        playerName: nbaPlayerGameStats.playerName,
+        teamAbbrev: nbaPlayerGameStats.teamAbbrev,
+        points: nbaPlayerGameStats.points,
+      })
+      .from(nbaPlayerGameStats)
+      .where(inArray(nbaPlayerGameStats.gameId, activeIds));
+    for (const s of statRows) {
+      const arr = statsByGame.get(s.gameId) ?? [];
+      arr.push({
+        playerId: s.playerId,
+        playerName: s.playerName,
+        teamAbbrev: s.teamAbbrev,
+        points: s.points ?? 0,
+      });
+      statsByGame.set(s.gameId, arr);
+    }
+  }
+
+  function buildLeaders(
+    gameId: string,
+    status: string,
+    home: string | null,
+    away: string | null,
+  ): {
+    source: "actual" | "projected";
+    home: Array<{ playerId: string; playerName: string; value: number }>;
+    away: Array<{ playerId: string; playerName: string; value: number }>;
+  } {
+    if ((status === "in" || status === "post") && statsByGame.has(gameId)) {
+      const list = statsByGame.get(gameId)!;
+      const pick = (team: string | null) =>
+        team
+          ? list
+              .filter((s) => s.teamAbbrev === team)
+              .sort((a, b) => b.points - a.points)
+              .slice(0, 3)
+              .map((s) => ({ playerId: s.playerId, playerName: s.playerName, value: s.points }))
+          : [];
+      return { source: "actual", home: pick(home), away: pick(away) };
+    }
+    const pickProj = (team: string | null) =>
+      (team ? topProjected.get(team) ?? [] : [])
+        .slice(0, 3)
+        .map((p) => ({ playerId: p.playerId, playerName: p.playerName, value: p.ppg }));
+    return { source: "projected", home: pickProj(home), away: pickProj(away) };
+  }
+
   return c.json({
-    games: rows.map((g) => ({
-      id: g.id,
-      date: g.date,
-      startTime: g.startTime,
-      homeTeam: g.homeTeamAbbrev,
-      awayTeam: g.awayTeamAbbrev,
-      homeSeed: g.homeTeamAbbrev ? seedByTeam.get(g.homeTeamAbbrev) ?? null : null,
-      awaySeed: g.awayTeamAbbrev ? seedByTeam.get(g.awayTeamAbbrev) ?? null : null,
-      homeScore: g.homeScore,
-      awayScore: g.awayScore,
-      status: g.status,
-      period: g.period,
-      displayClock: g.displayClock,
-      broadcast: g.broadcast,
-      seriesKey: g.seriesKey,
-      gameNum: g.gameNum,
-    })),
+    games: rows.map((g) => {
+      const leaders = buildLeaders(g.id, g.status, g.homeTeamAbbrev, g.awayTeamAbbrev);
+      return {
+        id: g.id,
+        date: g.date,
+        startTime: g.startTime,
+        homeTeam: g.homeTeamAbbrev,
+        awayTeam: g.awayTeamAbbrev,
+        homeSeed: g.homeTeamAbbrev ? seedByTeam.get(g.homeTeamAbbrev) ?? null : null,
+        awaySeed: g.awayTeamAbbrev ? seedByTeam.get(g.awayTeamAbbrev) ?? null : null,
+        homeScore: g.homeScore,
+        awayScore: g.awayScore,
+        status: g.status,
+        period: g.period,
+        displayClock: g.displayClock,
+        broadcast: g.broadcast,
+        seriesKey: g.seriesKey,
+        gameNum: g.gameNum,
+        leaders,
+      };
+    }),
   });
 });
 
@@ -444,8 +540,8 @@ appRouter.get("/leagues/:leagueId/game-logs", async (c) => {
 });
 
 // Cumulative fantasy points per manager over the postseason calendar.
-// Each point on the timeline = one completed game's contribution (per manager)
-// bucketed by game date. Powers the "scoring over time" overlay chart.
+// Includes completed AND in-progress games so today's live scoring shows on the
+// current day's bucket. Powers the "scoring over time" overlay chart.
 appRouter.get("/leagues/:leagueId/scoring-timeline", async (c) => {
   const session = getRequiredSession(c);
   if (!session) return c.json({ error: "Unauthorized" }, 401);
@@ -484,7 +580,7 @@ appRouter.get("/leagues/:leagueId/scoring-timeline", async (c) => {
     .where(
       and(
         inArray(nbaPlayerGameStats.playerId, rosteredPlayerIds),
-        sql`${nbaGame.status} = 'post'`,
+        sql`${nbaGame.status} in ('post','in')`,
         isNotNull(nbaGame.seriesKey),
       ),
     );

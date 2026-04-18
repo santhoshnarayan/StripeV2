@@ -4,6 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import { appApiFetch } from "@/lib/app-api";
 import { usePolling } from "@/lib/use-polling";
 
+export type TickerLeader = {
+  playerId: string;
+  playerName: string;
+  value: number;
+};
+
+export type TickerLeaders = {
+  source: "actual" | "projected";
+  home: TickerLeader[];
+  away: TickerLeader[];
+};
+
 export type TickerGame = {
   id: string;
   date: string;
@@ -20,6 +32,7 @@ export type TickerGame = {
   broadcast: string | null;
   seriesKey: string | null;
   gameNum: number | null;
+  leaders?: TickerLeaders;
 };
 
 const ACTIVE_POLL_MS = 120_000;

@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { PlayerHeadshot, TeamLogo } from "@/components/sim/player-avatar";
-import { useLiveGames, type TickerGame } from "@/lib/use-live-games";
+import { useLiveGames, type TickerGame, type TickerLeaders } from "@/lib/use-live-games";
 import { cn } from "@/lib/utils";
 import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
 
@@ -87,6 +88,100 @@ function RosterRotator({ players }: { players: RosteredGamePlayer[] }) {
   );
 }
 
+function LeadersPanel({
+  game,
+  anchor,
+}: {
+  game: TickerGame;
+  anchor: DOMRect;
+}) {
+  if (!game.leaders) return null;
+  const isActual = game.leaders.source === "actual";
+  const valueLabel = isActual ? "pts" : "ppg";
+  // Position above the card if near viewport bottom, else below.
+  const padding = 8;
+  const panelWidth = 260;
+  const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1024;
+  const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 768;
+  let left = anchor.left + anchor.width / 2 - panelWidth / 2;
+  left = Math.max(padding, Math.min(viewportWidth - panelWidth - padding, left));
+  const spaceBelow = viewportHeight - anchor.bottom;
+  const showAbove = spaceBelow < 220 && anchor.top > 220;
+  const style: React.CSSProperties = showAbove
+    ? { left, bottom: viewportHeight - anchor.top + padding, width: panelWidth }
+    : { left, top: anchor.bottom + padding, width: panelWidth };
+
+  return createPortal(
+    <div
+      className="fixed z-50 rounded-lg border border-border bg-background shadow-lg p-3 text-xs"
+      style={style}
+    >
+      <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-border/50">
+        <span className="font-semibold text-foreground">Key scorers</span>
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+          {isActual ? "actual" : "projected"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <LeadersColumn
+          team={game.awayTeam}
+          seed={game.awaySeed}
+          leaders={game.leaders.away}
+          valueLabel={valueLabel}
+        />
+        <LeadersColumn
+          team={game.homeTeam}
+          seed={game.homeSeed}
+          leaders={game.leaders.home}
+          valueLabel={valueLabel}
+        />
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function LeadersColumn({
+  team,
+  seed,
+  leaders,
+  valueLabel,
+}: {
+  team: string;
+  seed: number | null;
+  leaders: TickerLeaders["home"];
+  valueLabel: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1 min-w-0">
+      <div className="flex items-center gap-1.5 pb-0.5">
+        <TeamLogo team={team} size={14} />
+        <span className="text-[11px] font-semibold truncate">
+          {seed != null ? (
+            <span className="text-muted-foreground/70 font-normal mr-0.5">({seed})</span>
+          ) : null}
+          {team}
+        </span>
+      </div>
+      {leaders.length === 0 ? (
+        <span className="text-[10px] text-muted-foreground italic">—</span>
+      ) : (
+        leaders.map((p) => (
+          <div key={p.playerId} className="flex items-center gap-1.5 min-w-0">
+            <PlayerHeadshot espnId={p.playerId} size={16} />
+            <span className="text-[10px] truncate flex-1 min-w-0">
+              {shortPlayerName(p.playerName)}
+            </span>
+            <span className="text-[10px] tabular-nums font-medium shrink-0">
+              {valueLabel === "ppg" ? p.value.toFixed(1) : Math.round(p.value)}
+            </span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 function GameCard({
   game,
   rosteredGamePlayers,
@@ -101,55 +196,72 @@ function GameCard({
   const awayWin = game.awayScore > game.homeScore;
   const clock = formatClock(game);
 
+  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
+  const cardRef = useRef<HTMLAnchorElement | null>(null);
+
+  const handleEnter = () => {
+    if (typeof window === "undefined") return;
+    if (window.matchMedia("(hover: none)").matches) return;
+    if (cardRef.current) setHoverRect(cardRef.current.getBoundingClientRect());
+  };
+  const handleLeave = () => setHoverRect(null);
+
   return (
-    <Link
-      href={`/games/${encodeURIComponent(game.id)}`}
-      className={cn(
-        "shrink-0 rounded-lg border px-3 py-2 w-[170px] flex flex-col gap-1 text-left transition-colors",
-        isLive && "border-red-500/60 bg-red-500/5 hover:bg-red-500/10",
-        isFinal && "bg-muted/40 border-border/60 hover:bg-muted/60",
-        isPre && "border-border hover:bg-muted/30",
-      )}
-    >
-      <div className="flex items-center justify-between gap-2 text-[10px]">
-        <span className="text-muted-foreground font-medium truncate">
-          {[
-            game.gameNum ? `G${game.gameNum}` : null,
-            game.broadcast,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </span>
-        {isLive ? (
-          <span className="text-red-500 font-semibold tabular-nums shrink-0">{clock}</span>
-        ) : (
-          <span className="text-muted-foreground font-medium shrink-0">{clock}</span>
+    <>
+      <Link
+        ref={cardRef}
+        href={`/games/${encodeURIComponent(game.id)}`}
+        onMouseEnter={handleEnter}
+        onMouseLeave={handleLeave}
+        onFocus={handleEnter}
+        onBlur={handleLeave}
+        className={cn(
+          "shrink-0 rounded-lg border px-3 py-2 w-[170px] flex flex-col gap-1 text-left transition-colors",
+          isLive && "border-red-500/60 bg-red-500/5 hover:bg-red-500/10",
+          isFinal && "bg-muted/40 border-border/60 hover:bg-muted/60",
+          isPre && "border-border hover:bg-muted/30",
         )}
-      </div>
-
-      <TeamRow
-        team={game.awayTeam}
-        seed={game.awaySeed}
-        score={game.awayScore}
-        isPre={isPre}
-        isWinning={awayWin}
-        isLosing={isFinal && homeWin}
-      />
-      <TeamRow
-        team={game.homeTeam}
-        seed={game.homeSeed}
-        score={game.homeScore}
-        isPre={isPre}
-        isWinning={homeWin}
-        isLosing={isFinal && awayWin}
-      />
-
-      {rosteredGamePlayers && rosteredGamePlayers.length > 0 ? (
-        <div className="pt-1 border-t border-border/30 -mx-1 px-1">
-          <RosterRotator players={rosteredGamePlayers} />
+      >
+        <div className="flex items-center justify-between gap-2 text-[10px]">
+          <span className="text-muted-foreground font-medium truncate">
+            {[game.gameNum ? `G${game.gameNum}` : null, game.broadcast]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          {isLive ? (
+            <span className="text-red-500 font-semibold tabular-nums shrink-0">{clock}</span>
+          ) : (
+            <span className="text-muted-foreground font-medium shrink-0">{clock}</span>
+          )}
         </div>
+
+        <TeamRow
+          team={game.awayTeam}
+          seed={game.awaySeed}
+          score={game.awayScore}
+          isPre={isPre}
+          isWinning={awayWin}
+          isLosing={isFinal && homeWin}
+        />
+        <TeamRow
+          team={game.homeTeam}
+          seed={game.homeSeed}
+          score={game.homeScore}
+          isPre={isPre}
+          isWinning={homeWin}
+          isLosing={isFinal && awayWin}
+        />
+
+        {rosteredGamePlayers && rosteredGamePlayers.length > 0 ? (
+          <div className="pt-1 border-t border-border/30 -mx-1 px-1">
+            <RosterRotator players={rosteredGamePlayers} />
+          </div>
+        ) : null}
+      </Link>
+      {hoverRect && game.leaders ? (
+        <LeadersPanel game={game} anchor={hoverRect} />
       ) : null}
-    </Link>
+    </>
   );
 }
 
