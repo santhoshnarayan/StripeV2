@@ -28,6 +28,18 @@ const trustedOrigins = [
       ]),
 ].filter((origin): origin is string => typeof origin === "string" && origin.length > 0);
 
+// Match Vercel preview/branch deploys for this project only. Format:
+// https://stripev2-<slug>-santhoshnarayans-projects.vercel.app
+// Scoping to the project prefix + team slug prevents any random *.vercel.app
+// deploy from being accepted.
+const VERCEL_PREVIEW_RE = /^https:\/\/stripev2-[a-z0-9-]+-santhoshnarayans-projects\.vercel\.app$/;
+
+export function isAllowedOrigin(origin: string | null | undefined): boolean {
+  if (!origin) return false;
+  if (trustedOrigins.includes(origin)) return true;
+  return VERCEL_PREVIEW_RE.test(origin);
+}
+
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN;
 
 if (isProduction && !INTERNAL_API_TOKEN) {
@@ -40,7 +52,7 @@ app.use("*", logger());
 app.use(
   "*",
   cors({
-    origin: (origin) => (origin && trustedOrigins.includes(origin) ? origin : trustedOrigins[0]),
+    origin: (origin) => (isAllowedOrigin(origin) ? origin! : trustedOrigins[0]),
     credentials: true,
   })
 );
