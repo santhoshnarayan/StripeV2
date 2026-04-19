@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { TeamLogo } from "@/components/sim/player-avatar";
 import { cn } from "@/lib/utils";
 import type {
@@ -11,6 +12,21 @@ import type {
 
 // 4 columns now — "Champ" dropped. What matters is making the finals.
 const ROUND_LABELS = ["R1", "R2", "CF", "Finals"] as const;
+
+// Two display modes for the per-team round cells.
+//
+// - "cumulative": P(team reached round r). Every locked-in 1–6 seed shows
+//   100% in the R1 column, so the column reads as "did this team make the
+//   bracket at all" and widens with round. teamReachPct is indexed by
+//   reach-level [≥1, ≥2, ≥3, ≥4, ≥5]; cumulative reads [0..3].
+// - "exact": P(team won round r, i.e. advanced past it). Reads [1..4] — the
+//   final column is "won the championship". Numbers strictly decrease
+//   across rounds.
+//
+// The prior mixed display (rostered teams showed a manager-conditional win
+// metric while unrostered showed team-advancement) is dropped because the
+// two metrics were not comparable across the same column.
+export type LeaderboardMode = "cumulative" | "exact";
 
 // Gradient palette ported from NCAAM draft-win-probability — 9 slots cycling.
 const GRADIENT_PALETTE = [
@@ -42,6 +58,8 @@ export function SimulatorLeaderboard({
   simData: SimData | null;
   viewerUserId?: string;
 }) {
+  const [mode, setMode] = useState<LeaderboardMode>("cumulative");
+
   const sorted = [...managerProjections].sort(
     (a, b) => b.winProbability - a.winProbability,
   );
@@ -109,7 +127,39 @@ export function SimulatorLeaderboard({
   };
 
   return (
-    <div className="grid gap-3 md:grid-cols-2">
+    <div className="space-y-3">
+      <div className="flex items-center justify-end gap-2 text-[11px]">
+        <span className="text-gray-500 dark:text-gray-400">Round odds</span>
+        <div className="inline-flex rounded-full border border-gray-300 bg-white p-0.5 dark:border-gray-600 dark:bg-gray-800">
+          <button
+            type="button"
+            onClick={() => setMode("cumulative")}
+            className={cn(
+              "rounded-full px-2.5 py-0.5 transition-colors",
+              mode === "cumulative"
+                ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                : "text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white",
+            )}
+            title="P(team reaches this round). Top-6 seeds show 100% in R1."
+          >
+            Cumulative
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("exact")}
+            className={cn(
+              "rounded-full px-2.5 py-0.5 transition-colors",
+              mode === "exact"
+                ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                : "text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white",
+            )}
+            title="P(team wins this round and advances). Finals column is the championship."
+          >
+            Exact
+          </button>
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
       {sorted.map((mp, idx) => {
         const roster = rosters.find((r) => r.userId === mp.userId);
         const rows = fillRows(exposure?.rowsByManager.get(mp.userId) ?? []);
@@ -169,7 +219,7 @@ export function SimulatorLeaderboard({
                       </span>
                     ))}
                     {rows.map((row) => (
-                      <TeamExposureRowCells key={row.team} row={row} />
+                      <TeamExposureRowCells key={row.team} row={row} mode={mode} />
                     ))}
                   </div>
                 </div>
@@ -204,18 +254,26 @@ export function SimulatorLeaderboard({
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
 
-function TeamExposureRowCells({ row }: { row: TeamExposureRow }) {
-  // Columns are "probability of WINNING round X" — for R1..Finals.
-  // teamReachPct is indexed by reach-level [≥1, ≥2, ≥3, ≥4, ≥5]; "wins R1" =
-  // reached ≥R2 = teamReachPct[1]; "wins Finals" = reached ≥R5 = teamReachPct[4].
+function TeamExposureRowCells({
+  row,
+  mode,
+}: {
+  row: TeamExposureRow;
+  mode: LeaderboardMode;
+}) {
+  // teamReachPct is indexed by reach-level [≥1, ≥2, ≥3, ≥4, ≥5].
+  // - cumulative: slice(0, 4) = P(reached round 1..4) — R1 column is 100%
+  //   for every locked-in seed, so it reads as "made the bracket".
+  // - exact: slice(1, 5) = P(won round 1..4) — the Finals cell is the
+  //   championship win probability.
   const unrostered = row.playerCount === 0;
-  const cells = unrostered
-    ? row.teamReachPct.slice(1, 5)
-    : row.winByRound.slice(0, 4);
+  const cells =
+    mode === "cumulative" ? row.teamReachPct.slice(0, 4) : row.teamReachPct.slice(1, 5);
   return (
     <>
       <span className="flex items-center gap-1 min-w-0">
@@ -233,22 +291,7 @@ function TeamExposureRowCells({ row }: { row: TeamExposureRow }) {
             </span>
           );
         }
-        if (unrostered) {
-          // Team-only advancement probability — no delta vs baseline since
-          // this manager has zero exposure. Render dim so it reads as context.
-          return (
-            <span key={i} className="text-center tabular-nums text-[10px] text-white/40">
-              {(v * 100).toFixed(0)}
-            </span>
-          );
-        }
-        const delta = v - row.baseWin;
-        const cls =
-          delta > 0.005
-            ? "text-emerald-200 font-semibold"
-            : delta < -0.005
-            ? "text-rose-200"
-            : "text-white/70";
+        const cls = unrostered ? "text-white/40" : "text-white/85 font-medium";
         return (
           <span key={i} className={cn("text-center tabular-nums text-[10px]", cls)}>
             {(v * 100).toFixed(0)}
