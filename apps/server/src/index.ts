@@ -98,7 +98,7 @@ app.on(["GET", "POST"], "/graphql", async (c) => {
 });
 
 // Start background services
-startCronJobs();
+startCronJobs().catch((err) => console.error("[cron] Startup failed:", err));
 recoverAuctions().catch((err) => console.error("[auction] Recovery failed:", err));
 recoverSnakeDrafts().catch((err) => console.error("[snake] Recovery failed:", err));
 

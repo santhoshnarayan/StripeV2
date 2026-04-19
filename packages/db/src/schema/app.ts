@@ -559,6 +559,28 @@ export const nbaEventProjection = pgTable(
   }),
 );
 
+// Generic cron/job registry. Rows are the source of truth for what runs and
+// when — the server seeds the built-in jobs on startup and registers runtime
+// handlers by `name`. Admins can pause/resume or edit the schedule live; the
+// cron runner re-registers tasks in response.
+export const cronJob = pgTable("cron_job", {
+  id: text("id").primaryKey(), // stable slug, e.g. "nba-scoreboard-sync"
+  name: text("name").notNull(),
+  description: text("description"),
+  schedule: text("schedule").notNull(), // cron expression, e.g. "*/15 * * * *"
+  enabled: boolean("enabled").notNull().default(true),
+  params: jsonb("params").$type<Record<string, unknown> | null>(),
+  lastRunAt: timestamp("last_run_at"),
+  lastStatus: text("last_status"), // "success" | "failure" | "running" | null
+  lastError: text("last_error"),
+  lastDurationMs: integer("last_duration_ms"),
+  nextRunAt: timestamp("next_run_at"),
+  runCount: integer("run_count").notNull().default(0),
+  failureCount: integer("failure_count").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const nbaProjectionJob = pgTable("nba_projection_job", {
   id: text("id").primaryKey(),
   leagueId: text("league_id")

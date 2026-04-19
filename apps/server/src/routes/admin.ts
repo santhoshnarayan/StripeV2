@@ -1,7 +1,9 @@
 import { Hono } from "hono";
-import { sql } from "drizzle-orm";
-import { db } from "@repo/db";
+import cron from "node-cron";
+import { sql, eq } from "drizzle-orm";
+import { db, cronJob } from "@repo/db";
 import { auth } from "../auth.js";
+import { rescheduleJob, runJob, stopJob } from "../cron/index.js";
 
 const ADMIN_EMAIL = "santhoshnarayan@gmail.com";
 
@@ -318,4 +320,59 @@ adminRouter.get("/logs", async (c) => {
     b.timestamp.localeCompare(a.timestamp),
   );
   return c.json({ entries });
+});
+
+// ---------- Cron / jobs management ----------
+
+adminRouter.get("/jobs", async (c) => {
+  const rows = await db.select().from(cronJob).orderBy(cronJob.name);
+  return c.json({ jobs: rows });
+});
+
+adminRouter.post("/jobs/:id/pause", async (c) => {
+  const id = c.req.param("id");
+  stopJob(id);
+  await db
+    .update(cronJob)
+    .set({ enabled: false, updatedAt: new Date() })
+    .where(eq(cronJob.id, id));
+  return c.json({ ok: true });
+});
+
+adminRouter.post("/jobs/:id/resume", async (c) => {
+  const id = c.req.param("id");
+  await db
+    .update(cronJob)
+    .set({ enabled: true, updatedAt: new Date() })
+    .where(eq(cronJob.id, id));
+  await rescheduleJob(id);
+  return c.json({ ok: true });
+});
+
+adminRouter.post("/jobs/:id/run", async (c) => {
+  const id = c.req.param("id");
+  // Fire and forget — the admin UI polls the list to see lastStatus flip.
+  void runJob(id);
+  return c.json({ ok: true });
+});
+
+adminRouter.post("/jobs/:id/update", async (c) => {
+  const id = c.req.param("id");
+  const body = (await c.req.json().catch(() => ({}))) as {
+    schedule?: string;
+    name?: string;
+    description?: string;
+  };
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (typeof body.schedule === "string") {
+    if (!cron.validate(body.schedule)) {
+      return c.json({ error: `Invalid cron expression: ${body.schedule}` }, 400);
+    }
+    patch.schedule = body.schedule;
+  }
+  if (typeof body.name === "string") patch.name = body.name;
+  if (typeof body.description === "string") patch.description = body.description;
+  await db.update(cronJob).set(patch).where(eq(cronJob.id, id));
+  await rescheduleJob(id);
+  return c.json({ ok: true });
 });

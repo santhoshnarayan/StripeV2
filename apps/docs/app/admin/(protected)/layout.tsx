@@ -36,6 +36,12 @@ export default async function ProtectedAdminLayout({
               >
                 Logs
               </Link>
+              <Link
+                href="/admin/jobs"
+                className="rounded-md px-2 py-1 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              >
+                Jobs
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-xs text-gray-500">
