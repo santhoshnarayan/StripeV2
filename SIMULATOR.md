@@ -1,0 +1,476 @@
+# NBA Simulator
+
+The NBA playoff simulator lives in `packages/sim`. It is split into two
+components:
+
+- **Component A — Tournament simulator** (`tournament.ts`): Monte Carlo playoff
+  bracket simulation that produces per-team advancement probabilities and a
+  per-sim × per-player fantasy point matrix.
+- **Component B — Draft optimizer** (`draft.ts`): consumes the sim matrix to
+  compute manager win probabilities, marginal player values, opponent
+  valuations, and equilibrium bids.
+
+Cache lives in `cache.ts` (module-level `Map` keyed by league ID or `"global"`).
+RNG is a seeded `xoshiro128**` (`rng.ts`).
+
+Separately, the chart pipeline in
+`apps/server/src/lib/projections/rebuild.ts` runs a **full tournament sim
+per play event** (`SIM_COUNT_PER_EVENT = 2_000` today). The per-event cost
+compounds — see §6.
+
+## 1. Model parameters
+
+All parameters are set at sim-call time via `SimConfig` or baked into the
+engine as constants.
+
+### Tuneable (`SimConfig`)
+
+| Parameter | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `model` | `"netrtg" \| "lebron" \| "blend"` | `"lebron"` | Team-rating source |
+| `sims` | int | `10_000` | Number of Monte Carlo trials |
+| `stdev` | number | `10` | Per-game point-margin σ |
+| `hca` | number | `3` | Home-court advantage (pts) |
+| `blendWeight` | number `[0,1]` | `0.5` | LEBRON weight in blend mode |
+
+Seed is hard-coded to `42` inside `runTournamentSim` for determinism.
+
+### Baked-in constants
+
+| Constant | Value | Location | Meaning |
+| --- | --- | --- | --- |
+| `totalPts` | `220` | `simulateGame` | Expected combined points per game |
+| Regulation minutes | `48` | `calcLebronRating` | Divisor for LEBRON weighting |
+| Team minutes / game | `240` | `calcLebronRating` | 5 players × 48 min |
+| `CONCENTRATION` | `20` | `runTournamentSim` | Dirichlet concentration for point-share sampling |
+| Series length | best-of-7 | `simulateSeries` | `hWins===4 \|\| lWins===4` stop |
+| Rounds | 4 | bracket code | R1, R2, CF, Finals |
+| Availability slots | 30 | `InjuryEntry` | `[P1, P2, R1G1..G7, R2G1..G7, CFG1..G7, FG1..G7]` |
+| Series-pattern length | 7 | `bracket.seriesPattern` | Boolean home/away mask per series |
+| Play-in gameOffset | `0`/`1` | `simulatePlayIn` | Availability index for play-in |
+| Round gameOffsets | `2, 9, 16, 23` | `runTournamentSim` | Base index into the 30-slot availability vector |
+
+### Per-player inputs (`SimPlayer` + adjustments)
+
+| Field | Source | Used for |
+| --- | --- | --- |
+| `espn_id`, `nba_id`, `name`, `team`, `pos` | player CSV | Indexing + roster lookup |
+| `mpg`, `ppg`, `gp` | player CSV | Fallback rating, Dirichlet weights |
+| `lebron`, `o_lebron`, `d_lebron`, `war` | player CSV | Primary rating input |
+| `o_lebron_delta`, `d_lebron_delta` | adjustments | Commissioner nudges |
+| `minutes_override` | adjustments | Force-set minutes |
+| `availability[30]` | adjustments + injury feed | Per-game play probability |
+
+### Per-team inputs
+
+| Field | Source | Used for |
+| --- | --- | --- |
+| `netRatings[team].net_rtg_per_game` | scraped | Team rating for `netrtg`/`blend` |
+| `playoffMinutes[team][nba_id]` | scraped | LEBRON min-weighting + Dirichlet weights |
+| `bracket.eastSeeds` / `westSeeds` | manual | Seeds 1–6 guaranteed in main bracket |
+| `bracket.eastPlayin` / `westPlayin` | manual | Seeds 7–10 into play-in |
+| `bracket.seriesPattern[7]` | manual | Home-away mask (applied per series) |
+| `bracket.teamAliases` | manual | ESPN ↔ CSV abbreviation mapping |
+
+### Live-game overrides (`LiveGameState`)
+
+| Field | Used for |
+| --- | --- |
+| `status` (`pre`/`in`/`post`) | Branch for simulation vs. inject actuals |
+| `remainingFraction` | Scales spread, stdev, total pts for remainder |
+| `homeScore`, `awayScore` | Running score injected before remainder |
+| `playerPoints[espnId]` | Replace Dirichlet share with actual accrued pts |
+
+## 2. Data points that need to be cached
+
+Cache lives in the module-level `Map` in `packages/sim/src/cache.ts`. Each
+entry holds a `SimResults` plus a `liveFingerprint` string so we can skip
+reruns when live-game state hasn't meaningfully moved (`remainingFraction`
+quantized to 20ths, scores rounded, player points summed).
+
+### Per-league (one entry per league + "global")
+
+| Datum | Shape | Purpose |
+| --- | --- | --- |
+| `teams[]` | `TeamSimResult` × ~30 | R1/R2/CF/Finals/Champ % per team |
+| `players[]` | `PlayerProjection` × ~172 | Mean/stddev/p10/p90/per-round projections |
+| `simMatrix` | `Float64Array(sims × numPlayers)` | **Dominant** — per-sim per-player totals |
+| `playerIndex` | `Map<espnId, colIdx>` | Maps ESPN ID → column in `simMatrix` |
+| `teamRoundReached` | `Record<team, Uint8Array(sims)>` | Max round each team reached in each sim |
+| `numSims` | int | Ingested from `SimConfig.sims` |
+| `liveFingerprint` | string | Input-state digest for rerun skip check |
+
+### Precomputed Dirichlet tables (per sim call, not persisted)
+
+| Datum | Shape | Purpose |
+| --- | --- | --- |
+| `teamDistByKey` | `Map<team, {count, Int32Array, Float64Array}>` | Per-team player indices + α weights for point-share sampling |
+| `scratchShares` | `Float64Array(maxTeamCount)` | Reused Dirichlet output buffer |
+
+### Per-sim accumulators (reused via `.fill(0)`, not persisted)
+
+| Datum | Shape |
+| --- | --- |
+| `accumGames` | `Float32Array(numPlayers × 4)` |
+| `accumPts` | `Float64Array(numPlayers × 4)` |
+
+### Global totals (folded after all sims, live in `SimResults`)
+
+| Datum | Shape |
+| --- | --- |
+| `totalGames` | `Float64Array(numPlayers × 4)` |
+| `totalPts` | `Float64Array(numPlayers × 4)` |
+
+## 3. Cache size — from first principles
+
+Let `S` = `sims`, `P` = `numPlayers` (≈172 in production), `T` = number of
+bracket-eligible teams (20 — 16 seeded + 4 play-in), `R` = 4 rounds.
+
+The exact byte counts are:
+
+| Object | Formula | 10k sims | 50k sims | 100k sims | 1M sims |
+| --- | --- | --- | --- | --- | --- |
+| `simMatrix` (Float64) | `8·S·P` | **13.8 MB** | **68.8 MB** | **137.6 MB** | **1.38 GB** |
+| `teamRoundReached` (Uint8) | `T·S` | 0.20 MB | 1.0 MB | 2.0 MB | 20 MB |
+| `totalGames` (Float64) | `8·P·R` | 5.5 KB | 5.5 KB | 5.5 KB | 5.5 KB |
+| `totalPts` (Float64) | `8·P·R` | 5.5 KB | 5.5 KB | 5.5 KB | 5.5 KB |
+| `accumGames` (Float32) | `4·P·R` | 2.75 KB | 2.75 KB | 2.75 KB | 2.75 KB |
+| `accumPts` (Float64) | `8·P·R` | 5.5 KB | 5.5 KB | 5.5 KB | 5.5 KB |
+| `teams[]` | `~200 B·T` | 4 KB | 4 KB | 4 KB | 4 KB |
+| `players[]` | `~250 B·P` | 43 KB | 43 KB | 43 KB | 43 KB |
+| `playerIndex` (Map) | `~50 B·P` | 8.6 KB | 8.6 KB | 8.6 KB | 8.6 KB |
+| `teamDistByKey` | `~(4+8)·avg15·T` | 3.6 KB | 3.6 KB | 3.6 KB | 3.6 KB |
+| **Total per entry** | ≈ `8·S·P + S·T` | **~14.1 MB** | **~70 MB** | **~140 MB** | **~1.40 GB** |
+
+Everything except `simMatrix` and `teamRoundReached` is independent of `S`.
+At production defaults (`S=10k`, `P=172`, `T=20`):
+
+```
+simMatrix       = 8 · 10_000 · 172             ≈ 13,760,000 B = 13.76 MB
+teamRoundReached= 1 · 10_000 · 20              ≈    200,000 B =  0.20 MB
+constant tail   ≈ 70 KB
+total           ≈ 13.96 MB per cached league
+```
+
+### Scaling rules of thumb
+
+- **Memory is linear in `sims`** via `simMatrix`. Double the sims → double the
+  cache. This is the only term that grows with `S` at non-trivial rates.
+- **Memory is linear in `numPlayers`** via `simMatrix`. Adding 100 more
+  players at 10k sims adds `8 · 10_000 · 100 = 8 MB`.
+- **`teamRoundReached` grows linearly in `sims`** but at 1/8 the rate of
+  `simMatrix` because it's Uint8.
+- **Cache headcount scales with leagues.** N leagues × one entry each. The
+  app uses a single module-level Map (no TTL), so keep at most ~N ≤ (RAM
+  budget) / (per-league size).
+
+## 4. Speed — from first principles
+
+The hot loop in `runTournamentSim` is:
+
+```
+for sim in 1..S:
+  play-in        (E + W)          : ~6 single games
+  R1             (E + W × 4)      : 8 series × up to 7 games
+  R2             (E + W × 2)      : 4 series × up to 7 games
+  CF             (E + W)          : 2 series × up to 7 games
+  Finals                          : 1 series × up to 7 games
+  simMatrix sweep                 : O(P)
+```
+
+Per-game work is dominated by two things:
+
+1. **Game sim**: `rng.normal(spread, stdev)` → 2 calls to `next()` plus
+   `log`, `sqrt`, `cos` — call this `C_game`.
+2. **Dirichlet point sampling** for both teams: `dirichletInto(alphas, out,
+   k)` where `k` is the team's eligible-player count (`≈10–20`). Each call
+   invokes `gamma(α)` `k` times, and each `gamma` uses a rejection loop
+   whose expected iteration count is `~1` for α ≥ 1 and `~2` for α < 1.
+   With `CONCENTRATION=20` spread over `k` players, per-player α averages
+   `20/k ≈ 1–2`. Call this `C_dir(k)`.
+
+### Counting per-sim work
+
+- **Average games per series** under Elo-like matchups ≈ 5.3–5.8. Call it
+  `G = 5.6`.
+- **Series per sim**: 8 R1 + 4 R2 + 2 CF + 1 Finals = **15 series**.
+- **Main-bracket games per sim** ≈ `15 · 5.6 ≈ 84`.
+- **Play-in games** ≈ `6` (two 7v8 + two 9v10 + up to two loser-winner).
+- **Total games per sim** ≈ `90`.
+
+For each game we pay:
+
+```
+work_per_game  = C_game + 2 · C_dir(k)
+             ≈ ~50 ns (game)  +  2 · k · ~200 ns (gamma)
+             ≈ 50 ns + 2 · 15 · 200 ns
+             ≈ 6,050 ns ≈ 6 µs
+```
+
+Plus the final per-sim matrix sweep: `P · (one Float64 write + three
+Float64 reads/adds)` ≈ `P · 25 ns` ≈ `172 · 25 ns` ≈ `4.3 µs`.
+
+```
+work_per_sim ≈ 90 · 6 µs + 4.3 µs ≈ 544 µs
+```
+
+### Single-threaded JS throughput (Node 20 / V8, modern x86)
+
+| Metric | Formula | Value |
+| --- | --- | --- |
+| Sims per second | `1 / work_per_sim` | ~1.8k sims/sec |
+| 10k-sim run | `S · work_per_sim` | ~5.5 s |
+| 50k-sim run | same | ~27 s |
+| 100k-sim run | same | ~54 s |
+
+Observed numbers in the current code confirm this ballpark (a 10k run on an
+M-series laptop finishes in 3–6 s depending on live-game branches). The
+draft optimizer runs entirely off the cached `simMatrix` and needs ~50–100
+ms for `172 players × 10k sims` because it's just vector sums.
+
+### What drives the constants
+
+- `work_per_game` is dominated by the Dirichlet. Shrinking `k` (pre-filtering
+  to top-10 rotation players) roughly halves it.
+- `rng.normal` allocates no objects; `rng.gamma` allocates no objects —
+  throughput is CPU-bound, not GC-bound.
+- `simMatrix` is written once per sim per player, only when the per-sim
+  total is non-zero (cheap early-exit).
+
+## 5. Local 32 GB laptop vs. cloud box
+
+The NBA sim is currently **single-threaded per request** in `packages/sim`.
+Memory ceiling matters for how many parallel workers or leagues you can
+host, not for a single simulation's wall time.
+
+### Max cached state by RAM (using `simMatrix` dominant term)
+
+Assume `P = 172`, so per-league cache ≈ `8 · S · 172 + S · 20 ≈ 1,396 · S`
+bytes ≈ `1.4 KB · S`. For one league at a given `S`:
+
+```
+RAM_per_league(S) ≈ 1.4 KB · S
+```
+
+Invert to get max `S`, or fix `S` and count leagues:
+
+| RAM | Budget for sim heap | Max `S` for 1 league | Leagues at `S=10k` | Leagues at `S=50k` |
+| --- | --- | --- | --- | --- |
+| 32 GB laptop (10 GB for sim) | 10 GB | ~7.1 M | ~730 | ~145 |
+| 8 GB cloud (4 GB for sim) | 4 GB | ~2.8 M | ~290 | ~58 |
+| 16 GB cloud (8 GB for sim) | 8 GB | ~5.7 M | ~580 | ~115 |
+| 32 GB cloud (20 GB for sim) | 20 GB | ~14.2 M | ~1,460 | ~290 |
+| 64 GB cloud (50 GB for sim) | 50 GB | ~35 M | ~3,650 | ~730 |
+
+"Budget for sim heap" subtracts OS + Node/V8 runtime + app bundle + Redis
+client + headroom. Node heap default caps at `1.5–4 GB`; set
+`--max-old-space-size` when you want to go higher.
+
+### Wall-clock time by RAM
+
+Single-threaded time is **not** RAM-bound — it's CPU-bound. RAM matters only
+for:
+
+1. Can `simMatrix` fit? (Above ~2–3 GB it absolutely must stay on heap; no
+   swap; otherwise throughput collapses to disk I/O speed.)
+2. Can we run N sims in parallel (worker threads / separate processes)?
+
+Given a **per-thread** throughput of `~1.8k sims/sec`, parallelism multiplies
+throughput directly up to core count:
+
+```
+wall_time(S, cores) ≈ S / (1.8k · cores)    [bounded by 1 when cores=1]
+```
+
+With the current single-threaded engine, "cores" is always 1. If workers
+are added (one `simMatrix` per worker, partition sims across workers, then
+sum), each worker needs its own `8·S·P / cores` slice + scratch state.
+
+#### Throughput chart (hypothetical, with worker parallelism)
+
+| Machine | Cores | Sims/sec | Time for 10k | Time for 100k | Time for 1M |
+| --- | --- | --- | --- | --- | --- |
+| 32 GB laptop (M-series, 8P+4E) | 8 | ~14k | ~0.7 s | ~7 s | ~70 s |
+| 4 vCPU / 8 GB cloud | 4 | ~7k | ~1.4 s | ~14 s | ~140 s |
+| 8 vCPU / 16 GB cloud | 8 | ~14k | ~0.7 s | ~7 s | ~70 s |
+| 16 vCPU / 32 GB cloud | 16 | ~29k | ~0.35 s | ~3.5 s | ~35 s |
+| 32 vCPU / 64 GB cloud | 32 | ~58k | ~0.17 s | ~1.7 s | ~17 s |
+| 64 vCPU / 128 GB cloud | 64 | ~115k | ~0.09 s | ~0.9 s | ~8.7 s |
+
+Scaling caveats:
+
+- **RAM floor**: the per-sim `simMatrix` still lives in one place at the end
+  (either merge worker shards or pre-allocate). A 1M-sim run with
+  `P=172` is `1.38 GB` just for the matrix — fine at 16+ GB, infeasible at
+  4 GB.
+- **Memory bandwidth**: the per-sim `O(P)` sweep is a streaming read/write
+  of ~2.8 KB; at 90 games × 6 µs this isn't the bottleneck. For `P > 10k`
+  it would be.
+- **GC**: the engine allocates no new objects inside the per-sim loop
+  (scratch buffers are reused). GC pauses are not a factor.
+- **Determinism**: if you shard across workers you must shard the RNG seed
+  (e.g. `seed = 42 + workerId · S/cores`) to preserve reproducibility.
+
+### Recommended operating points
+
+| Use | Sims | Where | Expected latency |
+| --- | --- | --- | --- |
+| Live in-draft recommendation | 1k–3k | single thread, server | < 2 s |
+| Cached league bracket page | 10k | single thread, server | 3–6 s |
+| Async refresh / overnight | 50k–100k | worker pool, server | 10–60 s |
+| Pre-draft deep prep | 1M+ | cloud box with workers, ≥16 GB | minutes |
+| Local browser rerun (WASM/JS) | 1k–5k | Web Worker, user device | 1–5 s |
+
+## 6. Per-play-event sim cost (the "point in time" multiplier)
+
+§4's numbers are for **one** sim run. The production chart pipeline runs an
+entire tournament sim at every "chart-worthy" play event, so the real cost
+is `events × sims_per_event`.
+
+### What counts as an event (`buildEventSnapshots` in `event-snapshot.ts`)
+
+| Kind | When |
+| --- | --- |
+| `scoring` | Any `scoringPlay` with `scoreValue != null` and a scorer ID |
+| `end_of_period` | `clock === "0:00"` at the end of any period (Q1–Q4 + OTs) |
+| `end_of_game` | Terminal play (by wallclock) of a `status === "post"` game |
+
+Non-scoring plays (dribbles, misses, timeouts) are **skipped** — they
+wouldn't change fantasy totals or the bracket fingerprint.
+
+### Event counts — from first principles
+
+Empirical NBA playoff game has roughly:
+
+| Per game | Count | Source |
+| --- | --- | --- |
+| Field goals made (both teams) | 60–80 | league FG% × pace |
+| Free throws made (both teams) | 15–25 | box score avg |
+| **Scoring events / game** | **~100** | FGM + FTM |
+| End-of-period markers | 4 (reg) + ~0.2 (OT) ≈ 4 | one per period |
+| End-of-game | 1 | terminal play |
+| **Total events / game** | **~105** | sum |
+
+Full playoff bracket (excluding play-in, which doesn't track fantasy points):
+
+```
+series          = 15   (8 R1 + 4 R2 + 2 CF + 1 Finals)
+games / series  ≈ 5.6  (best-of-7 under mild favorite)
+playoff games   ≈ 84
+events / playoff ≈ 84 × 105 ≈ 8,800
+```
+
+Call this `E = ~10k events` for a full playoff rebuild (round up for slop —
+buzzer-beaters, 3-and-1, overtime-heavy series).
+
+### Total sim cost
+
+Let `s` = sims per event. Then:
+
+```
+total sims (per league, per full rebuild) = E · s
+total tournament-sim work                  = E · s · 544 µs
+total DB row writes                        = E
+```
+
+#### Cost table (single thread, per league, full playoff)
+
+| `s` sims/event | Total sims | Wall time (1 thread) | Wall time (8 threads) | Wall time (32 threads) |
+| --- | --- | --- | --- | --- |
+| 1,000 | 10 M | ~1.5 h | ~12 min | ~3 min |
+| **2,000 (today)** | **20 M** | **~3 h** | **~22 min** | **~6 min** |
+| 5,000 | 50 M | ~7.7 h | ~58 min | ~15 min |
+| **10,000 (target)** | **100 M** | **~15 h** | **~1.9 h** | **~29 min** |
+| 25,000 | 250 M | ~38 h | ~4.8 h | ~1.2 h |
+
+(Rosters have to be held constant across the pipeline — no per-event roster
+mutation — so the **only** variable is `s`.)
+
+### Memory cost — does it multiply?
+
+**No.** The pipeline runs sims **serially** (`for (const snap of
+snapshots) { await buildSnapshotRow(...) }`), and only the aggregate
+projections (`mean`, `stddev`, `p10`, `p90`, `winProb` — ~50 B/manager)
+are persisted per event. One `simMatrix` lives in memory at a time; it's
+overwritten on each event. The per-event **DB row** is what scales:
+
+| Datum per event row | Size |
+| --- | --- |
+| `actualPoints` (Record<userId, number>) | `~20 B · M` managers |
+| `projectedPoints` (Record<userId, {5 numbers}>) | `~60 B · M` |
+| `eventMeta` (text, team, playerIds, scores, clock) | ~200 B |
+| `gamesSnapshot` (array of `LiveGameState`) | up to `~150 B · games_in_progress` ≈ 1 KB |
+| `simCount` + misc | ~50 B |
+| **Row total** (10 managers, 2 live games) | **~2.5 KB** |
+
+Storage (per league) for a full rebuild:
+
+```
+db_bytes ≈ E · row_bytes ≈ 10,000 · 2.5 KB = 25 MB
+```
+
+At `s = 10k` the numbers don't change — sim count doesn't affect row size,
+only CPU time.
+
+### Incremental vs. full rebuild
+
+The rebuild pipeline has three modes (`rebuild.ts`):
+
+| Mode | What it does | Work |
+| --- | --- | --- |
+| `full` | Recompute every row, atomic DELETE+INSERT | `E · s` sims |
+| `incremental` | Skip rows where `(gameId, sequence)` already exists | `(E_new) · s` sims |
+| `actuals-only` | Update `actualPoints` + metadata, skip Monte Carlo | 0 sims |
+
+For live updates during a game (the "point in time" case the chart serves),
+only **new** events need sims. A typical in-progress game generates ~1
+scoring event every ~25 seconds of game clock → ~100 events over 48
+minutes → ~2.5/minute of wall clock. At `s = 10k`:
+
+```
+wall time per new event (1 thread)  = 10,000 · 544 µs ≈ 5.4 s
+wall time per new event (8 threads) ≈ 0.7 s
+```
+
+So a single thread **cannot** keep up with live play at 10k sims/event
+(~2.5 events/min × 5.4 s = 13.5 s of sim work per minute of real time —
+tight but ~23% duty cycle, fine). **Eight cores gives 20× headroom.**
+
+### Sizing RAM for the chart pipeline
+
+Per-request RAM need is the **single-sim** footprint (§3), not `E × S`.
+At `s = 10k, P = 172`:
+
+- Single-thread serial rebuild: **~14 MB** heap for the sim + a few MB
+  for the DB batch. Fits on anything.
+- 8-way parallel by partitioning `snapshots[]` across workers: **~112 MB**
+  (8 × 14 MB) + shared static data. Still trivial.
+- 32-way parallel: **~450 MB** heap for sim matrices. Fine on any ≥4 GB
+  cloud box; the bigger constraint becomes DB write throughput, not RAM.
+
+At `s = 100k` the per-worker slice climbs to 138 MB each:
+
+| Parallelism | Per-worker heap | Aggregate heap | Min RAM tier |
+| --- | --- | --- | --- |
+| 1 thread | 138 MB | 138 MB | 1 GB |
+| 8 threads | 138 MB | 1.1 GB | 4 GB |
+| 32 threads | 138 MB | 4.4 GB | 8 GB |
+| 64 threads | 138 MB | 8.8 GB | 16 GB |
+
+### Recommended per-event operating points
+
+| Use | `s` | Where | Latency per event |
+| --- | --- | --- | --- |
+| Live scoring play projection | 1k–2k | server, serial | 0.5–1 s |
+| End-of-period refresh | 5k | server, serial | ~2.7 s |
+| End-of-game + post-game chart | 10k | server, 4–8 workers | ~0.7–1.4 s |
+| Full playoff rebuild (`mode=full`) | 10k | cloud box, 16–32 workers | 30 min–1 h |
+| Nightly deep rebuild | 25k | cloud box, 32+ workers | 1–2 h |
+
+### TL;DR
+
+At **today's `s = 2,000`**, a full playoff rebuild is ~20 M sims ≈ 3 h
+single-threaded ≈ 6 min on 32 cores. Bumping to **`s = 10,000`** takes it
+to ~100 M sims ≈ 15 h single-threaded ≈ 29 min on 32 cores. Memory does
+**not** multiply by event count — only wall time does, because the
+pipeline is serial and only per-manager aggregates are persisted.
