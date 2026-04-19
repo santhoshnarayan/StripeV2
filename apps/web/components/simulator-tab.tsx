@@ -14,6 +14,7 @@ import { BracketMobileView } from "@/components/sim/bracket-mobile-view";
 import { AdjustmentsView } from "@/components/sim/adjustments-view";
 import { AdjustmentsTab as ExploreAdjustmentsTab, setBracketConstants } from "@/components/sim/adjustments-tab-explore";
 import { InjuriesView } from "@/components/sim/injuries-view";
+import { WhatIfTab } from "@/components/sim/whatif-tab";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { SimulatorLeaderboard } from "@/components/league/simulator-leaderboard";
 import { appApiFetch } from "@/lib/app-api";
@@ -40,7 +41,7 @@ import {
   type TeamExposureRow,
 } from "@/lib/sim";
 
-type SimSubTab = "leaderboard" | "players" | "teams" | "bracket" | "adjustments" | "injuries" | "roster" | "advisor" | "exposure";
+type SimSubTab = "leaderboard" | "players" | "teams" | "bracket" | "whatif" | "adjustments" | "injuries" | "roster" | "advisor" | "exposure";
 
 export interface LeagueRosterData {
   rosters: Array<{
@@ -442,6 +443,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
   const subTabs: { id: SimSubTab; label: string }[] = [
     ...(leagueData ? [{ id: "leaderboard" as SimSubTab, label: "Leaderboard" }] : []),
     { id: "bracket", label: "Bracket" },
+    { id: "whatif", label: "What-If" },
     { id: "players", label: "Players" },
     { id: "teams", label: "Teams" },
     ...(leagueData ? [
@@ -550,6 +552,14 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
             <BracketView simData={simData} simResults={simResults} />
           </div>
         </>
+      ) : null}
+
+      {subTab === "whatif" ? (
+        <WhatIfTab
+          simResults={simResults}
+          simulating={simulating}
+          progress={progress}
+        />
       ) : null}
 
       {subTab === "adjustments" && simData ? (

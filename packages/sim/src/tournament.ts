@@ -12,16 +12,20 @@
 
 import { RNG } from "./rng";
 import { buildLiveGameMap } from "./live-game-utils";
-import type {
-  LiveGameState,
-  SimConfig,
-  SimData,
-  SimPlayer,
-  SimResults,
-  TeamSimResult,
-  PlayerProjection,
-  PlayerAdjustment,
-  InjuryEntry,
+import {
+  SERIES_KEYS,
+  PLAYIN_KEYS,
+  type LiveGameState,
+  type SimConfig,
+  type SimData,
+  type SimPlayer,
+  type SimResults,
+  type SeriesKey,
+  type PlayinKey,
+  type TeamSimResult,
+  type PlayerProjection,
+  type PlayerAdjustment,
+  type InjuryEntry,
 } from "./types";
 
 // ─── Helpers ───────────────────────────────────────────────────────
@@ -529,6 +533,46 @@ export async function runTournamentSim(
   // Sim matrix: sims × numPlayers
   const simMatrix = new Float64Array(config.sims * numPlayers);
 
+  // Build the canonical team index used by `seriesWinners` / `playinSeeds`.
+  // Order is deterministic (East seeds 1-6, East play-in 7-10, then West).
+  // Uint8Array sentinel: 0xff = "unset / no winner recorded".
+  const teamNames: string[] = [];
+  const teamIndex = new Map<string, number>();
+  const registerTeam = (team: string) => {
+    if (!team) return;
+    if (teamIndex.has(team)) return;
+    const idx = teamNames.length;
+    teamNames.push(team);
+    teamIndex.set(team, idx);
+  };
+  for (const [, t] of bracket.eastSeeds) registerTeam(t);
+  for (const [, t] of bracket.eastPlayin ?? []) registerTeam(t);
+  for (const [, t] of bracket.westSeeds) registerTeam(t);
+  for (const [, t] of bracket.westPlayin ?? []) registerTeam(t);
+  // Mirror across team aliases so any string the bracket might surface
+  // (CSV abbrev or seed abbrev) resolves to the canonical idx.
+  for (const [seedAbbr, csvAbbr] of Object.entries(aliases)) {
+    const fromSeed = teamIndex.get(seedAbbr);
+    const fromCsv = teamIndex.get(csvAbbr);
+    if (fromSeed != null && fromCsv == null) teamIndex.set(csvAbbr, fromSeed);
+    if (fromCsv != null && fromSeed == null) teamIndex.set(seedAbbr, fromCsv);
+  }
+  if (teamNames.length > 254) {
+    throw new Error(
+      `seriesWinners stores team idx as Uint8 (sentinel 0xff); got ${teamNames.length} teams. Bump to Uint16Array.`,
+    );
+  }
+
+  const seriesWinners = {} as Record<SeriesKey, Uint8Array>;
+  for (const k of SERIES_KEYS) seriesWinners[k] = new Uint8Array(config.sims).fill(0xff);
+  const playinSeeds = {} as Record<PlayinKey, Uint8Array>;
+  for (const k of PLAYIN_KEYS) playinSeeds[k] = new Uint8Array(config.sims).fill(0xff);
+
+  const writeSeriesWinner = (key: SeriesKey, sim: number, team: string) => {
+    const idx = teamIndex.get(team);
+    if (idx != null) seriesWinners[key][sim] = idx;
+  };
+
   const rng = new RNG(42);
 
   // Accumulators
@@ -591,6 +635,18 @@ export async function runTournamentSim(
       teamPlayoffSims[t] = (teamPlayoffSims[t] ?? 0) + 1;
     }
 
+    // Record per-sim play-in seed assignments for bracket-conditioning UI.
+    {
+      const e7Idx = teamIndex.get(east7);
+      const e8Idx = teamIndex.get(east8);
+      const w7Idx = teamIndex.get(west7);
+      const w8Idx = teamIndex.get(west8);
+      if (e7Idx != null) playinSeeds.east7[sim] = e7Idx;
+      if (e8Idx != null) playinSeeds.east8[sim] = e8Idx;
+      if (w7Idx != null) playinSeeds.west7[sim] = w7Idx;
+      if (w8Idx != null) playinSeeds.west8[sim] = w8Idx;
+    }
+
     // Mark every team that entered the main bracket as "reached R1" (level 1).
     for (const [seed, team] of allSeeds) {
       if (seed <= 6) markReached(team, 1, sim);
@@ -617,6 +673,7 @@ export async function runTournamentSim(
       const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2, key);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
       markReached(winner, 2, sim);
+      writeSeriesWinner(key as SeriesKey, sim, winner);
       e1w.push(winner);
     }
     const w1w: string[] = [];
@@ -624,6 +681,7 @@ export async function runTournamentSim(
       const winner = simulateSeries(h, l, ctx, rng, 0, accum, 2, key);
       r1Counts[winner] = (r1Counts[winner] ?? 0) + 1;
       markReached(winner, 2, sim);
+      writeSeriesWinner(key as SeriesKey, sim, winner);
       w1w.push(winner);
     }
 
@@ -643,6 +701,7 @@ export async function runTournamentSim(
       const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9, key);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
       markReached(winner, 3, sim);
+      writeSeriesWinner(key as SeriesKey, sim, winner);
       e2w.push(winner);
     }
     const w2w: string[] = [];
@@ -650,6 +709,7 @@ export async function runTournamentSim(
       const winner = simulateSeries(h, l, ctx, rng, 1, accum, 9, key);
       r2Counts[winner] = (r2Counts[winner] ?? 0) + 1;
       markReached(winner, 3, sim);
+      writeSeriesWinner(key as SeriesKey, sim, winner);
       w2w.push(winner);
     }
 
@@ -658,11 +718,13 @@ export async function runTournamentSim(
     const ecfWinner = simulateSeries(ecfH, ecfL, ctx, rng, 2, accum, 16, "cf.east");
     cfCounts[ecfWinner] = (cfCounts[ecfWinner] ?? 0) + 1;
     markReached(ecfWinner, 4, sim);
+    writeSeriesWinner("cf.east", sim, ecfWinner);
 
     const [wcfH, wcfL] = orderMatchup(w2w[0], w2w[1], allSeeds, allPlayin);
     const wcfWinner = simulateSeries(wcfH, wcfL, ctx, rng, 2, accum, 16, "cf.west");
     cfCounts[wcfWinner] = (cfCounts[wcfWinner] ?? 0) + 1;
     markReached(wcfWinner, 4, sim);
+    writeSeriesWinner("cf.west", sim, wcfWinner);
 
     // Finals
     const [finH, finL] = orderMatchup(ecfWinner, wcfWinner, allSeeds, allPlayin);
@@ -670,6 +732,7 @@ export async function runTournamentSim(
     finalsCounts[finWinner] = (finalsCounts[finWinner] ?? 0) + 1;
     champCounts[finWinner] = (champCounts[finWinner] ?? 0) + 1;
     markReached(finWinner, 5, sim);
+    writeSeriesWinner("finals", sim, finWinner);
 
     // Record per-sim per-player totals into the sim matrix and fold the
     // per-sim typed-array accums into the global totals. Dense O(numPlayers)
@@ -800,5 +863,16 @@ export async function runTournamentSim(
 
   players.sort((a, b) => b.projectedPoints - a.projectedPoints);
 
-  return { teams, players, simMatrix, playerIndex, numSims: n, teamRoundReached };
+  return {
+    teams,
+    players,
+    simMatrix,
+    playerIndex,
+    numSims: n,
+    teamRoundReached,
+    teamNames,
+    teamIndex,
+    seriesWinners,
+    playinSeeds,
+  };
 }

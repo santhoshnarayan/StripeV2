@@ -130,6 +130,34 @@ export interface PlayerProjection {
   p90: number;
 }
 
+/** Stable ordering of structural series slots in `SimResults.seriesWinners`.
+ *  R2 pairings are determined by R1 winners (1v8-winner vs 2v7-winner = top,
+ *  4v5-winner vs 3v6-winner = bot), so series identity is structural — not
+ *  team-pair-based. UI bracket-conditioning logic relies on this list. */
+export const SERIES_KEYS = [
+  "r1.east.1v8",
+  "r1.east.4v5",
+  "r1.east.3v6",
+  "r1.east.2v7",
+  "r1.west.1v8",
+  "r1.west.4v5",
+  "r1.west.3v6",
+  "r1.west.2v7",
+  "r2.east.top",
+  "r2.east.bot",
+  "r2.west.top",
+  "r2.west.bot",
+  "cf.east",
+  "cf.west",
+  "finals",
+] as const;
+export type SeriesKey = (typeof SERIES_KEYS)[number];
+
+/** Stable ordering of play-in seed assignments in `SimResults.playinSeeds`.
+ *  Each Uint8Array gives the team idx that landed in that seed slot per sim. */
+export const PLAYIN_KEYS = ["east7", "east8", "west7", "west8"] as const;
+export type PlayinKey = (typeof PLAYIN_KEYS)[number];
+
 export interface SimResults {
   teams: TeamSimResult[];
   players: PlayerProjection[];
@@ -147,6 +175,18 @@ export interface SimResults {
    *    5 = NBA Champion
    */
   teamRoundReached: Record<string, Uint8Array>;
+  /** Canonical team abbreviations indexed 0..teamNames.length-1. The Uint8Array
+   *  values in `seriesWinners` and `playinSeeds` are indices into this array. */
+  teamNames: string[];
+  /** Lookup from any known team alias → idx into `teamNames`. */
+  teamIndex: Map<string, number>;
+  /** Per-sim winner of each of the 15 structural series slots.
+   *  `seriesWinners[seriesKey][sim]` = idx into `teamNames` of the winner. */
+  seriesWinners: Record<SeriesKey, Uint8Array>;
+  /** Per-sim play-in seed assignment.
+   *  `playinSeeds.east7[sim]` = idx into `teamNames` of the team that
+   *  ended up as the East 7 seed in that sim. */
+  playinSeeds: Record<PlayinKey, Uint8Array>;
 }
 
 // ─── Draft optimizer types ─────────────────────────────────────────

@@ -1,0 +1,26 @@
+[package]
+name = "sim-engine-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust port of the NBA playoff Monte Carlo simulator (packages/sim)."
+
+[lib]
+name = "sim_engine_rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "sim-cli"
+path = "src/main.rs"
+
+[dependencies]
+rand_xoshiro = "0.6"
+rand_core = "0.6"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

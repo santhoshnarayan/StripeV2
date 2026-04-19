@@ -10,8 +10,10 @@ export type {
   PlayerAdjustment,
   InjuryEntry,
   LiveGameState,
+  SeriesKey,
+  PlayinKey,
 } from "./types";
-export { DEFAULT_SIM_CONFIG } from "./types";
+export { DEFAULT_SIM_CONFIG, SERIES_KEYS, PLAYIN_KEYS } from "./types";
 export { RNG } from "./rng";
 export {
   getCachedSimResults,

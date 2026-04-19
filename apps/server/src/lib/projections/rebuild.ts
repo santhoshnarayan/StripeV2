@@ -258,19 +258,135 @@ async function runSnapshotSim(
   return projByUser;
 }
 
-async function loadExistingProjectionKeys(
+/** Cheap signature of a snapshot's *upstream* state: if anything before this
+ *  point in the play stream changed (insert / delete / edit), `liveGames`
+ *  shifts. So `(eventMeta, liveGames)` is a sufficient identity check.
+ *  Used by reconciliation to find the first divergence. */
+function snapshotSignature(snap: EventSnapshot): string {
+  const meta = snapshotEventMeta(snap);
+  const games = snap.liveGames.map((g) => [
+    g.seriesKey,
+    g.gameNum,
+    g.status,
+    g.homeScore,
+    g.awayScore,
+    Math.round(g.remainingFraction * 1000) / 1000,
+  ]);
+  return JSON.stringify([meta, games]);
+}
+
+/** Mirror of snapshotSignature, computed from a stored row. */
+function rowSignature(row: {
+  eventMeta: unknown;
+  gamesSnapshot: unknown;
+}): string {
+  const games = (row.gamesSnapshot as Array<{
+    seriesKey: string;
+    gameNum: number;
+    status: string;
+    homeScore: number;
+    awayScore: number;
+    remainingFraction: number;
+  }> | null) ?? [];
+  return JSON.stringify([
+    row.eventMeta ?? null,
+    games.map((g) => [
+      g.seriesKey,
+      g.gameNum,
+      g.status,
+      g.homeScore,
+      g.awayScore,
+      Math.round(g.remainingFraction * 1000) / 1000,
+    ]),
+  ]);
+}
+
+/** Walk current snapshots vs stored projections in chronological order and
+ *  return the index of the first divergence (or snapshots.length if all match
+ *  through the existing tail). Divergence triggers truncate-and-rebuild from
+ *  that point forward.
+ *
+ *  Algorithm covers all three reconciliation cases:
+ *    - play inserted upstream: stored row's liveGames signature mismatches
+ *    - play deleted upstream: stored (gameId, sequence) no longer present
+ *    - play edited: eventMeta differs
+ */
+async function findFirstDivergence(
   leagueId: string,
-): Promise<Set<string>> {
-  const rows = await db
+  snapshots: EventSnapshot[],
+): Promise<{ firstStaleIndex: number; staleKeys: Set<string> }> {
+  const stored = await db
     .select({
       gameId: nbaEventProjection.gameId,
       sequence: nbaEventProjection.sequence,
+      eventMeta: nbaEventProjection.eventMeta,
+      gamesSnapshot: nbaEventProjection.gamesSnapshot,
     })
     .from(nbaEventProjection)
     .where(eq(nbaEventProjection.leagueId, leagueId));
-  const s = new Set<string>();
-  for (const r of rows) s.add(`${r.gameId}|${r.sequence}`);
-  return s;
+  const byKey = new Map<string, (typeof stored)[number]>();
+  for (const r of stored) byKey.set(`${r.gameId}|${r.sequence}`, r);
+
+  let firstStaleIndex = snapshots.length;
+  for (let i = 0; i < snapshots.length; i++) {
+    const snap = snapshots[i];
+    const key = `${snap.event.gameId}|${snap.event.sequence}`;
+    const row = byKey.get(key);
+    if (!row) {
+      // New snapshot — divergence from this point. (Even though *this* row
+      // is just missing, an earlier insert/edit may have shifted `liveGames`
+      // for later rows that DO exist, so we still rebuild forward.)
+      firstStaleIndex = i;
+      break;
+    }
+    if (rowSignature(row) !== snapshotSignature(snap)) {
+      firstStaleIndex = i;
+      break;
+    }
+  }
+
+  // Anything stored whose key is not in the current snapshot set, OR whose
+  // index falls at/after firstStaleIndex, is stale.
+  const currentKeysAfterDivergence = new Set<string>();
+  for (let i = firstStaleIndex; i < snapshots.length; i++) {
+    const snap = snapshots[i];
+    currentKeysAfterDivergence.add(`${snap.event.gameId}|${snap.event.sequence}`);
+  }
+  const currentAllKeys = new Set(
+    snapshots.map((s) => `${s.event.gameId}|${s.event.sequence}`),
+  );
+  const staleKeys = new Set<string>();
+  for (const key of byKey.keys()) {
+    if (!currentAllKeys.has(key) || currentKeysAfterDivergence.has(key)) {
+      staleKeys.add(key);
+    }
+  }
+  return { firstStaleIndex, staleKeys };
+}
+
+async function deleteProjectionKeys(
+  leagueId: string,
+  keys: Iterable<string>,
+): Promise<void> {
+  const byGame = new Map<string, number[]>();
+  for (const k of keys) {
+    const [gameId, seqStr] = k.split("|");
+    const arr = byGame.get(gameId) ?? [];
+    arr.push(Number(seqStr));
+    byGame.set(gameId, arr);
+  }
+  for (const [gameId, seqs] of byGame.entries()) {
+    if (seqs.length === 0) continue;
+    await db
+      .delete(nbaEventProjection)
+      .where(
+        and(
+          eq(nbaEventProjection.leagueId, leagueId),
+          eq(nbaEventProjection.gameId, gameId),
+          inArray(nbaEventProjection.sequence, seqs),
+        ),
+      );
+  }
 }
 
 // ─── Public API ────────────────────────────────────────────────────
@@ -307,6 +423,58 @@ export async function enqueueProjectionRebuild(
   });
 
   return jobId;
+}
+
+/** Returns true if this league has a queued or running rebuild job. Used by
+ *  the live-update auto-trigger to coalesce ingest bursts (we don't want to
+ *  start a fresh sim every cron tick if the previous one is still running). */
+async function hasInFlightRebuild(leagueId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: nbaProjectionJob.id })
+    .from(nbaProjectionJob)
+    .where(
+      and(
+        eq(nbaProjectionJob.leagueId, leagueId),
+        inArray(nbaProjectionJob.status, ["queued", "running"]),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/** Auto-triggered from the live-ingest cron after a syncLiveGames batch.
+ *  Enqueues an incremental rebuild for every active league, but only if no
+ *  job is already in flight for that league. The reconciliation step inside
+ *  runProjectionRebuild handles play inserts/edits/deletes correctly without
+ *  needing a hint about *which* play changed. */
+export async function autoTriggerLiveRebuilds(): Promise<{
+  enqueued: number;
+  skipped: number;
+}> {
+  const leagues = await db
+    .select({ id: league.id, phase: league.phase })
+    .from(league);
+  let enqueued = 0;
+  let skipped = 0;
+  for (const lg of leagues) {
+    // "drafting" / "complete" leagues still want live updates during playoffs
+    // — only filter out leagues that haven't started.
+    if (lg.phase === "invite") {
+      skipped++;
+      continue;
+    }
+    if (await hasInFlightRebuild(lg.id)) {
+      skipped++;
+      continue;
+    }
+    await enqueueProjectionRebuild({
+      leagueId: lg.id,
+      requestedByUserId: null,
+      mode: "incremental",
+    });
+    enqueued++;
+  }
+  return { enqueued, skipped };
 }
 
 async function runProjectionRebuild(
@@ -421,46 +589,27 @@ async function runProjectionRebuild(
     return;
   }
 
-  // Incremental: only compute + upsert rows we don't already have, and delete
-  // any stale rows whose (gameId, sequence) is no longer in the current
-  // snapshot set (e.g., plays corrected/removed upstream).
-  const existingKeys = await loadExistingProjectionKeys(params.leagueId);
-  const currentKeys = new Set(
-    snapshots.map((s) => `${s.event.gameId}|${s.event.sequence}`),
+  // Incremental + reconciliation:
+  //   1. Walk snapshots vs stored rows. Find first divergence (insert /
+  //      delete / edit upstream).
+  //   2. Drop all stored rows from the divergence point forward, plus any
+  //      orphaned (gameId, sequence) keys no longer in the snapshot set.
+  //   3. Re-run sims for snapshots[firstStaleIndex..end] only. Anything
+  //      before is bit-identical so we trust the cache.
+  const { firstStaleIndex, staleKeys } = await findFirstDivergence(
+    params.leagueId,
+    snapshots,
   );
-  const staleKeys = [...existingKeys].filter((k) => !currentKeys.has(k));
-  if (staleKeys.length > 0) {
-    const tuples = staleKeys.map((k) => {
-      const [gameId, seqStr] = k.split("|");
-      return { gameId, sequence: Number(seqStr) };
-    });
-    const byGame = new Map<string, number[]>();
-    for (const t of tuples) {
-      const arr = byGame.get(t.gameId) ?? [];
-      arr.push(t.sequence);
-      byGame.set(t.gameId, arr);
-    }
-    for (const [gameId, seqs] of byGame.entries()) {
-      await db
-        .delete(nbaEventProjection)
-        .where(
-          and(
-            eq(nbaEventProjection.leagueId, params.leagueId),
-            eq(nbaEventProjection.gameId, gameId),
-            inArray(nbaEventProjection.sequence, seqs),
-          ),
-        );
-    }
-  }
+  if (staleKeys.size > 0) await deleteProjectionKeys(params.leagueId, staleKeys);
 
-  let processed = 0;
-  for (const snap of snapshots) {
-    const key = `${snap.event.gameId}|${snap.event.sequence}`;
-    if (existingKeys.has(key)) {
-      processed++;
-      continue;
-    }
-    await processSnapshot(params.leagueId, snap, rosters, baseSimData);
+  let processed = firstStaleIndex; // earlier snapshots count as "already done"
+  await db
+    .update(nbaProjectionJob)
+    .set({ processedEvents: processed, updatedAt: new Date() })
+    .where(eq(nbaProjectionJob.id, jobId));
+
+  for (let i = firstStaleIndex; i < snapshots.length; i++) {
+    await processSnapshot(params.leagueId, snapshots[i], rosters, baseSimData);
     processed++;
     if (processed % 10 === 0) {
       await db

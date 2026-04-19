@@ -4,6 +4,7 @@ import {
   syncLiveGames,
   syncScoreboard,
 } from "../../lib/espn-nba/ingest.js";
+import { autoTriggerLiveRebuilds } from "../../lib/projections/rebuild.js";
 
 export async function runScoreboardSync(): Promise<void> {
   try {
@@ -24,6 +25,19 @@ export async function runLiveGamesSync(): Promise<void> {
     if (await isSyncPaused()) return;
     const count = await syncLiveGames();
     if (count > 0) console.log(`[cron] nba live-games sync updated ${count} games`);
+    // Auto-rebuild projections for every active league after each ingest tick.
+    // hasInFlightRebuild() inside the trigger coalesces bursts; reconciliation
+    // inside the rebuild handles inserts/edits/deletes from the new plays.
+    if (count > 0) {
+      try {
+        const { enqueued, skipped } = await autoTriggerLiveRebuilds();
+        if (enqueued > 0) {
+          console.log(`[cron] nba auto-rebuild enqueued=${enqueued} skipped=${skipped}`);
+        }
+      } catch (err) {
+        console.error("[cron] nba auto-rebuild trigger failed:", (err as Error).message);
+      }
+    }
   } catch (err) {
     console.error("[cron] nba live-games sync failed:", (err as Error).message);
   }

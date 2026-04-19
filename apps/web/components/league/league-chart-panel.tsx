@@ -17,6 +17,7 @@ import { TeamLogo } from "@/components/sim/player-avatar";
 import { appApiFetch } from "@/lib/app-api";
 import { DEFAULT_CHART_POINT_BUDGET, lttbDownsample } from "@/lib/charts/lttb";
 import { useAutoSim } from "@/lib/use-auto-sim";
+import { usePolling } from "@/lib/use-polling";
 import { computeManagerProjections } from "@/lib/sim";
 import { cn } from "@/lib/utils";
 
@@ -305,10 +306,12 @@ export function LeagueChartPanel({
     prevSimStatusRef.current = simStatus;
   }, [simStatus, refetchData]);
 
-  useEffect(() => {
-    const id = setInterval(() => void refetchData(), 60_000);
-    return () => clearInterval(id);
-  }, [refetchData]);
+  // Visibility-aware polling for projections-timeline. The server now auto-
+  // triggers an incremental rebuild after every live-ingest tick (~30s), so a
+  // tighter cadence here surfaces new event projections within ~15s while the
+  // user is actively watching. usePolling pauses when the tab is hidden or the
+  // user has been idle (>3 min default), and re-fetches on visibilitychange.
+  usePolling(refetchData, { activeMs: 15_000 });
 
   // Per-manager projection totals (mean + win prob) from the sim.
   const managerProjections = useMemo(() => {
