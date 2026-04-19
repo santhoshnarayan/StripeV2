@@ -37,6 +37,7 @@ export const auth = betterAuth({
     const base = [
       process.env.FRONTEND_URL || "http://localhost:3000",
       "https://nba-player-pool.vercel.app",
+      "https://nba-player-pool-admin.vercel.app",
       ...(process.env.NODE_ENV === "production"
         ? []
         : [

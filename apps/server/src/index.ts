@@ -19,6 +19,7 @@ const isProduction = process.env.NODE_ENV === "production";
 const trustedOrigins = [
   process.env.FRONTEND_URL,
   "https://nba-player-pool.vercel.app",
+  "https://nba-player-pool-admin.vercel.app",
   ...(isProduction
     ? []
     : [
