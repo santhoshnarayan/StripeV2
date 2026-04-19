@@ -5,6 +5,7 @@ const navLinks = [
   { href: "/docs/architecture", label: "Architecture" },
   { href: "/docs/game-flow", label: "Game Flow" },
   { href: "/docs/draft-room", label: "Draft Room" },
+  { href: "/docs/simulator", label: "Simulator" },
   { href: "/docs/deployments", label: "Deployments" },
   { href: "/docs/auth", label: "Auth" },
   { href: "/docs/graphql", label: "GraphQL" },
