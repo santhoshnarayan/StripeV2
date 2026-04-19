@@ -48,6 +48,17 @@ export interface ConditionalPlayerRow {
   delta: number;
 }
 
+export interface ConditionalManagerRow {
+  userId: string;
+  name: string;
+  baselineMean: number;
+  baselineWinPct: number;
+  conditionalMean: number;
+  conditionalWinPct: number;
+  meanDelta: number;
+  winDelta: number;
+}
+
 /** Compute the surviving-sims mask given forced slot outcomes. */
 export function computeMask(results: SimResults, forces: ForceMap): Uint8Array {
   const N = results.numSims;
@@ -175,6 +186,83 @@ export function computeConditionalPlayers(
     });
   }
   return rows;
+}
+
+/** Per-manager mean and win % over surviving sims (with `mask`) vs baseline.
+ *
+ * Baseline is computed over all sims so the "Δ" column is meaningful even if
+ * `forces` collapses the surviving set to a small slice. Win % counts sims
+ * where the manager has the highest roster total in the (sub)set considered.
+ */
+export function computeConditionalManagers(
+  results: SimResults,
+  mask: Uint8Array,
+  rosters: Array<{ userId: string; name: string; playerIds: string[] }>,
+): ConditionalManagerRow[] {
+  const N = results.numSims;
+  const numPlayers = results.playerIndex.size;
+  const surviving = maskCount(mask);
+
+  // Per-manager per-sim totals (computed once, reused for both baseline +
+  // conditional aggregates).
+  const totals: Float64Array[] = rosters.map((r) => {
+    const t = new Float64Array(N);
+    for (const id of r.playerIds) {
+      const col = results.playerIndex.get(id);
+      if (col == null) continue;
+      for (let sim = 0; sim < N; sim++) t[sim] += results.simMatrix[sim * numPlayers + col];
+    }
+    return t;
+  });
+
+  const baselineSum = new Float64Array(rosters.length);
+  const conditionalSum = new Float64Array(rosters.length);
+  const baselineWins = new Uint32Array(rosters.length);
+  const conditionalWins = new Uint32Array(rosters.length);
+
+  for (let sim = 0; sim < N; sim++) {
+    let bestIdx = 0;
+    let bestTotal = totals[0]?.[sim] ?? -Infinity;
+    for (let m = 0; m < rosters.length; m++) {
+      baselineSum[m] += totals[m][sim];
+      if (m > 0 && totals[m][sim] > bestTotal) {
+        bestIdx = m;
+        bestTotal = totals[m][sim];
+      }
+    }
+    if (rosters.length > 0) baselineWins[bestIdx]++;
+
+    if (mask[sim]) {
+      let condBestIdx = 0;
+      let condBestTotal = totals[0]?.[sim] ?? -Infinity;
+      for (let m = 0; m < rosters.length; m++) {
+        conditionalSum[m] += totals[m][sim];
+        if (m > 0 && totals[m][sim] > condBestTotal) {
+          condBestIdx = m;
+          condBestTotal = totals[m][sim];
+        }
+      }
+      if (rosters.length > 0) conditionalWins[condBestIdx]++;
+    }
+  }
+
+  const condDenom = surviving > 0 ? surviving : 1;
+  return rosters.map((r, i) => {
+    const baselineMean = baselineSum[i] / N;
+    const baselineWinPct = (baselineWins[i] / N) * 100;
+    const conditionalMean = surviving > 0 ? conditionalSum[i] / condDenom : 0;
+    const conditionalWinPct = surviving > 0 ? (conditionalWins[i] / condDenom) * 100 : 0;
+    return {
+      userId: r.userId,
+      name: r.name,
+      baselineMean,
+      baselineWinPct,
+      conditionalMean,
+      conditionalWinPct,
+      meanDelta: conditionalMean - baselineMean,
+      winDelta: conditionalWinPct - baselineWinPct,
+    };
+  });
 }
 
 /** For each forced-able slot, return the distribution of teams that have

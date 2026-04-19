@@ -15,70 +15,460 @@ import {
   maskCount,
   computeConditionalTeams,
   computeConditionalPlayers,
+  computeConditionalManagers,
   computeSlotOptions,
   type ForceMap,
   type SlotKey,
 } from "@/lib/sim/whatif";
-import type { SimResults } from "@/lib/sim";
+import type { SeriesKey, SimData, SimResults } from "@/lib/sim";
+
+interface RosterInputLite {
+  userId: string;
+  name: string;
+  playerIds: string[];
+}
 
 interface WhatIfTabProps {
+  simData: SimData | null;
   simResults: SimResults | null;
   simulating: boolean;
   progress: number;
+  rosters?: RosterInputLite[];
+  viewerUserId?: string;
 }
 
-interface SlotGroup {
-  label: string;
-  rows: { key: SlotKey; label: string }[];
+type WhatIfSubTab = "players" | "teams" | "fantasy";
+
+const TEAM_LOGO_OVERRIDES: Record<string, string> = {
+  NY: "nyk",
+  SA: "sa",
+  GS: "gs",
+  PHX: "phx",
+};
+
+function teamLogoUrl(team: string): string {
+  const abbr = (TEAM_LOGO_OVERRIDES[team] ?? team).toLowerCase();
+  return `https://cdn.espn.com/combiner/i?img=/i/teamlogos/nba/500/${abbr}.png&h=40&w=40`;
 }
 
-const SLOT_GROUPS: SlotGroup[] = [
-  {
-    label: "Play-In",
-    rows: [
-      { key: "east7", label: "East 7" },
-      { key: "east8", label: "East 8" },
-      { key: "west7", label: "West 7" },
-      { key: "west8", label: "West 8" },
-    ],
-  },
-  {
-    label: "Round 1",
-    rows: [
-      { key: "r1.east.1v8", label: "East 1 vs 8" },
-      { key: "r1.east.4v5", label: "East 4 vs 5" },
-      { key: "r1.east.3v6", label: "East 3 vs 6" },
-      { key: "r1.east.2v7", label: "East 2 vs 7" },
-      { key: "r1.west.1v8", label: "West 1 vs 8" },
-      { key: "r1.west.4v5", label: "West 4 vs 5" },
-      { key: "r1.west.3v6", label: "West 3 vs 6" },
-      { key: "r1.west.2v7", label: "West 2 vs 7" },
-    ],
-  },
-  {
-    label: "Round 2",
-    rows: [
-      { key: "r2.east.top", label: "East Top (1/8 vs 4/5)" },
-      { key: "r2.east.bot", label: "East Bot (3/6 vs 2/7)" },
-      { key: "r2.west.top", label: "West Top (1/8 vs 4/5)" },
-      { key: "r2.west.bot", label: "West Bot (3/6 vs 2/7)" },
-    ],
-  },
-  {
-    label: "Conf Finals",
-    rows: [
-      { key: "cf.east", label: "East CF" },
-      { key: "cf.west", label: "West CF" },
-    ],
-  },
-  {
-    label: "Finals",
-    rows: [{ key: "finals", label: "NBA Finals" }],
-  },
-];
+// ── Series-key helpers ────────────────────────────────────────────────
 
-export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) {
+function r1Key(conf: "east" | "west", pair: "1v8" | "4v5" | "3v6" | "2v7"): SeriesKey {
+  return `r1.${conf}.${pair}` as SeriesKey;
+}
+
+function r2Key(conf: "east" | "west", half: "top" | "bot"): SeriesKey {
+  return `r2.${conf}.${half}` as SeriesKey;
+}
+
+const TEAMS_PER_SLOT_FALLBACK = 2;
+
+function topTeamsForSlot(
+  results: SimResults,
+  key: SlotKey,
+  excludeTeamIdx: Set<number> | null,
+  count: number,
+): Array<{ teamIdx: number; team: string; pct: number }> {
+  const opts = computeSlotOptions(results)[key] ?? [];
+  const filtered = excludeTeamIdx
+    ? opts.filter((o) => !excludeTeamIdx.has(o.teamIdx))
+    : opts;
+  return filtered.slice(0, count);
+}
+
+// ── Bracket primitives (clickable) ────────────────────────────────────
+
+const BOX_W = 180;
+const CELL_H = 26;
+const CONN_W = 16;
+const SLOT_H = 76;
+
+function CompetitorRow({
+  seed,
+  team,
+  fullName,
+  pct,
+  forced,
+  faded,
+  onClick,
+  ariaLabel,
+}: {
+  seed: number;
+  team: string;
+  fullName?: string;
+  pct?: number | null;
+  forced?: boolean;
+  faded?: boolean;
+  onClick?: () => void;
+  ariaLabel?: string;
+}) {
+  const isTBD = team === "TBD" || team === "Play-In" || team === "?";
+  const interactive = !!onClick && !isTBD;
+  const baseClasses = [
+    "flex items-center gap-1.5 px-2 transition-colors",
+    interactive ? "cursor-pointer" : "cursor-default",
+    forced
+      ? "bg-emerald-500/20 text-foreground"
+      : faded
+        ? "bg-transparent text-muted-foreground/60"
+        : "bg-transparent hover:bg-muted/60 text-foreground",
+  ].join(" ");
+  return (
+    <button
+      type="button"
+      onClick={interactive ? onClick : undefined}
+      className={baseClasses}
+      style={{ height: CELL_H, width: "100%" }}
+      aria-label={ariaLabel ?? team}
+      disabled={!interactive}
+    >
+      {seed > 0 && (
+        <span className="w-4 shrink-0 text-[10px] tabular-nums text-muted-foreground">
+          {seed}
+        </span>
+      )}
+      {!isTBD && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={teamLogoUrl(team)} alt="" width={16} height={16} className="shrink-0" />
+      )}
+      <span className="truncate text-xs font-medium">{team}</span>
+      {!isTBD && (
+        <span className="ml-auto truncate text-[10px] tabular-nums text-muted-foreground">
+          {pct != null ? `${pct.toFixed(0)}%` : (fullName ?? "")}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function SlotBox({
+  slotKey,
+  higher,
+  lower,
+  results,
+  forces,
+  onForce,
+  flip,
+}: {
+  slotKey: SeriesKey;
+  higher: { seed: number; team: string };
+  lower: { seed: number; team: string };
+  results: SimResults | null;
+  forces: ForceMap;
+  onForce: (slot: SlotKey, teamIdx: number | null) => void;
+  flip?: boolean;
+}) {
+  const forced = forces[slotKey];
+  const teamIdx = (team: string): number | null => {
+    if (!results) return null;
+    const i = results.teamIndex.get(team);
+    return i ?? null;
+  };
+  const higherIdx = teamIdx(higher.team);
+  const lowerIdx = teamIdx(lower.team);
+  const isHigherForced = forced != null && forced === higherIdx;
+  const isLowerForced = forced != null && forced === lowerIdx;
+
+  // Conditional advance % for each team in this slot, computed cheaply from
+  // baseline winners array (so the user sees how often each side wins).
+  const slotArr = results?.seriesWinners[slotKey];
+  const totalSims = results?.numSims ?? 0;
+  let higherWins = 0;
+  let lowerWins = 0;
+  if (slotArr && higherIdx != null && lowerIdx != null) {
+    for (let i = 0; i < totalSims; i++) {
+      if (slotArr[i] === higherIdx) higherWins++;
+      else if (slotArr[i] === lowerIdx) lowerWins++;
+    }
+  }
+  const denom = higherWins + lowerWins;
+  const higherPct = denom > 0 ? (higherWins / denom) * 100 : null;
+  const lowerPct = denom > 0 ? (lowerWins / denom) * 100 : null;
+
+  return (
+    <div
+      className="overflow-hidden rounded-md border border-border bg-card"
+      style={{ width: BOX_W }}
+    >
+      <CompetitorRow
+        seed={higher.seed}
+        team={higher.team}
+        pct={higherPct}
+        forced={isHigherForced}
+        faded={forced != null && !isHigherForced}
+        onClick={
+          higherIdx != null
+            ? () => onForce(slotKey, isHigherForced ? null : higherIdx)
+            : undefined
+        }
+        ariaLabel={`${flip ? "" : ""}force ${higher.team} to win ${slotKey}`}
+      />
+      <div className="border-t border-border" />
+      <CompetitorRow
+        seed={lower.seed}
+        team={lower.team}
+        pct={lowerPct}
+        forced={isLowerForced}
+        faded={forced != null && !isLowerForced}
+        onClick={
+          lowerIdx != null
+            ? () => onForce(slotKey, isLowerForced ? null : lowerIdx)
+            : undefined
+        }
+        ariaLabel={`force ${lower.team} to win ${slotKey}`}
+      />
+    </div>
+  );
+}
+
+function Connectors({
+  count,
+  slotH,
+  flip,
+}: {
+  count: number;
+  slotH: number;
+  flip?: boolean;
+}) {
+  const h = count * slotH;
+  const pairs = count / 2;
+  const paths: string[] = [];
+  for (let i = 0; i < pairs; i++) {
+    const topY = (i * 2 + 0.5) * slotH;
+    const botY = (i * 2 + 1.5) * slotH;
+    const midY = (topY + botY) / 2;
+    const hw = CONN_W / 2;
+    if (flip) {
+      paths.push(`M ${CONN_W} ${topY} H ${hw} V ${midY} H 0`);
+      paths.push(`M ${CONN_W} ${botY} H ${hw} V ${midY}`);
+    } else {
+      paths.push(`M 0 ${topY} H ${hw} V ${midY} H ${CONN_W}`);
+      paths.push(`M 0 ${botY} H ${hw} V ${midY}`);
+    }
+  }
+  return (
+    <svg width={CONN_W} height={h} className="shrink-0">
+      {paths.map((d, i) => (
+        <path
+          key={i}
+          d={d}
+          fill="none"
+          stroke="currentColor"
+          className="text-border"
+          strokeWidth={1.5}
+        />
+      ))}
+    </svg>
+  );
+}
+
+// ── Conference + bracket builder ──────────────────────────────────────
+
+interface SeedPair {
+  higher: { seed: number; team: string };
+  lower: { seed: number; team: string };
+}
+
+function pickFromForceOrSlot(
+  results: SimResults,
+  forcedR1: SeriesKey,
+  fallbackSlot: SeriesKey,
+  excludeIdx: Set<number>,
+  forces: ForceMap,
+  defaultPair: SeedPair,
+): { seed: number; team: string } {
+  const forcedTeamIdx = forces[forcedR1];
+  if (forcedTeamIdx != null) {
+    const team = results.teamNames[forcedTeamIdx] ?? "?";
+    const seed = team === defaultPair.higher.team
+      ? defaultPair.higher.seed
+      : team === defaultPair.lower.team
+        ? defaultPair.lower.seed
+        : 0;
+    return { seed, team };
+  }
+  const top = topTeamsForSlot(results, fallbackSlot, excludeIdx, TEAMS_PER_SLOT_FALLBACK)[0];
+  if (top) return { seed: 0, team: top.team };
+  return { seed: 0, team: "TBD" };
+}
+
+function ConferenceBracket({
+  conf,
+  seeds,
+  results,
+  forces,
+  onForce,
+  flip,
+}: {
+  conf: "east" | "west";
+  seeds: [number, string][];
+  results: SimResults | null;
+  forces: ForceMap;
+  onForce: (slot: SlotKey, teamIdx: number | null) => void;
+  flip?: boolean;
+}) {
+  const seed7: [number, string] = [7, seeds.find(([s]) => s === 7)?.[1] ?? "Play-In"];
+  const seed8: [number, string] = [8, seeds.find(([s]) => s === 8)?.[1] ?? "Play-In"];
+
+  const r1Pairs: Array<{ key: SeriesKey; pair: SeedPair }> = [
+    {
+      key: r1Key(conf, "1v8"),
+      pair: { higher: { seed: seeds[0][0], team: seeds[0][1] }, lower: { seed: seed8[0], team: seed8[1] } },
+    },
+    {
+      key: r1Key(conf, "4v5"),
+      pair: { higher: { seed: seeds[3][0], team: seeds[3][1] }, lower: { seed: seeds[4][0], team: seeds[4][1] } },
+    },
+    {
+      key: r1Key(conf, "3v6"),
+      pair: { higher: { seed: seeds[2][0], team: seeds[2][1] }, lower: { seed: seeds[5][0], team: seeds[5][1] } },
+    },
+    {
+      key: r1Key(conf, "2v7"),
+      pair: { higher: { seed: seeds[1][0], team: seeds[1][1] }, lower: { seed: seed7[0], team: seed7[1] } },
+    },
+  ];
+
+  // R2 derived: top half = (1v8 winner) vs (4v5 winner); bot half = (3v6 winner) vs (2v7 winner)
+  const r2Top = results
+    ? {
+        higher: pickFromForceOrSlot(
+          results,
+          r1Pairs[0].key,
+          r2Key(conf, "top"),
+          new Set(),
+          forces,
+          r1Pairs[0].pair,
+        ),
+        lower: pickFromForceOrSlot(
+          results,
+          r1Pairs[1].key,
+          r2Key(conf, "top"),
+          new Set(),
+          forces,
+          r1Pairs[1].pair,
+        ),
+      }
+    : { higher: { seed: 0, team: "TBD" }, lower: { seed: 0, team: "TBD" } };
+  const r2Bot = results
+    ? {
+        higher: pickFromForceOrSlot(
+          results,
+          r1Pairs[2].key,
+          r2Key(conf, "bot"),
+          new Set(),
+          forces,
+          r1Pairs[2].pair,
+        ),
+        lower: pickFromForceOrSlot(
+          results,
+          r1Pairs[3].key,
+          r2Key(conf, "bot"),
+          new Set(),
+          forces,
+          r1Pairs[3].pair,
+        ),
+      }
+    : { higher: { seed: 0, team: "TBD" }, lower: { seed: 0, team: "TBD" } };
+
+  // CF derived: r2.top winner vs r2.bot winner.
+  const cfHigher = results
+    ? pickFromForceOrSlot(results, r2Key(conf, "top"), `cf.${conf}` as SeriesKey, new Set(), forces, r2Top)
+    : { seed: 0, team: "TBD" };
+  const cfLower = results
+    ? pickFromForceOrSlot(results, r2Key(conf, "bot"), `cf.${conf}` as SeriesKey, new Set(), forces, r2Bot)
+    : { seed: 0, team: "TBD" };
+
+  const totalH = r1Pairs.length * SLOT_H;
+
+  const r1Col = (
+    <div className="flex flex-col justify-around" style={{ height: totalH }}>
+      {r1Pairs.map(({ key, pair }) => (
+        <div key={key} className="flex items-center" style={{ height: SLOT_H }}>
+          <SlotBox
+            slotKey={key}
+            higher={pair.higher}
+            lower={pair.lower}
+            results={results}
+            forces={forces}
+            onForce={onForce}
+            flip={flip}
+          />
+        </div>
+      ))}
+    </div>
+  );
+
+  const r2Col = (
+    <div className="flex flex-col justify-around" style={{ height: totalH }}>
+      {[
+        { key: r2Key(conf, "top"), pair: r2Top },
+        { key: r2Key(conf, "bot"), pair: r2Bot },
+      ].map(({ key, pair }) => (
+        <div key={key} className="flex items-center" style={{ height: SLOT_H * 2 }}>
+          <SlotBox
+            slotKey={key}
+            higher={pair.higher}
+            lower={pair.lower}
+            results={results}
+            forces={forces}
+            onForce={onForce}
+            flip={flip}
+          />
+        </div>
+      ))}
+    </div>
+  );
+
+  const cfCol = (
+    <div className="flex flex-col justify-around" style={{ height: totalH }}>
+      <div className="flex items-center" style={{ height: SLOT_H * 4 }}>
+        <SlotBox
+          slotKey={`cf.${conf}` as SeriesKey}
+          higher={cfHigher}
+          lower={cfLower}
+          results={results}
+          forces={forces}
+          onForce={onForce}
+          flip={flip}
+        />
+      </div>
+    </div>
+  );
+
+  const cols: React.ReactNode[] = [];
+  cols.push(<div key="r1">{r1Col}</div>);
+  cols.push(
+    <Connectors key="c1" count={4} slotH={SLOT_H} flip={flip} />,
+  );
+  cols.push(<div key="r2">{r2Col}</div>);
+  cols.push(
+    <Connectors key="c2" count={2} slotH={SLOT_H * 2} flip={flip} />,
+  );
+  cols.push(<div key="cf">{cfCol}</div>);
+
+  return (
+    <div>
+      <div className="mb-2 text-sm font-semibold text-foreground">
+        {conf === "east" ? "Eastern" : "Western"} Conference
+      </div>
+      <div className={`flex items-stretch ${flip ? "flex-row-reverse" : ""}`}>{cols}</div>
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────
+
+export function WhatIfTab({
+  simData,
+  simResults,
+  simulating,
+  progress,
+  rosters,
+  viewerUserId,
+}: WhatIfTabProps) {
   const [forces, setForces] = useState<ForceMap>({});
+  const [subTab, setSubTab] = useState<WhatIfSubTab>("teams");
 
   const slotOptions = useMemo(
     () => (simResults ? computeSlotOptions(simResults) : null),
@@ -96,6 +486,13 @@ export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) 
   const condPlayers = useMemo(
     () => (simResults && mask ? computeConditionalPlayers(simResults, mask) : []),
     [simResults, mask],
+  );
+  const condManagers = useMemo(
+    () =>
+      simResults && mask && rosters && rosters.length > 0
+        ? computeConditionalManagers(simResults, mask, rosters)
+        : [],
+    [simResults, mask, rosters],
   );
 
   const sortedTeams = useMemo(
@@ -116,8 +513,12 @@ export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) 
         .slice(0, 200),
     [condPlayers],
   );
+  const sortedManagers = useMemo(
+    () => [...condManagers].sort((a, b) => b.conditionalWinPct - a.conditionalWinPct),
+    [condManagers],
+  );
 
-  if (!simResults) {
+  if (!simResults || !simData) {
     return (
       <div className="py-12 text-center text-sm text-muted-foreground">
         {simulating
@@ -141,6 +542,10 @@ export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) 
     });
   };
 
+  // Champion (Finals winner) — derived from r2.top vs r2.bot of each conf, then finals.
+  const finalsForced = forces["finals"];
+  const champTeam = finalsForced != null ? simResults.teamNames[finalsForced] : null;
+
   return (
     <div className="space-y-4">
       <Card>
@@ -149,8 +554,8 @@ export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) 
             <div>
               <CardTitle>What-If Bracket Conditioning</CardTitle>
               <CardDescription>
-                Force one or more series outcomes. Tables below recompute over the
-                surviving sims (no re-simulation required).
+                Click a team in any matchup to force them to win that series. Tables below
+                recompute over the surviving sims (no re-simulation required).
               </CardDescription>
             </div>
             <div className="flex flex-col items-end gap-1 text-right">
@@ -188,53 +593,90 @@ export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) 
               No sims match these constraints. Loosen forces or reset.
             </div>
           ) : null}
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {SLOT_GROUPS.map((group) => (
-              <div key={group.label} className="rounded-lg border border-border/80 p-3">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {group.label}
-                </div>
-                <div className="space-y-1.5">
-                  {group.rows.map(({ key, label }) => {
-                    const opts = slotOptions?.[key] ?? [];
-                    const forced = forces[key];
-                    return (
-                      <div key={key} className="flex items-center gap-2">
-                        <label className="w-32 shrink-0 text-xs text-muted-foreground">
-                          {label}
-                        </label>
-                        <select
-                          className="h-7 flex-1 appearance-none rounded-md border border-input bg-background px-2 text-xs"
-                          value={forced ?? ""}
-                          onChange={(e) =>
-                            updateForce(
-                              key,
-                              e.target.value === "" ? null : Number(e.target.value),
-                            )
-                          }
-                        >
-                          <option value="">Auto</option>
-                          {opts.map((o) => (
-                            <option key={o.teamIdx} value={o.teamIdx}>
-                              {o.team} ({o.pct.toFixed(1)}%)
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+
+          {/* Bracket */}
+          <div className="overflow-x-auto pb-2">
+            <div className="flex min-w-[1000px] items-start justify-center gap-6">
+              <ConferenceBracket
+                conf="west"
+                seeds={simData.bracket.westSeeds}
+                results={simResults}
+                forces={forces}
+                onForce={updateForce}
+              />
+              <FinalsColumn
+                results={simResults}
+                forces={forces}
+                onForce={updateForce}
+                champion={champTeam}
+              />
+              <ConferenceBracket
+                conf="east"
+                seeds={simData.bracket.eastSeeds}
+                results={simResults}
+                forces={forces}
+                onForce={updateForce}
+                flip
+              />
+            </div>
           </div>
+
+          {/* Play-In selectors (kept compact since the play-in is a 4-team
+              double-elimination — clickable matchup boxes don't map cleanly). */}
+          {slotOptions ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {(["east7", "east8", "west7", "west8"] as const).map((k) => (
+                <PlayInSelect
+                  key={k}
+                  slotKey={k}
+                  label={
+                    k === "east7" ? "East 7 seed"
+                      : k === "east8" ? "East 8 seed"
+                        : k === "west7" ? "West 7 seed"
+                          : "West 8 seed"
+                  }
+                  options={slotOptions[k] ?? []}
+                  forced={forces[k]}
+                  onForce={updateForce}
+                />
+              ))}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      {/* Sub-tab nav */}
+      <div className="flex flex-nowrap gap-1 overflow-x-auto">
+        {([
+          { id: "teams", label: "Teams" },
+          { id: "players", label: "Players" },
+          ...(rosters && rosters.length > 0
+            ? [{ id: "fantasy" as WhatIfSubTab, label: "Fantasy Teams" }]
+            : []),
+        ] as const).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={[
+              "shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+              subTab === t.id
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+            onClick={() => setSubTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === "teams" ? (
         <Card>
           <CardHeader>
             <CardTitle>Teams — Conditional Advancement</CardTitle>
-            <CardDescription>% of {surviving.toLocaleString()} surviving sims that win each round.</CardDescription>
+            <CardDescription>
+              % of {surviving.toLocaleString()} surviving sims that win each round.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto rounded-xl border border-border/80">
@@ -275,7 +717,9 @@ export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) 
             </div>
           </CardContent>
         </Card>
+      ) : null}
 
+      {subTab === "players" ? (
         <Card>
           <CardHeader>
             <CardTitle>Players — Conditional Projected Points</CardTitle>
@@ -328,10 +772,176 @@ export function WhatIfTab({ simResults, simulating, progress }: WhatIfTabProps) 
             </div>
           </CardContent>
         </Card>
+      ) : null}
+
+      {subTab === "fantasy" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Fantasy Teams — Conditional Win %</CardTitle>
+            <CardDescription>
+              How each manager&apos;s win probability and projected points shift under the
+              forced bracket outcomes.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {sortedManagers.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No rostered players found for any manager.
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-border/80">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-right font-medium">#</th>
+                      <th className="px-3 py-2 text-left font-medium">Manager</th>
+                      <th className="px-3 py-2 text-right font-medium">Base Win%</th>
+                      <th className="px-3 py-2 text-right font-medium">Cond Win%</th>
+                      <th className="px-3 py-2 text-right font-medium">Δ Win</th>
+                      <th className="px-3 py-2 text-right font-medium">Base Pts</th>
+                      <th className="px-3 py-2 text-right font-medium">Cond Pts</th>
+                      <th className="px-3 py-2 text-right font-medium">Δ Pts</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedManagers.map((m, idx) => {
+                      const isViewer = m.userId === viewerUserId;
+                      return (
+                        <tr
+                          key={m.userId}
+                          className={[
+                            "border-t border-border/60",
+                            isViewer ? "bg-amber-50/50 dark:bg-amber-900/10" : "",
+                          ].join(" ")}
+                        >
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {idx + 1}
+                          </td>
+                          <td className="px-3 py-2 font-medium text-foreground">
+                            {m.name}{isViewer ? " (you)" : ""}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {m.baselineWinPct.toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold text-foreground">
+                            {m.conditionalWinPct.toFixed(1)}%
+                          </td>
+                          <DeltaCell delta={m.winDelta} suffix="pp" />
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {m.baselineMean.toFixed(0)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
+                            {m.conditionalMean.toFixed(0)}
+                          </td>
+                          <DeltaCell delta={m.meanDelta} />
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Finals column ─────────────────────────────────────────────────────
+
+function FinalsColumn({
+  results,
+  forces,
+  onForce,
+  champion,
+}: {
+  results: SimResults;
+  forces: ForceMap;
+  onForce: (slot: SlotKey, teamIdx: number | null) => void;
+  champion: string | null;
+}) {
+  // Finals matchup: cf.east winner vs cf.west winner. Use forces if present,
+  // otherwise top-1 from each conference's CF series.
+  const eastForced = forces["cf.east" as SeriesKey];
+  const westForced = forces["cf.west" as SeriesKey];
+  const eastTeam = eastForced != null
+    ? results.teamNames[eastForced]
+    : (topTeamsForSlot(results, "cf.east" as SeriesKey, null, 1)[0]?.team ?? "TBD");
+  const westTeam = westForced != null
+    ? results.teamNames[westForced]
+    : (topTeamsForSlot(results, "cf.west" as SeriesKey, null, 1)[0]?.team ?? "TBD");
+
+  return (
+    <div
+      className="flex flex-col items-center justify-center"
+      style={{ height: SLOT_H * 4, paddingTop: SLOT_H * 1.25 }}
+    >
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Finals
+      </div>
+      <SlotBox
+        slotKey={"finals" as SeriesKey}
+        higher={{ seed: 0, team: westTeam }}
+        lower={{ seed: 0, team: eastTeam }}
+        results={results}
+        forces={forces}
+        onForce={onForce}
+      />
+      <div className="mt-3 text-center">
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Champion
+        </div>
+        <div
+          className="rounded-md border-2 border-amber-400 bg-amber-50 px-4 py-2 text-sm font-bold text-foreground dark:bg-amber-900/20"
+          style={{ width: BOX_W }}
+        >
+          {champion ?? "Click finals matchup to lock"}
+        </div>
       </div>
     </div>
   );
 }
+
+// ── Play-In selector ──────────────────────────────────────────────────
+
+function PlayInSelect({
+  slotKey,
+  label,
+  options,
+  forced,
+  onForce,
+}: {
+  slotKey: SlotKey;
+  label: string;
+  options: Array<{ teamIdx: number; team: string; pct: number }>;
+  forced?: number;
+  onForce: (slot: SlotKey, teamIdx: number | null) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border/80 p-3">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <select
+        className="h-8 w-full appearance-none rounded-md border border-input bg-background px-2 text-xs"
+        value={forced ?? ""}
+        onChange={(e) =>
+          onForce(slotKey, e.target.value === "" ? null : Number(e.target.value))
+        }
+      >
+        <option value="">Auto (any team)</option>
+        {options.map((o) => (
+          <option key={o.teamIdx} value={o.teamIdx}>
+            {o.team} ({o.pct.toFixed(1)}%)
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ── Cell helpers ──────────────────────────────────────────────────────
 
 function CondPctCell({ cond, base, bold }: { cond: number; base: number; bold?: boolean }) {
   const opacity = Math.min(1, cond / 50);
@@ -372,9 +982,9 @@ function CondPctCell({ cond, base, bold }: { cond: number; base: number; bold?: 
   );
 }
 
-function DeltaCell({ delta }: { delta: number }) {
+function DeltaCell({ delta, suffix }: { delta: number; suffix?: string }) {
   const abs = Math.abs(delta);
-  const significant = abs >= 1;
+  const significant = abs >= (suffix === "pp" ? 0.1 : 1);
   return (
     <td className="px-3 py-2 text-right tabular-nums">
       <span
@@ -387,7 +997,9 @@ function DeltaCell({ delta }: { delta: number }) {
               : "text-red-500",
         ].join(" ")}
       >
-        {!significant ? "—" : `${delta > 0 ? "+" : ""}${delta.toFixed(0)}`}
+        {!significant
+          ? "—"
+          : `${delta > 0 ? "+" : ""}${delta.toFixed(suffix === "pp" ? 1 : 0)}${suffix ?? ""}`}
       </span>
     </td>
   );

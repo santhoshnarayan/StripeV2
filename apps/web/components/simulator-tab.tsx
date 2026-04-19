@@ -556,9 +556,12 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
 
       {subTab === "whatif" ? (
         <WhatIfTab
+          simData={simData}
           simResults={simResults}
           simulating={simulating}
           progress={progress}
+          rosters={rosterInputs}
+          viewerUserId={leagueData?.viewerUserId}
         />
       ) : null}
 
