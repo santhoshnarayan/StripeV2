@@ -11,6 +11,10 @@
 
 pub mod rng;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1194,25 +1198,35 @@ pub fn run_tournament_sim(sim: &PreparedSim, parallel: bool) -> SimResults {
     let num_players = sim.players.len();
     let series_n = SERIES_KEYS.len();
 
-    let shards: Vec<ShardOutput> = if !parallel || total_sims < 32 {
-        vec![run_shard(sim, total_sims, sim.config.seed)]
-    } else {
-        let num_threads = rayon::current_num_threads().max(1);
-        let per = (total_sims + num_threads - 1) / num_threads;
-        let plan: Vec<(usize, usize)> = (0..num_threads)
-            .map(|i| {
-                let start = i * per;
-                let end = (start + per).min(total_sims);
-                (start, end - start)
-            })
-            .filter(|(_, n)| *n > 0)
-            .collect();
-        plan.into_par_iter()
-            .map(|(start, count)| {
-                let seed = sim.config.seed.wrapping_add(start as u64);
-                run_shard(sim, count, seed)
-            })
-            .collect()
+    let shards: Vec<ShardOutput> = {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = parallel;
+            vec![run_shard(sim, total_sims, sim.config.seed)]
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if !parallel || total_sims < 32 {
+                vec![run_shard(sim, total_sims, sim.config.seed)]
+            } else {
+                let num_threads = rayon::current_num_threads().max(1);
+                let per = (total_sims + num_threads - 1) / num_threads;
+                let plan: Vec<(usize, usize)> = (0..num_threads)
+                    .map(|i| {
+                        let start = i * per;
+                        let end = (start + per).min(total_sims);
+                        (start, end - start)
+                    })
+                    .filter(|(_, n)| *n > 0)
+                    .collect();
+                plan.into_par_iter()
+                    .map(|(start, count)| {
+                        let seed = sim.config.seed.wrapping_add(start as u64);
+                        run_shard(sim, count, seed)
+                    })
+                    .collect()
+            }
+        }
     };
 
     // Concatenate shards into the canonical row-major matrices.

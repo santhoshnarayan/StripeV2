@@ -12,6 +12,7 @@ import {
   type SimData,
   type SimResults,
 } from "@/lib/sim";
+import { runWasmSim, wasmAvailable } from "@/lib/sim/wasm-engine";
 
 type AutoSimState = {
   simResults: SimResults | null;
@@ -39,10 +40,20 @@ async function fetchSimInputs(): Promise<SimData> {
 async function loadAndRun(cacheKey: string): Promise<SimResults> {
   const merged = await fetchSimInputs();
   const fp = liveGamesFingerprint(merged.liveGames);
-  const results = await runTournamentSim(
-    { ...merged, adjustments: merged.adjustments ?? [] },
-    DEFAULT_SIM_CONFIG,
-  );
+  const input = { ...merged, adjustments: merged.adjustments ?? [] };
+  let results: SimResults;
+  if (wasmAvailable()) {
+    try {
+      results = await runWasmSim(input, DEFAULT_SIM_CONFIG.sims);
+    } catch (err) {
+      // Wasm worker failed (e.g., file not present, init crashed) — fall back
+      // to the TS engine so the user still gets a result instead of an error.
+      console.warn("[sim] wasm engine failed, falling back to TS:", err);
+      results = await runTournamentSim(input, DEFAULT_SIM_CONFIG);
+    }
+  } else {
+    results = await runTournamentSim(input, DEFAULT_SIM_CONFIG);
+  }
   setCachedSimResults(cacheKey, results, fp);
   return results;
 }

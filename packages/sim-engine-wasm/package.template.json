@@ -1,0 +1,26 @@
+{
+  "name": "@repo/sim-engine-wasm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Wasm bundle of the Rust NBA simulator (packages/sim-engine-rs). Regenerate with `pnpm build`.",
+  "files": [
+    "sim_engine_rs_bg.wasm",
+    "sim_engine_rs.js",
+    "sim_engine_rs.d.ts",
+    "sim_engine_rs_bg.wasm.d.ts"
+  ],
+  "main": "./sim_engine_rs.js",
+  "types": "./sim_engine_rs.d.ts",
+  "exports": {
+    ".": {
+      "types": "./sim_engine_rs.d.ts",
+      "default": "./sim_engine_rs.js"
+    },
+    "./wasm": "./sim_engine_rs_bg.wasm"
+  },
+  "scripts": {
+    "build": "cd ../sim-engine-rs && wasm-pack build --release --target web --out-dir ../sim-engine-wasm --no-default-features && cd ../sim-engine-wasm && cp package.template.json package.json && rm -f .gitignore && mkdir -p ../../apps/web/public/wasm && cp sim_engine_rs_bg.wasm ../../apps/web/public/wasm/sim_engine.wasm"
+  },
+  "sideEffects": false
+}

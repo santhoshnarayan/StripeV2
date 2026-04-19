@@ -11,14 +11,30 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "sim-cli"
 path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
 
 [dependencies]
 rand_xoshiro = "0.6"
 rand_core = "0.6"
-rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
+
+# Rayon is excluded from wasm builds (no thread support in wasm32-unknown-unknown
+# without rayon's experimental wasm-bindgen-rayon, which we don't need — wasm
+# always runs single-threaded inside a Web Worker).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.10"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
 
 [profile.release]
 opt-level = 3
