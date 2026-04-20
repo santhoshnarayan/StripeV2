@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   CardContent,
@@ -16,10 +16,19 @@ import {
   computeConditionalTeams,
   computeConditionalPlayers,
   computeConditionalManagers,
+  type ConditionalPlayerRow,
   type ForceMap,
   type SlotKey,
 } from "@/lib/sim/whatif";
-import { SERIES_KEYS, type SeriesKey, type SimData, type SimResults } from "@/lib/sim";
+import {
+  PLAYIN_KEYS,
+  SERIES_KEYS,
+  type LiveGameState,
+  type PlayinKey,
+  type SeriesKey,
+  type SimData,
+  type SimResults,
+} from "@/lib/sim";
 
 interface RosterInputLite {
   userId: string;
@@ -37,6 +46,9 @@ interface WhatIfTabProps {
 }
 
 type WhatIfSubTab = "players" | "teams" | "fantasy";
+type PlayerView = "simple" | "round" | "game";
+
+const ROUND_LABELS = ["R1", "R2", "CF", "Finals"] as const;
 
 const TEAM_LOGO_OVERRIDES: Record<string, string> = {
   NY: "nyk",
@@ -60,32 +72,89 @@ function r2Key(conf: "east" | "west", half: "top" | "bot"): SeriesKey {
   return `r2.${conf}.${half}` as SeriesKey;
 }
 
-/** A series counts as "real-world decided" when ≥99.5% of baseline sims agree
- *  on the winner — the live-game injector pins the result, so consensus = lock. */
-const DECIDED_THRESHOLD = 0.995;
-
-function computeDecidedWinners(results: SimResults): Partial<Record<SeriesKey, number>> {
+/** A series counts as "real-world decided" only when a team has actually won
+ *  4 games in the live data — i.e. the series is mathematically over in the
+ *  real playoffs. We don't use a sim-consensus heuristic here because a big
+ *  rating gap can push the sim to 99%+ on a series that's only 1-0, which
+ *  would incorrectly auto-advance the favorite. */
+function computeDecidedWinners(
+  results: SimResults,
+  liveGames: LiveGameState[] | undefined,
+): Partial<Record<SeriesKey, number>> {
   const out: Partial<Record<SeriesKey, number>> = {};
-  for (const k of SERIES_KEYS) {
-    const arr = results.seriesWinners[k];
-    if (!arr || arr.length === 0) continue;
-    const counts = new Map<number, number>();
-    for (let i = 0; i < arr.length; i++) {
-      const v = arr[i];
-      if (v === 0xff) continue;
-      counts.set(v, (counts.get(v) ?? 0) + 1);
+  if (!liveGames || liveGames.length === 0) return out;
+  // tally postgame wins per (seriesKey, team)
+  const winsByKey = new Map<string, Map<string, number>>();
+  for (const g of liveGames) {
+    if (g.status !== "post") continue;
+    const winner = g.homeScore > g.awayScore ? g.homeTeam : g.awayTeam;
+    let inner = winsByKey.get(g.seriesKey);
+    if (!inner) {
+      inner = new Map();
+      winsByKey.set(g.seriesKey, inner);
     }
-    let bestIdx = -1;
-    let bestN = 0;
-    for (const [idx, n] of counts) {
-      if (n > bestN) {
-        bestN = n;
-        bestIdx = idx;
-      }
+    inner.set(winner, (inner.get(winner) ?? 0) + 1);
+  }
+  for (const [seriesKey, inner] of winsByKey) {
+    if (!SERIES_KEYS.includes(seriesKey as SeriesKey)) continue;
+    for (const [team, wins] of inner) {
+      if (wins < 4) continue;
+      const idx = results.teamIndex.get(team);
+      if (idx != null) out[seriesKey as SeriesKey] = idx;
+      break;
     }
-    if (bestIdx >= 0 && bestN / arr.length >= DECIDED_THRESHOLD) out[k] = bestIdx;
   }
   return out;
+}
+
+/** Play-in is locked at the engine level (when bracket.playinR2 is complete)
+ *  → 100% of sims will have the same team in each play-in slot. Detect that
+ *  here so sims with a different play-in seed get masked out. */
+function computeDecidedPlayin(results: SimResults): Partial<Record<PlayinKey, number>> {
+  const out: Partial<Record<PlayinKey, number>> = {};
+  for (const k of PLAYIN_KEYS) {
+    const arr = results.playinSeeds[k];
+    if (!arr || arr.length === 0) continue;
+    const first = arr[0];
+    if (first === 0xff) continue;
+    let allSame = true;
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i] !== first) {
+        allSame = false;
+        break;
+      }
+    }
+    if (allSame) out[k] = first;
+  }
+  return out;
+}
+
+/** "Real-world consistent" mask — sims where every decided series + decided
+ *  play-in matches consensus. This is the correct denominator for "true odds"
+ *  computations: stale paths (e.g. Orlando winning play-in when PHI actually
+ *  did) get excluded so they can't show up as picker options or skew %s. */
+function computeDecidedMask(
+  results: SimResults,
+  decidedSeries: Partial<Record<SeriesKey, number>>,
+  decidedPlayin: Partial<Record<PlayinKey, number>>,
+): Uint8Array {
+  const N = results.numSims;
+  const mask = new Uint8Array(N).fill(1);
+  for (const k of SERIES_KEYS) {
+    const want = decidedSeries[k];
+    if (want == null) continue;
+    const arr = results.seriesWinners[k];
+    if (!arr) continue;
+    for (let i = 0; i < N; i++) if (mask[i] && arr[i] !== want) mask[i] = 0;
+  }
+  for (const k of PLAYIN_KEYS) {
+    const want = decidedPlayin[k];
+    if (want == null) continue;
+    const arr = results.playinSeeds[k];
+    if (!arr) continue;
+    for (let i = 0; i < N; i++) if (mask[i] && arr[i] !== want) mask[i] = 0;
+  }
+  return mask;
 }
 
 // ── Bracket primitives (clickable) ────────────────────────────────────
@@ -105,6 +174,7 @@ function CompetitorRow({
   onClick,
   placeholderHint,
   ariaLabel,
+  endReserve,
 }: {
   seed: number;
   team: string;
@@ -115,11 +185,15 @@ function CompetitorRow({
   onClick?: () => void;
   placeholderHint?: string;
   ariaLabel?: string;
+  /** Reserve ~22px on the right so an overlaid SwapButton doesn't collide
+   *  with the % cell. Set when SlotBox renders a ▾ swap affordance. */
+  endReserve?: boolean;
 }) {
   const isTBD = team === "TBD" || team === "Play-In" || team === "?";
   const interactive = !!onClick && !isTBD;
   const baseClasses = [
-    "flex items-center gap-1.5 px-2 transition-colors",
+    "flex items-center gap-1.5 transition-colors",
+    endReserve ? "pl-2 pr-6" : "px-2",
     interactive ? "cursor-pointer" : "cursor-default",
     forced
       ? "bg-emerald-500/20 text-foreground"
@@ -163,37 +237,196 @@ function CompetitorRow({
   );
 }
 
-/** Inline picker shown in place of a "TBD" competitor row. Lists every team
- *  that has ever won `upstreamKey` in the baseline sims, with frequency.
- *  Picking a team forces `upstreamKey` to that team — the slot then fills. */
+/** Bracket-structural list of every team that COULD reach `seriesKey`
+ *  (regardless of sim probability). For example cf.west = all 8 west seeds,
+ *  even if some never won the conference in 10k sims. */
+function eligibleTeamsForSeries(simData: SimData, key: SeriesKey): string[] {
+  const east = simData.bracket.eastSeeds.map(([, t]) => t);
+  const west = simData.bracket.westSeeds.map(([, t]) => t);
+  const seedT = (conf: "east" | "west", n: number) =>
+    (conf === "east" ? east : west)[n - 1];
+  const r1Teams = (conf: "east" | "west", pair: string) => {
+    if (pair === "1v8") return [seedT(conf, 1), seedT(conf, 8)];
+    if (pair === "4v5") return [seedT(conf, 4), seedT(conf, 5)];
+    if (pair === "3v6") return [seedT(conf, 3), seedT(conf, 6)];
+    if (pair === "2v7") return [seedT(conf, 2), seedT(conf, 7)];
+    return [];
+  };
+  // r1.east.1v8 → east 1,8 ; r2.east.top → east 1,4,5,8 ; etc.
+  if (key.startsWith("r1.")) {
+    const [, conf, pair] = key.split(".");
+    return r1Teams(conf as "east" | "west", pair);
+  }
+  if (key.startsWith("r2.")) {
+    const [, conf, half] = key.split(".");
+    const c = conf as "east" | "west";
+    return half === "top"
+      ? [...r1Teams(c, "1v8"), ...r1Teams(c, "4v5")]
+      : [...r1Teams(c, "3v6"), ...r1Teams(c, "2v7")];
+  }
+  if (key === "cf.east") return east;
+  if (key === "cf.west") return west;
+  if (key === "finals") return [...east, ...west];
+  return [];
+}
+
+/** Picker options for `upstreamKey`: every team that could reach the slot
+ *  (from bracket structure), annotated with their baseline win % over the
+ *  decided-mask sims. Teams that never won in any decided sim still appear
+ *  with pct=0 — the user may want to force them anyway. */
+function useUpstreamOptions(
+  results: SimResults,
+  simData: SimData,
+  upstreamKey: SeriesKey,
+  decidedMask: Uint8Array | null,
+) {
+  return useMemo(() => {
+    const eligible = eligibleTeamsForSeries(simData, upstreamKey);
+    const arr = results.seriesWinners[upstreamKey];
+    const counts = new Map<number, number>();
+    let total = 0;
+    if (arr) {
+      for (let i = 0; i < arr.length; i++) {
+        if (decidedMask && !decidedMask[i]) continue;
+        const v = arr[i];
+        if (v === 0xff) continue;
+        counts.set(v, (counts.get(v) ?? 0) + 1);
+        total++;
+      }
+    }
+    const opts: Array<{ idx: number; team: string; pct: number }> = [];
+    for (const team of eligible) {
+      const idx = results.teamIndex.get(team);
+      if (idx == null) continue;
+      const pct = total > 0 ? ((counts.get(idx) ?? 0) / total) * 100 : 0;
+      opts.push({ idx, team, pct });
+    }
+    opts.sort((a, b) => b.pct - a.pct);
+    return opts;
+  }, [results, simData, upstreamKey, decidedMask]);
+}
+
+function PickerDropdown({
+  options,
+  currentIdx,
+  onPick,
+  onClear,
+  onClose,
+}: {
+  options: Array<{ idx: number; team: string; pct: number }>;
+  currentIdx: number | null;
+  onPick: (idx: number) => void;
+  /** When provided, renders a "Reset" item at the top of the dropdown that
+   *  clears the underlying force on the upstream slot. */
+  onClear?: () => void;
+  onClose: () => void;
+}) {
+  // Viewport-aware: flip upward when there's not enough room below; clamp
+  // max-h to whichever side has more space so the list stays scrollable
+  // instead of being clipped by the page edge.
+  const ref = useRef<HTMLDivElement>(null);
+  const [placement, setPlacement] = useState<{ flip: boolean; maxH: number }>({
+    flip: false,
+    maxH: 256,
+  });
+  useEffect(() => {
+    const el = ref.current;
+    const trigger = el?.parentElement;
+    if (!el || !trigger) return;
+    const compute = () => {
+      const rect = trigger.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const spaceBelow = vh - rect.bottom - 8;
+      const spaceAbove = rect.top - 8;
+      const flip = spaceBelow < 200 && spaceAbove > spaceBelow;
+      const maxH = Math.max(120, Math.min(384, flip ? spaceAbove : spaceBelow));
+      setPlacement({ flip, maxH });
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    window.addEventListener("scroll", compute, true);
+    return () => {
+      window.removeEventListener("resize", compute);
+      window.removeEventListener("scroll", compute, true);
+    };
+  }, []);
+  return (
+    <div
+      ref={ref}
+      className={[
+        "absolute left-0 z-50 overflow-y-auto rounded-md border border-border bg-popover shadow-lg",
+        placement.flip ? "bottom-full mb-0.5" : "top-full mt-0.5",
+      ].join(" ")}
+      style={{ width: BOX_W, maxHeight: placement.maxH }}
+      role="listbox"
+    >
+      {onClear ? (
+        <button
+          type="button"
+          className="flex w-full items-center gap-1.5 border-b border-border/60 px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          onClick={() => {
+            onClear();
+            onClose();
+          }}
+        >
+          <span className="w-3.5 shrink-0 text-center text-[11px]">×</span>
+          <span className="truncate italic">Reset</span>
+        </button>
+      ) : null}
+      {options.length === 0 ? (
+        <div className="px-2 py-1.5 text-[11px] italic text-muted-foreground">
+          No eligible teams
+        </div>
+      ) : (
+        options.map((o) => {
+          const isCurrent = currentIdx === o.idx;
+          return (
+            <button
+              key={o.idx}
+              type="button"
+              role="option"
+              aria-selected={isCurrent}
+              className={[
+                "flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs hover:bg-muted/60",
+                isCurrent ? "bg-emerald-500/15 text-foreground" : "",
+              ].join(" ")}
+              onClick={() => {
+                onPick(o.idx);
+                onClose();
+              }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={teamLogoUrl(o.team)} alt="" width={14} height={14} className="shrink-0" />
+              <span className="truncate font-medium text-foreground">{o.team}</span>
+              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                {o.pct.toFixed(0)}%
+              </span>
+            </button>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 function TBDPicker({
   results,
+  simData,
   upstreamKey,
+  decidedMask,
   onPick,
   placeholderHint,
 }: {
   results: SimResults;
+  simData: SimData;
   upstreamKey: SeriesKey;
+  decidedMask: Uint8Array | null;
   onPick: (teamIdx: number) => void;
   placeholderHint?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  const options = useMemo(() => {
-    const arr = results.seriesWinners[upstreamKey];
-    if (!arr) return [] as Array<{ idx: number; team: string; pct: number }>;
-    const counts = new Map<number, number>();
-    for (let i = 0; i < arr.length; i++) {
-      const v = arr[i];
-      if (v === 0xff) continue;
-      counts.set(v, (counts.get(v) ?? 0) + 1);
-    }
-    const total = arr.length;
-    return [...counts.entries()]
-      .map(([idx, n]) => ({ idx, team: results.teamNames[idx] ?? "?", pct: (n / total) * 100 }))
-      .sort((a, b) => b.pct - a.pct);
-  }, [results, upstreamKey]);
+  const options = useUpstreamOptions(results, simData, upstreamKey, decidedMask);
 
   useEffect(() => {
     if (!open) return;
@@ -219,37 +452,78 @@ function TBDPicker({
         <span className="ml-auto text-[10px] text-muted-foreground">▾</span>
       </button>
       {open ? (
-        <div
-          className="absolute left-0 top-full z-50 mt-0.5 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-lg"
-          style={{ width: BOX_W }}
-          role="listbox"
-        >
-          {options.length === 0 ? (
-            <div className="px-2 py-1.5 text-[11px] italic text-muted-foreground">
-              No eligible teams
-            </div>
-          ) : (
-            options.map((o) => (
-              <button
-                key={o.idx}
-                type="button"
-                role="option"
-                className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs hover:bg-muted/60"
-                onClick={() => {
-                  onPick(o.idx);
-                  setOpen(false);
-                }}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={teamLogoUrl(o.team)} alt="" width={14} height={14} className="shrink-0" />
-                <span className="truncate font-medium text-foreground">{o.team}</span>
-                <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                  {o.pct.toFixed(0)}%
-                </span>
-              </button>
-            ))
-          )}
-        </div>
+        <PickerDropdown
+          options={options}
+          currentIdx={null}
+          onPick={onPick}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Tiny ▾ icon overlaid on a filled CompetitorRow. Click opens a picker
+ *  listing all teams eligible for `upstreamKey`; selecting one forces that
+ *  upstream → swaps the team into this slot. Lets the user change a filled
+ *  slot in a single click instead of toggle-off → re-pick. */
+function SwapButton({
+  results,
+  simData,
+  upstreamKey,
+  decidedMask,
+  currentIdx,
+  hasForce,
+  onPick,
+  onClear,
+}: {
+  results: SimResults;
+  simData: SimData;
+  upstreamKey: SeriesKey;
+  decidedMask: Uint8Array | null;
+  currentIdx: number | null;
+  /** Whether the upstream slot is currently user-forced. Reset is only
+   *  meaningful when there's a force to clear. */
+  hasForce: boolean;
+  onPick: (teamIdx: number) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const options = useUpstreamOptions(results, simData, upstreamKey, decidedMask);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="absolute right-0 top-0">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+        className="flex h-[26px] w-5 items-center justify-center text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/40"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="swap team"
+      >
+        ▾
+      </button>
+      {open ? (
+        <PickerDropdown
+          options={options}
+          currentIdx={currentIdx}
+          onPick={onPick}
+          onClear={hasForce ? onClear : undefined}
+          onClose={() => setOpen(false)}
+        />
       ) : null}
     </div>
   );
@@ -262,8 +536,10 @@ function SlotBox({
   higherUpstreamKey,
   lowerUpstreamKey,
   results,
+  simData,
   forces,
   decided,
+  decidedMask,
   mask,
   onForce,
 }: {
@@ -275,8 +551,12 @@ function SlotBox({
   higherUpstreamKey?: SeriesKey;
   lowerUpstreamKey?: SeriesKey;
   results: SimResults | null;
+  simData: SimData;
   forces: ForceMap;
   decided: Partial<Record<SeriesKey, number>>;
+  /** Mask of sims that match real-world decided state (series + play-in).
+   *  Used as denominator for slot pct so stale paths don't dilute the odds. */
+  decidedMask: Uint8Array | null;
   mask: Uint8Array | null;
   onForce: (slot: SlotKey, teamIdx: number | null) => void;
 }) {
@@ -299,25 +579,25 @@ function SlotBox({
   const isHigherForced = effectiveForced != null && effectiveForced === higherIdx;
   const isLowerForced = effectiveForced != null && effectiveForced === lowerIdx;
 
-  // Conditional pct: % of *surviving* (mask) sims where each team won this
-  // slot. Uses mask so values reflect current force constraints — not baseline.
+  // "True odds" pct: % of real-world-consistent sims (decidedMask) where each
+  // team won this slot. Independent of user forces — but DOES exclude sims
+  // that contradict play-in / live-game outcomes already in the books, so
+  // teams that can no longer reach this slot don't appear here at all.
   const slotArr = results?.seriesWinners[slotKey];
-  const totalSims = results?.numSims ?? 0;
+  const N = results?.numSims ?? 0;
   let higherWins = 0;
   let lowerWins = 0;
-  let surviving = 0;
-  if (slotArr && mask) {
-    for (let i = 0; i < totalSims; i++) {
-      if (!mask[i]) continue;
-      surviving++;
+  let denom = 0;
+  if (slotArr) {
+    for (let i = 0; i < N; i++) {
+      if (decidedMask && !decidedMask[i]) continue;
+      denom++;
       if (higherIdx != null && slotArr[i] === higherIdx) higherWins++;
       else if (lowerIdx != null && slotArr[i] === lowerIdx) lowerWins++;
     }
   }
-  // Display pct as fraction of surviving sims (so "DET 75% / CLE 5%" tells you
-  // 20% of the time the matchup wasn't even DET vs CLE).
-  const higherPct = higherIdx != null && surviving > 0 ? (higherWins / surviving) * 100 : null;
-  const lowerPct = lowerIdx != null && surviving > 0 ? (lowerWins / surviving) * 100 : null;
+  const higherPct = higherIdx != null && denom > 0 ? (higherWins / denom) * 100 : null;
+  const lowerPct = lowerIdx != null && denom > 0 ? (lowerWins / denom) * 100 : null;
 
   return (
     <div
@@ -327,47 +607,81 @@ function SlotBox({
       {higher == null && higherUpstreamKey && results ? (
         <TBDPicker
           results={results}
+          simData={simData}
           upstreamKey={higherUpstreamKey}
+          decidedMask={decidedMask}
           onPick={(idx) => onForce(higherUpstreamKey, idx)}
           placeholderHint="Click to pick"
         />
       ) : (
-        <CompetitorRow
-          seed={higherShown.seed}
-          team={higherShown.team}
-          pct={higherPct}
-          forced={isHigherForced}
-          faded={effectiveForced != null && !isHigherForced}
-          onClick={
-            !isDecided && higherIdx != null
-              ? () => onForce(slotKey, isHigherForced ? null : higherIdx)
-              : undefined
-          }
-          ariaLabel={`force ${higherShown.team} to win ${slotKey}`}
-        />
+        <div className="relative">
+          <CompetitorRow
+            seed={higherShown.seed}
+            team={higherShown.team}
+            pct={higherPct}
+            forced={isHigherForced}
+            faded={effectiveForced != null && !isHigherForced}
+            onClick={
+              !isDecided && higherIdx != null
+                ? () => onForce(slotKey, isHigherForced ? null : higherIdx)
+                : undefined
+            }
+            ariaLabel={`force ${higherShown.team} to win ${slotKey}`}
+            endReserve={!isDecided && higher != null && !!higherUpstreamKey}
+          />
+          {!isDecided && higher != null && higherUpstreamKey && results ? (
+            <SwapButton
+              results={results}
+              simData={simData}
+              upstreamKey={higherUpstreamKey}
+              decidedMask={decidedMask}
+              currentIdx={higherIdx}
+              hasForce={forces[higherUpstreamKey] != null}
+              onPick={(idx) => onForce(higherUpstreamKey, idx)}
+              onClear={() => onForce(higherUpstreamKey, null)}
+            />
+          ) : null}
+        </div>
       )}
       <div className="border-t border-border" />
       {lower == null && lowerUpstreamKey && results ? (
         <TBDPicker
           results={results}
+          simData={simData}
           upstreamKey={lowerUpstreamKey}
+          decidedMask={decidedMask}
           onPick={(idx) => onForce(lowerUpstreamKey, idx)}
           placeholderHint="Click to pick"
         />
       ) : (
-        <CompetitorRow
-          seed={lowerShown.seed}
-          team={lowerShown.team}
-          pct={lowerPct}
-          forced={isLowerForced}
-          faded={effectiveForced != null && !isLowerForced}
-          onClick={
-            !isDecided && lowerIdx != null
-              ? () => onForce(slotKey, isLowerForced ? null : lowerIdx)
-              : undefined
-          }
-          ariaLabel={`force ${lowerShown.team} to win ${slotKey}`}
-        />
+        <div className="relative">
+          <CompetitorRow
+            seed={lowerShown.seed}
+            team={lowerShown.team}
+            pct={lowerPct}
+            forced={isLowerForced}
+            faded={effectiveForced != null && !isLowerForced}
+            onClick={
+              !isDecided && lowerIdx != null
+                ? () => onForce(slotKey, isLowerForced ? null : lowerIdx)
+                : undefined
+            }
+            ariaLabel={`force ${lowerShown.team} to win ${slotKey}`}
+            endReserve={!isDecided && lower != null && !!lowerUpstreamKey}
+          />
+          {!isDecided && lower != null && lowerUpstreamKey && results ? (
+            <SwapButton
+              results={results}
+              simData={simData}
+              upstreamKey={lowerUpstreamKey}
+              decidedMask={decidedMask}
+              currentIdx={lowerIdx}
+              hasForce={forces[lowerUpstreamKey] != null}
+              onPick={(idx) => onForce(lowerUpstreamKey, idx)}
+              onClear={() => onForce(lowerUpstreamKey, null)}
+            />
+          ) : null}
+        </div>
       )}
     </div>
   );
@@ -460,8 +774,10 @@ function ConferenceBracket({
   conf,
   seeds,
   results,
+  simData,
   forces,
   decided,
+  decidedMask,
   mask,
   onForce,
   flip,
@@ -469,8 +785,10 @@ function ConferenceBracket({
   conf: "east" | "west";
   seeds: [number, string][];
   results: SimResults | null;
+  simData: SimData;
   forces: ForceMap;
   decided: Partial<Record<SeriesKey, number>>;
+  decidedMask: Uint8Array | null;
   mask: Uint8Array | null;
   onForce: (slot: SlotKey, teamIdx: number | null) => void;
   flip?: boolean;
@@ -533,8 +851,10 @@ function ConferenceBracket({
             higher={pair.higher}
             lower={pair.lower}
             results={results}
+            simData={simData}
             forces={forces}
             decided={decided}
+            decidedMask={decidedMask}
             mask={mask}
             onForce={onForce}
           />
@@ -557,8 +877,10 @@ function ConferenceBracket({
             higherUpstreamKey={hKey}
             lowerUpstreamKey={lKey}
             results={results}
+            simData={simData}
             forces={forces}
             decided={decided}
+            decidedMask={decidedMask}
             mask={mask}
             onForce={onForce}
           />
@@ -577,8 +899,10 @@ function ConferenceBracket({
           higherUpstreamKey={r2Key(conf, "top")}
           lowerUpstreamKey={r2Key(conf, "bot")}
           results={results}
+          simData={simData}
           forces={forces}
           decided={decided}
+          decidedMask={decidedMask}
           mask={mask}
           onForce={onForce}
         />
@@ -672,10 +996,25 @@ export function WhatIfTab({
 }: WhatIfTabProps) {
   const [forces, setForces] = useState<ForceMap>({});
   const [subTab, setSubTab] = useState<WhatIfSubTab>("teams");
+  const [playerView, setPlayerView] = useState<PlayerView>("simple");
 
   const decidedWinners = useMemo(
-    () => (simResults ? computeDecidedWinners(simResults) : {}),
+    () =>
+      simResults
+        ? computeDecidedWinners(simResults, simData?.liveGames)
+        : {},
+    [simResults, simData?.liveGames],
+  );
+  const decidedPlayin = useMemo(
+    () => (simResults ? computeDecidedPlayin(simResults) : {}),
     [simResults],
+  );
+  const decidedMask = useMemo(
+    () =>
+      simResults
+        ? computeDecidedMask(simResults, decidedWinners, decidedPlayin)
+        : null,
+    [simResults, decidedWinners, decidedPlayin],
   );
   const mask = useMemo(
     () => (simResults ? computeMask(simResults, forces) : null),
@@ -781,6 +1120,23 @@ export function WhatIfTab({
         for (const upKey of upstreamSeriesChain(team, key as SeriesKey, simData)) {
           next[upKey] = value;
         }
+
+        // Cascade-invalidate: any other forced series whose required upstream
+        // path is now blocked by THIS pick gets cleared. e.g. forcing OKC to
+        // win r1.west.1v8 invalidates a prior force that PHX wins r2.west.top.
+        for (const otherKey of Object.keys(next) as SeriesKey[]) {
+          if (otherKey === key) continue;
+          if (!SERIES_KEYS.includes(otherKey)) continue;
+          const otherIdx = next[otherKey];
+          if (otherIdx == null || otherIdx === value) continue;
+          const otherTeam = simResults.teamNames[otherIdx];
+          const otherChain = upstreamSeriesChain(otherTeam, otherKey, simData);
+          // If `key` lies on otherTeam's path AND we just forced a different
+          // team to win it, otherTeam can't reach otherKey anymore.
+          if (otherChain.includes(key as SeriesKey)) {
+            delete next[otherKey];
+          }
+        }
       }
       return next;
     });
@@ -838,36 +1194,49 @@ export function WhatIfTab({
             </div>
           ) : null}
 
-          {/* Bracket */}
-          <div className="overflow-x-auto pb-2">
-            <div className="flex min-w-[1000px] items-start justify-center gap-6">
-              <ConferenceBracket
-                conf="west"
-                seeds={simData.bracket.westSeeds}
-                results={simResults}
-                forces={forces}
-                decided={decidedWinners}
-                mask={mask}
-                onForce={updateForce}
-              />
-              <FinalsColumn
-                results={simResults}
-                forces={forces}
-                decided={decidedWinners}
-                mask={mask}
-                onForce={updateForce}
-                champion={champTeam}
-              />
-              <ConferenceBracket
-                conf="east"
-                seeds={simData.bracket.eastSeeds}
-                results={simResults}
-                forces={forces}
-                decided={decidedWinners}
-                mask={mask}
-                onForce={updateForce}
-                flip
-              />
+          {/* Bracket — desktop: 3 columns side-by-side with one outer scroll;
+              mobile: stack vertically with each conference scrolling on its own. */}
+          <div className="md:overflow-x-auto md:pb-2">
+            <div className="flex flex-col items-stretch gap-4 md:min-w-[1000px] md:flex-row md:items-start md:justify-center md:gap-6">
+              <div className="w-full overflow-x-auto pb-2 md:w-auto md:overflow-visible md:pb-0">
+                <ConferenceBracket
+                  conf="west"
+                  seeds={simData.bracket.westSeeds}
+                  results={simResults}
+                  simData={simData}
+                  forces={forces}
+                  decided={decidedWinners}
+                  decidedMask={decidedMask}
+                  mask={mask}
+                  onForce={updateForce}
+                />
+              </div>
+              <div className="flex justify-center md:block">
+                <FinalsColumn
+                  results={simResults}
+                  simData={simData}
+                  forces={forces}
+                  decided={decidedWinners}
+                  decidedMask={decidedMask}
+                  mask={mask}
+                  onForce={updateForce}
+                  champion={champTeam}
+                />
+              </div>
+              <div className="w-full overflow-x-auto pb-2 md:w-auto md:overflow-visible md:pb-0">
+                <ConferenceBracket
+                  conf="east"
+                  seeds={simData.bracket.eastSeeds}
+                  results={simResults}
+                  simData={simData}
+                  forces={forces}
+                  decided={decidedWinners}
+                  decidedMask={decidedMask}
+                  mask={mask}
+                  onForce={updateForce}
+                  flip
+                />
+              </div>
             </div>
           </div>
           {/* Play-in dropdowns intentionally omitted: by the time the user
@@ -953,53 +1322,45 @@ export function WhatIfTab({
       {subTab === "players" ? (
         <Card>
           <CardHeader>
-            <CardTitle>Players — Conditional Projected Points</CardTitle>
-            <CardDescription>
-              Mean fantasy pts over surviving sims vs baseline. Top 200 by conditional points.
-            </CardDescription>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>Players — Conditional Projected Points</CardTitle>
+                <CardDescription>
+                  Mean fantasy pts over surviving sims vs baseline. Top 200 by conditional points.
+                </CardDescription>
+              </div>
+              <div className="flex shrink-0 gap-1 rounded-lg bg-muted/40 p-0.5">
+                {([
+                  { id: "simple", label: "Simple" },
+                  { id: "round", label: "Round" },
+                  { id: "game", label: "Game" },
+                ] as const).map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    className={[
+                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                      playerView === v.id
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                    onClick={() => setPlayerView(v.id)}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto rounded-xl border border-border/80">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-right font-medium">#</th>
-                    <th className="px-3 py-2 text-left font-medium">Player</th>
-                    <th className="px-3 py-2 text-left font-medium">Team</th>
-                    <th className="px-3 py-2 text-right font-medium">Base</th>
-                    <th className="px-3 py-2 text-right font-medium">Cond</th>
-                    <th className="px-3 py-2 text-right font-medium">Δ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedPlayers.map((p, idx) => (
-                    <tr key={p.espnId} className="border-t border-border/60">
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {idx + 1}
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-2">
-                          <PlayerAvatar espnId={p.espnId} team={p.team} size={24} />
-                          <span className="font-medium text-foreground">{p.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground">
-                        <div className="flex items-center gap-1.5">
-                          <TeamLogo team={p.team} size={16} />
-                          {p.team}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {p.baselinePoints.toFixed(0)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
-                        {p.conditionalPoints.toFixed(0)}
-                      </td>
-                      <DeltaCell delta={p.delta} />
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {playerView === "simple" ? (
+                <PlayersSimpleTable players={sortedPlayers} />
+              ) : playerView === "round" ? (
+                <PlayersRoundTable players={sortedPlayers} />
+              ) : (
+                <PlayersGameTable players={sortedPlayers} />
+              )}
             </div>
           </CardContent>
         </Card>
@@ -1083,15 +1444,19 @@ export function WhatIfTab({
 
 function FinalsColumn({
   results,
+  simData,
   forces,
   decided,
+  decidedMask,
   mask,
   onForce,
   champion,
 }: {
   results: SimResults;
+  simData: SimData;
   forces: ForceMap;
   decided: Partial<Record<SeriesKey, number>>;
+  decidedMask: Uint8Array | null;
   mask: Uint8Array | null;
   onForce: (slot: SlotKey, teamIdx: number | null) => void;
   champion: string | null;
@@ -1116,8 +1481,10 @@ function FinalsColumn({
         higherUpstreamKey={"cf.west" as SeriesKey}
         lowerUpstreamKey={"cf.east" as SeriesKey}
         results={results}
+        simData={simData}
         forces={forces}
         decided={decided}
+        decidedMask={decidedMask}
         mask={mask}
         onForce={onForce}
       />
@@ -1125,14 +1492,284 @@ function FinalsColumn({
         <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Champion
         </div>
-        <div
-          className="rounded-md border-2 border-amber-400 bg-amber-50 px-4 py-2 text-sm font-bold text-foreground dark:bg-amber-900/20"
-          style={{ width: BOX_W }}
-        >
-          {champion ?? "Click finals matchup to lock"}
-        </div>
+        <ChampionPicker
+          results={results}
+          champion={champion}
+          hasForce={forces["finals"] != null}
+          onPick={(idx) => onForce("finals" as SeriesKey, idx)}
+          onClear={() => onForce("finals" as SeriesKey, null)}
+        />
       </div>
     </div>
+  );
+}
+
+/** Click-to-pick Champion box. Opens a dropdown of every playoff team (sorted
+ *  by baseline champion %) — selecting one forces "finals" to that team, which
+ *  cascades up to fill r1/r2/cf along their path. */
+function ChampionPicker({
+  results,
+  champion,
+  hasForce,
+  onPick,
+  onClear,
+}: {
+  results: SimResults;
+  champion: string | null;
+  hasForce: boolean;
+  onPick: (teamIdx: number) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const options = useMemo(() => {
+    return results.teams
+      .map((t) => ({
+        idx: results.teamIndex.get(t.team) ?? -1,
+        team: t.team,
+        pct: t.champ,
+      }))
+      .filter((o) => o.idx >= 0)
+      .sort((a, b) => b.pct - a.pct);
+  }, [results]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const currentIdx = champion != null ? results.teamIndex.get(champion) ?? null : null;
+
+  return (
+    <div ref={ref} className="relative" style={{ width: BOX_W }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-center gap-1.5 rounded-md border-2 border-amber-400 bg-amber-50 px-4 py-2 text-sm font-bold text-foreground hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        {champion ? (
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={teamLogoUrl(champion)} alt="" width={18} height={18} />
+            <span>{champion}</span>
+          </>
+        ) : (
+          <span className="italic text-muted-foreground">Pick a champion ▾</span>
+        )}
+      </button>
+      {open ? (
+        <PickerDropdown
+          options={options}
+          currentIdx={currentIdx}
+          onPick={onPick}
+          onClear={hasForce ? onClear : undefined}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ── Player tables (3 views) ────────────────────────────────────────────
+
+function PlayersSimpleTable({ players }: { players: ConditionalPlayerRow[] }) {
+  return (
+    <table className="w-full text-left text-sm">
+      <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <tr>
+          <th className="px-3 py-2 text-right font-medium">#</th>
+          <th className="px-3 py-2 text-left font-medium">Player</th>
+          <th className="px-3 py-2 text-left font-medium">Team</th>
+          <th className="px-3 py-2 text-right font-medium">Base</th>
+          <th className="px-3 py-2 text-right font-medium">Cond</th>
+          <th className="px-3 py-2 text-right font-medium">Δ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {players.map((p, idx) => (
+          <tr key={p.espnId} className="border-t border-border/60">
+            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+              {idx + 1}
+            </td>
+            <td className="px-3 py-2">
+              <div className="flex items-center gap-2">
+                <PlayerAvatar espnId={p.espnId} team={p.team} size={24} />
+                <span className="font-medium text-foreground">{p.name}</span>
+              </div>
+            </td>
+            <td className="px-3 py-2 text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <TeamLogo team={p.team} size={16} />
+                {p.team}
+              </div>
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+              {p.baselinePoints.toFixed(0)}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
+              {p.conditionalPoints.toFixed(0)}
+            </td>
+            <DeltaCell delta={p.delta} />
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** Round-by-round: 4 columns (R1/R2/CF/Finals) of conditional projected points. */
+function PlayersRoundTable({ players }: { players: ConditionalPlayerRow[] }) {
+  return (
+    <table className="w-full text-left text-sm">
+      <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <tr>
+          <th className="px-3 py-2 text-right font-medium">#</th>
+          <th className="px-3 py-2 text-left font-medium">Player</th>
+          <th className="px-3 py-2 text-left font-medium">Team</th>
+          {ROUND_LABELS.map((r) => (
+            <th key={r} className="px-3 py-2 text-right font-medium">
+              {r}
+            </th>
+          ))}
+          <th className="px-3 py-2 text-right font-medium border-l border-border/50">
+            Total
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {players.map((p, idx) => (
+          <tr key={p.espnId} className="border-t border-border/60">
+            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+              {idx + 1}
+            </td>
+            <td className="px-3 py-2">
+              <div className="flex items-center gap-2">
+                <PlayerAvatar espnId={p.espnId} team={p.team} size={24} />
+                <span className="font-medium text-foreground">{p.name}</span>
+              </div>
+            </td>
+            <td className="px-3 py-2 text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <TeamLogo team={p.team} size={16} />
+                {p.team}
+              </div>
+            </td>
+            {p.conditionalPointsByRound.map((pts, ri) => (
+              <td
+                key={ri}
+                className="px-3 py-2 text-right tabular-nums text-foreground"
+              >
+                {pts > 0.05 ? pts.toFixed(1) : <span className="text-muted-foreground/40">—</span>}
+              </td>
+            ))}
+            <td className="px-3 py-2 text-right tabular-nums font-semibold text-foreground border-l border-border/50">
+              {p.conditionalPoints.toFixed(0)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** Game-by-game: each round shows Pts / PPG / GP triplet so you can see
+ *  per-game expectations within that round. */
+function PlayersGameTable({ players }: { players: ConditionalPlayerRow[] }) {
+  // Per-game view: G1..G7 within each of R1/R2/CF/Finals (28 cells per row),
+  // plus a Total. Each cell shows expected points in that game across surviving
+  // sims (= 0 when the series didn't reach that game in any surviving sim).
+  return (
+    <table className="w-full text-left text-xs">
+      <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <tr className="border-b border-border/40">
+          <th colSpan={3} />
+          {ROUND_LABELS.map((r) => (
+            <th
+              key={r}
+              colSpan={7}
+              className="px-1 py-2 text-center font-semibold border-x border-border/40"
+            >
+              {r}
+            </th>
+          ))}
+          <th className="px-2 py-2 text-center font-semibold border-l border-border/40">
+            Total
+          </th>
+        </tr>
+        <tr>
+          <th className="px-2 py-2 text-right font-medium">#</th>
+          <th className="px-2 py-2 text-left font-medium">Player</th>
+          <th className="px-2 py-2 text-left font-medium">Team</th>
+          {ROUND_LABELS.map((r) =>
+            Array.from({ length: 7 }, (_, g) => (
+              <th
+                key={`${r}-g${g + 1}`}
+                className={[
+                  "px-1 py-2 text-right font-medium",
+                  g === 0 ? "border-l border-border/40" : "",
+                ].join(" ")}
+              >
+                G{g + 1}
+              </th>
+            )),
+          )}
+          <th className="px-2 py-2 text-right font-medium border-l border-border/40">
+            Pts
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {players.map((p, idx) => {
+          const byGame = p.conditionalPointsByGame;
+          return (
+            <tr key={p.espnId} className="border-t border-border/60">
+              <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+                {idx + 1}
+              </td>
+              <td className="px-2 py-1.5">
+                <div className="flex items-center gap-2">
+                  <PlayerAvatar espnId={p.espnId} team={p.team} size={20} />
+                  <span className="font-medium text-foreground">{p.name}</span>
+                </div>
+              </td>
+              <td className="px-2 py-1.5 text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <TeamLogo team={p.team} size={14} />
+                  {p.team}
+                </div>
+              </td>
+              {Array.from({ length: 28 }, (_, i) => {
+                const pts = byGame[i] ?? 0;
+                const dim = pts < 0.05;
+                const isFirstOfRound = i % 7 === 0;
+                return (
+                  <td
+                    key={i}
+                    className={[
+                      "px-1 py-1.5 text-right tabular-nums",
+                      isFirstOfRound ? "border-l border-border/40" : "",
+                      dim ? "text-muted-foreground/30" : "text-foreground",
+                    ].join(" ")}
+                  >
+                    {dim ? "—" : pts.toFixed(1)}
+                  </td>
+                );
+              })}
+              <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-foreground border-l border-border/40">
+                {p.conditionalPoints.toFixed(0)}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 

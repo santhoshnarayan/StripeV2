@@ -125,6 +125,10 @@ export interface PlayerProjection {
   projectedGames: number;
   projectedPointsByRound: number[];  // [R1, R2, CF, Finals]
   projectedGamesByRound: number[];
+  /** Per-game means, length 28 = 4 rounds × 7 games. Index = round*7 + gameNum.
+   *  Indexes G5-G7 stay 0 if no series in that round reached game 5-7. */
+  projectedPointsByGame: number[];
+  projectedGamesByGame: number[];
   stddev: number;
   p10: number;
   p90: number;

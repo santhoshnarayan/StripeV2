@@ -46,6 +46,21 @@ export interface ConditionalPlayerRow {
   baselinePoints: number;
   conditionalPoints: number;
   delta: number;
+  /** Per-round means [R1, R2, CF, Finals]. Baseline values come straight from
+   *  PlayerProjection. Conditional values are approximated by scaling baseline
+   *  with the team's per-round reach ratio (cond reach / base reach), since
+   *  per-sim per-round player pts isn't tracked in simMatrix. */
+  baselinePointsByRound: number[];
+  baselineGamesByRound: number[];
+  conditionalPointsByRound: number[];
+  conditionalGamesByRound: number[];
+  /** Per-game means, length 28 = 4 rounds × 7 games. Index = round*7 + gameNum.
+   *  Conditional values scale baseline by the round-r multiplier (same as
+   *  conditionalPointsByRound), so sum_g(condByGame[r*7+g]) ≈ condByRound[r]. */
+  baselinePointsByGame: number[];
+  baselineGamesByGame: number[];
+  conditionalPointsByGame: number[];
+  conditionalGamesByGame: number[];
 }
 
 export interface ConditionalManagerRow {
@@ -164,8 +179,39 @@ export function computeConditionalPlayers(
   const surviving = maskCount(mask);
   const denom = surviving > 0 ? surviving : 1;
 
-  const baselineByEspn = new Map<string, number>();
-  for (const p of results.players) baselineByEspn.set(p.espnId, p.projectedPoints);
+  // Pre-compute per-team baseline+conditional reach counts for each of the 4
+  // rounds so we can derive per-round multipliers without a per-team loop
+  // inside the per-player loop. reach[r] = "team reached round r+1" semantics:
+  //   r=0 → in main bracket (trr ≥ 1)
+  //   r=1 → won R1 (trr ≥ 2) → played R2
+  //   r=2 → won R2 (trr ≥ 3) → played CF
+  //   r=3 → won CF (trr ≥ 4) → played Finals
+  const teamReach = new Map<string, { base: Uint32Array; cond: Uint32Array }>();
+  for (const team in results.teamRoundReached) {
+    const trr = results.teamRoundReached[team];
+    const base = new Uint32Array(4);
+    const cond = new Uint32Array(4);
+    for (let i = 0; i < N; i++) {
+      const r = trr[i];
+      if (r >= 1) {
+        base[0]++;
+        if (mask[i]) cond[0]++;
+      }
+      if (r >= 2) {
+        base[1]++;
+        if (mask[i]) cond[1]++;
+      }
+      if (r >= 3) {
+        base[2]++;
+        if (mask[i]) cond[2]++;
+      }
+      if (r >= 4) {
+        base[3]++;
+        if (mask[i]) cond[3]++;
+      }
+    }
+    teamReach.set(team, { base, cond });
+  }
 
   const rows: ConditionalPlayerRow[] = [];
   for (const [espnId, col] of results.playerIndex) {
@@ -176,6 +222,42 @@ export function computeConditionalPlayers(
       if (mask[i]) sum += results.simMatrix[i * numPlayers + col];
     }
     const condPts = surviving > 0 ? sum / denom : 0;
+
+    const basePtsRound = baseProjection.projectedPointsByRound ?? [0, 0, 0, 0];
+    const baseGamesRound = baseProjection.projectedGamesByRound ?? [0, 0, 0, 0];
+    const basePtsGame =
+      baseProjection.projectedPointsByGame ?? new Array(28).fill(0);
+    const baseGamesGame =
+      baseProjection.projectedGamesByGame ?? new Array(28).fill(0);
+
+    // Conditional per-round = baseline × multiplier. Multiplier renormalizes
+    // by team's reach: a team forced into the Finals shows ~10× their
+    // baseline Finals pts (their pts conditional on reaching it).
+    const tr = teamReach.get(baseProjection.team);
+    const condPtsRound = [0, 0, 0, 0];
+    const condGamesRound = [0, 0, 0, 0];
+    const condPtsGame = new Array(28).fill(0);
+    const condGamesGame = new Array(28).fill(0);
+    if (tr && surviving > 0) {
+      const teamPlayoffSimsBaseline = tr.base[0]; // trr ≥ 1 baseline count
+      for (let r = 0; r < 4; r++) {
+        if (tr.base[r] === 0 || teamPlayoffSimsBaseline === 0) continue;
+        // Recover per-trip mean: basePts is sum(pts in round r) / playoffSims.
+        // Per-trip = basePts × playoffSims / baseReach[r]. Then conditional
+        // average over surviving sims = perTrip × condReach[r] / surviving.
+        const mult = (teamPlayoffSimsBaseline * tr.cond[r]) / (tr.base[r] * surviving);
+        condPtsRound[r] = basePtsRound[r] * mult;
+        condGamesRound[r] = baseGamesRound[r] * mult;
+        // Per-game uses same per-round multiplier — sum across games in a
+        // round still equals the round total.
+        for (let g = 0; g < 7; g++) {
+          const idx = r * 7 + g;
+          condPtsGame[idx] = basePtsGame[idx] * mult;
+          condGamesGame[idx] = baseGamesGame[idx] * mult;
+        }
+      }
+    }
+
     rows.push({
       espnId,
       name: baseProjection.name,
@@ -183,6 +265,14 @@ export function computeConditionalPlayers(
       baselinePoints: baseProjection.projectedPoints,
       conditionalPoints: condPts,
       delta: condPts - baseProjection.projectedPoints,
+      baselinePointsByRound: basePtsRound,
+      baselineGamesByRound: baseGamesRound,
+      conditionalPointsByRound: condPtsRound,
+      conditionalGamesByRound: condGamesRound,
+      baselinePointsByGame: basePtsGame,
+      baselineGamesByGame: baseGamesGame,
+      conditionalPointsByGame: condPtsGame,
+      conditionalGamesByGame: condGamesGame,
     });
   }
   return rows;

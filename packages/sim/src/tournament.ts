@@ -224,9 +224,10 @@ function getTeamRating(
 }
 
 interface SeriesPlayerAccum {
-  /** Dense (numPlayers × 4) Float32Array of per-round game counts. */
+  /** Dense (numPlayers × 28) Float32Array of per-(round,gameNum) game counts.
+   *  Index = playerIdx * 28 + roundIdx * 7 + gameNum (gameNum ∈ 0..6). */
   games: Float32Array;
-  /** Dense (numPlayers × 4) Float64Array of per-round points. */
+  /** Dense (numPlayers × 28) Float64Array of per-(round,gameNum) points. */
   pts: Float64Array;
 }
 
@@ -298,7 +299,7 @@ function simulateSeries(
       rng.dirichletInto(dist.alphas, scratch, count);
       const playerIdx = dist.playerIdx;
       for (let i = 0; i < count; i++) {
-        const offset = playerIdx[i] * 4 + roundIdx;
+        const offset = playerIdx[i] * 28 + roundIdx * 7 + gameNum;
         accumGames[offset] += 1;
         accumPts[offset] += score * scratch[i];
       }
@@ -320,7 +321,7 @@ function simulateSeries(
         if (!Number.isFinite(pts) || pts <= 0) continue;
         const idx = ctx.playerIndex.get(espnId);
         if (idx == null) continue;
-        const offset = idx * 4 + roundIdx;
+        const offset = idx * 28 + roundIdx * 7 + gameNum;
         accumPts[offset] += pts;
         accumGames[offset] += 1;
       }
@@ -581,14 +582,13 @@ export async function runTournamentSim(
   const cfCounts: Record<string, number> = {};
   const finalsCounts: Record<string, number> = {};
   const champCounts: Record<string, number> = {};
-  // Dense (numPlayers × 4) accumulators across all sims, mirroring the per-sim
-  // typed-array accum. Indexed the same way: `idx * 4 + round`.
-  const totalGames = new Float64Array(numPlayers * 4);
-  const totalPts = new Float64Array(numPlayers * 4);
-  // Per-sim accum, reused across sims via .fill(0). Allocating once avoids
-  // reallocating ~numPlayers × 4 × 8 bytes every sim.
-  const accumGames = new Float32Array(numPlayers * 4);
-  const accumPts = new Float64Array(numPlayers * 4);
+  // Dense (numPlayers × 28) accumulators across all sims, mirroring the per-sim
+  // typed-array accum. Indexed: `idx * 28 + round * 7 + gameNum` (gameNum 0..6).
+  const totalGames = new Float64Array(numPlayers * 28);
+  const totalPts = new Float64Array(numPlayers * 28);
+  // Per-sim accum, reused across sims via .fill(0).
+  const accumGames = new Float32Array(numPlayers * 28);
+  const accumPts = new Float64Array(numPlayers * 28);
   const accum: SeriesPlayerAccum = { games: accumGames, pts: accumPts };
   // Track how many sims each team made the main bracket (for conditioning)
   const teamPlayoffSims: Record<string, number> = {};
@@ -613,6 +613,18 @@ export async function runTournamentSim(
     if (seed <= 6) teamPlayoffSims[team] = config.sims;
   }
 
+  // Real-world play-in lock: when bracket.playinR2 is complete, the 7/8 seeds
+  // are decided in the actual playoffs. eastSeeds/westSeeds already reflect
+  // the locked seeds (PHI=7, ORL=8 etc), so we use those directly instead of
+  // running a random play-in sim that could swap teams (e.g. give ORL the
+  // 7-seed in 2% of sims). This makes the picker reflect "from now state".
+  const eastPlayinDone = !!bracket.playinR2?.east?.winner;
+  const westPlayinDone = !!bracket.playinR2?.west?.winner;
+  const lockedEast7 = bracket.eastSeeds.find(([s]) => s === 7)?.[1] ?? "";
+  const lockedEast8 = bracket.eastSeeds.find(([s]) => s === 8)?.[1] ?? "";
+  const lockedWest7 = bracket.westSeeds.find(([s]) => s === 7)?.[1] ?? "";
+  const lockedWest8 = bracket.westSeeds.find(([s]) => s === 8)?.[1] ?? "";
+
   for (let sim = 0; sim < config.sims; sim++) {
     if (onProgress && sim > 0 && sim % 250 === 0) {
       onProgress(sim / config.sims);
@@ -623,12 +635,12 @@ export async function runTournamentSim(
     accumPts.fill(0);
 
     // Play-in (points NOT tracked — play-in points don't count for fantasy)
-    const [east7, east8] = simulatePlayIn(
-      bracket.eastSeeds, bracket.eastPlayin ?? [], ctx, rng,
-    );
-    const [west7, west8] = simulatePlayIn(
-      bracket.westSeeds, bracket.westPlayin ?? [], ctx, rng,
-    );
+    const [east7, east8] = eastPlayinDone
+      ? [lockedEast7, lockedEast8]
+      : simulatePlayIn(bracket.eastSeeds, bracket.eastPlayin ?? [], ctx, rng);
+    const [west7, west8] = westPlayinDone
+      ? [lockedWest7, lockedWest8]
+      : simulatePlayIn(bracket.westSeeds, bracket.westPlayin ?? [], ctx, rng);
 
     // Track play-in advancement for conditioning
     for (const t of [east7, east8, west7, west8]) {
@@ -739,13 +751,13 @@ export async function runTournamentSim(
     // sweep — no per-player map lookups.
     const simOffset = sim * numPlayers;
     for (let p = 0; p < numPlayers; p++) {
-      const base = p * 4;
+      const base = p * 28;
       let total = 0;
-      for (let r = 0; r < 4; r++) {
-        const pts = accumPts[base + r];
+      for (let i = 0; i < 28; i++) {
+        const pts = accumPts[base + i];
         total += pts;
-        totalGames[base + r] += accumGames[base + r];
-        totalPts[base + r] += pts;
+        totalGames[base + i] += accumGames[base + i];
+        totalPts[base + i] += pts;
       }
       if (total !== 0) simMatrix[simOffset + p] = total;
     }
@@ -801,29 +813,37 @@ export async function runTournamentSim(
   for (const [espnId, col] of playerIndex) {
     const p = playerLookup.get(espnId);
     if (!p) continue;
-    const base = col * 4;
-    const games: number[] = [
-      totalGames[base],
-      totalGames[base + 1],
-      totalGames[base + 2],
-      totalGames[base + 3],
-    ];
-    const pts: number[] = [
-      totalPts[base],
-      totalPts[base + 1],
-      totalPts[base + 2],
-      totalPts[base + 3],
-    ];
-    // Skip players who never accumulated anything.
-    if (games[0] === 0 && games[1] === 0 && games[2] === 0 && games[3] === 0) {
-      continue;
+    const base = col * 28;
+    // Per-game (28-length) raw totals, indexed [round*7 + gameNum].
+    const gamesByGame: number[] = new Array(28);
+    const ptsByGame: number[] = new Array(28);
+    let totalRaw = 0;
+    let anyGames = 0;
+    for (let i = 0; i < 28; i++) {
+      const g = totalGames[base + i];
+      const pt = totalPts[base + i];
+      gamesByGame[i] = g;
+      ptsByGame[i] = pt;
+      totalRaw += pt;
+      anyGames += g;
     }
+    // Per-round rollup (length 4) for backward compat with computeConditionalPlayers.
+    const games: number[] = [0, 0, 0, 0];
+    const pts: number[] = [0, 0, 0, 0];
+    for (let r = 0; r < 4; r++) {
+      for (let g = 0; g < 7; g++) {
+        games[r] += gamesByGame[r * 7 + g];
+        pts[r] += ptsByGame[r * 7 + g];
+      }
+    }
+    // Skip players who never accumulated anything.
+    if (anyGames === 0) continue;
 
     // Condition on team making the main bracket
     const divisor = teamPlayoffSims[p.team] ?? n;
     if (divisor <= 0) continue;
 
-    const meanPts = (pts[0] + pts[1] + pts[2] + pts[3]) / divisor;
+    const meanPts = totalRaw / divisor;
 
     // Compute stddev, p10, p90 from sim matrix
     let stddev = 0;
@@ -855,6 +875,8 @@ export async function runTournamentSim(
       projectedPoints: meanPts,
       projectedPointsByRound: pts.map((pt) => pt / divisor),
       projectedGamesByRound: games.map((g) => g / divisor),
+      projectedPointsByGame: ptsByGame.map((pt) => pt / divisor),
+      projectedGamesByGame: gamesByGame.map((g) => g / divisor),
       stddev,
       p10,
       p90,

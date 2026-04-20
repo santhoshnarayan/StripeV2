@@ -20,7 +20,7 @@ type CacheEntry = {
  * pairing fixes). Cached entries from older versions are treated as misses,
  * so the auto-runner recomputes against the current engine.
  */
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 const simCache = new Map<string, CacheEntry>();
 

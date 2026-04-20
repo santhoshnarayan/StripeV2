@@ -176,6 +176,22 @@ pub struct Bracket {
     pub team_aliases: HashMap<String, String>,
     #[serde(rename = "teamFullNames", default)]
     pub team_full_names: HashMap<String, String>,
+    #[serde(rename = "playinR2", default)]
+    pub playin_r2: Option<PlayinR2>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct PlayinR2 {
+    #[serde(default)]
+    pub east: Option<PlayinR2Result>,
+    #[serde(default)]
+    pub west: Option<PlayinR2Result>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlayinR2Result {
+    pub winner: String,
+    pub loser: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -228,6 +244,11 @@ pub struct PlayerProjection {
     pub projected_points_by_round: [f64; 4],
     #[serde(rename = "projectedGamesByRound")]
     pub projected_games_by_round: [f64; 4],
+    /// Per-game means, length 28 = 4 rounds * 7 games. Index = round * 7 + game.
+    #[serde(rename = "projectedPointsByGame")]
+    pub projected_points_by_game: Vec<f64>,
+    #[serde(rename = "projectedGamesByGame")]
+    pub projected_games_by_game: Vec<f64>,
     pub stddev: f64,
     pub p10: f64,
     pub p90: f64,
@@ -290,6 +311,9 @@ pub struct PreparedSim {
 }
 
 const NUM_ROUNDS: usize = 4;
+/// Per-(round,gameNum) accumulator dimension. Index = round * 7 + game_num
+/// where game_num ∈ 0..7 (NBA series caps at 7 games).
+const NUM_GAME_SLOTS: usize = NUM_ROUNDS * 7;
 const CONCENTRATION: f64 = 20.0;
 const TOTAL_PTS: f64 = 220.0;
 
@@ -533,8 +557,8 @@ struct SimScratch {
 impl SimScratch {
     fn new(num_players: usize, max_team_count: usize) -> Self {
         SimScratch {
-            accum_games: vec![0.0f32; num_players * NUM_ROUNDS],
-            accum_pts: vec![0.0f64; num_players * NUM_ROUNDS],
+            accum_games: vec![0.0f32; num_players * NUM_GAME_SLOTS],
+            accum_pts: vec![0.0f64; num_players * NUM_GAME_SLOTS],
             scratch_shares: vec![0.0f64; max_team_count.max(1)],
         }
     }
@@ -727,6 +751,7 @@ fn track_team(
     team: &str,
     score: i32,
     round_idx: usize,
+    game_num: usize,
 ) {
     let dist = match sim.team_dist_by_key.get(team) {
         Some(d) if d.count > 0 => d,
@@ -735,9 +760,10 @@ fn track_team(
     let count = dist.count;
     rng.dirichlet_into(&dist.alphas[..count], &mut scratch.scratch_shares[..count]);
     let s = score as f64;
+    let slot = round_idx * 7 + game_num;
     for i in 0..count {
         let pi = dist.player_idx[i] as usize;
-        let offset = pi * NUM_ROUNDS + round_idx;
+        let offset = pi * NUM_GAME_SLOTS + slot;
         scratch.accum_games[offset] += 1.0;
         scratch.accum_pts[offset] += s * scratch.scratch_shares[i];
     }
@@ -788,7 +814,7 @@ fn simulate_series(
                     continue;
                 }
                 if let Some(&idx) = sim.player_index.get(espn_id) {
-                    let offset = idx * NUM_ROUNDS + round_idx;
+                    let offset = idx * NUM_GAME_SLOTS + round_idx * 7 + game_num;
                     scratch.accum_pts[offset] += *pts;
                     scratch.accum_games[offset] += 1.0;
                 }
@@ -819,8 +845,8 @@ fn simulate_series(
                 let remaining_total = TOTAL_PTS * frac;
                 let rem_h = ((remaining_total + margin) / 2.0).round().max(0.0) as i32;
                 let rem_l = ((remaining_total - margin) / 2.0).round().max(0.0) as i32;
-                track_team(sim, scratch, rng, higher, rem_h, round_idx);
-                track_team(sim, scratch, rng, lower, rem_l, round_idx);
+                track_team(sim, scratch, rng, higher, rem_h, round_idx, game_num);
+                track_team(sim, scratch, rng, lower, rem_l, round_idx, game_num);
                 let final_h = higher_actual + rem_h;
                 let final_l = lower_actual + rem_l;
                 if final_h >= final_l {
@@ -848,11 +874,11 @@ fn simulate_series(
         }
 
         if higher_home {
-            track_team(sim, scratch, rng, higher, home_score, round_idx);
-            track_team(sim, scratch, rng, lower, away_score, round_idx);
+            track_team(sim, scratch, rng, higher, home_score, round_idx, game_num);
+            track_team(sim, scratch, rng, lower, away_score, round_idx, game_num);
         } else {
-            track_team(sim, scratch, rng, lower, home_score, round_idx);
-            track_team(sim, scratch, rng, higher, away_score, round_idx);
+            track_team(sim, scratch, rng, lower, home_score, round_idx, game_num);
+            track_team(sim, scratch, rng, higher, away_score, round_idx, game_num);
         }
     }
 
@@ -934,7 +960,7 @@ struct ShardOutput {
     finals: HashMap<String, u32>,
     champ: HashMap<String, u32>,
     team_playoff_sims: HashMap<String, u32>,
-    total_games: Vec<f64>, // num_players * 4
+    total_games: Vec<f64>, // num_players * NUM_GAME_SLOTS (= 28)
     total_pts: Vec<f64>,
 }
 
@@ -956,8 +982,8 @@ fn run_shard(sim: &PreparedSim, sim_count: usize, seed: u64) -> ShardOutput {
     let mut team_playoff_sims: HashMap<String, u32> = HashMap::new();
     let mut team_round_reached: HashMap<String, Vec<u8>> = HashMap::new();
 
-    let mut total_games = vec![0.0f64; num_players * NUM_ROUNDS];
-    let mut total_pts = vec![0.0f64; num_players * NUM_ROUNDS];
+    let mut total_games = vec![0.0f64; num_players * NUM_GAME_SLOTS];
+    let mut total_pts = vec![0.0f64; num_players * NUM_GAME_SLOTS];
 
     let bracket = &sim.bracket;
     let all_seeds: Vec<(u32, String)> = bracket
@@ -985,14 +1011,58 @@ fn run_shard(sim: &PreparedSim, sim_count: usize, seed: u64) -> ShardOutput {
         }
     };
 
+    // Lock play-in seeds when the real-world play-in is complete. eastSeeds /
+    // westSeeds already reflect the locked 7/8 seeds (PHI=7, ORL=8 etc) so we
+    // just use them directly instead of re-running random play-in games.
+    let east_playin_done = bracket
+        .playin_r2
+        .as_ref()
+        .and_then(|p| p.east.as_ref())
+        .is_some();
+    let west_playin_done = bracket
+        .playin_r2
+        .as_ref()
+        .and_then(|p| p.west.as_ref())
+        .is_some();
+    let locked_east7 = bracket
+        .east_seeds
+        .iter()
+        .find(|(s, _)| *s == 7)
+        .map(|(_, t)| t.clone())
+        .unwrap_or_default();
+    let locked_east8 = bracket
+        .east_seeds
+        .iter()
+        .find(|(s, _)| *s == 8)
+        .map(|(_, t)| t.clone())
+        .unwrap_or_default();
+    let locked_west7 = bracket
+        .west_seeds
+        .iter()
+        .find(|(s, _)| *s == 7)
+        .map(|(_, t)| t.clone())
+        .unwrap_or_default();
+    let locked_west8 = bracket
+        .west_seeds
+        .iter()
+        .find(|(s, _)| *s == 8)
+        .map(|(_, t)| t.clone())
+        .unwrap_or_default();
+
     for sim_idx in 0..sim_count {
         scratch.reset();
 
         // Play-in
-        let (east7, east8) =
-            simulate_play_in(sim, &bracket.east_seeds, &bracket.east_playin, &mut rng);
-        let (west7, west8) =
-            simulate_play_in(sim, &bracket.west_seeds, &bracket.west_playin, &mut rng);
+        let (east7, east8) = if east_playin_done {
+            (locked_east7.clone(), locked_east8.clone())
+        } else {
+            simulate_play_in(sim, &bracket.east_seeds, &bracket.east_playin, &mut rng)
+        };
+        let (west7, west8) = if west_playin_done {
+            (locked_west7.clone(), locked_west8.clone())
+        } else {
+            simulate_play_in(sim, &bracket.west_seeds, &bracket.west_playin, &mut rng)
+        };
 
         for t in [&east7, &east8, &west7, &west8] {
             *team_playoff_sims.entry((*t).clone()).or_insert(0) += 1;
@@ -1154,13 +1224,13 @@ fn run_shard(sim: &PreparedSim, sim_count: usize, seed: u64) -> ShardOutput {
         // Fold per-sim accums into global totals + write the sim matrix row.
         let sim_offset = sim_idx * num_players;
         for p in 0..num_players {
-            let base = p * NUM_ROUNDS;
+            let base = p * NUM_GAME_SLOTS;
             let mut total = 0.0f64;
-            for r in 0..NUM_ROUNDS {
-                let pts = scratch.accum_pts[base + r];
+            for i in 0..NUM_GAME_SLOTS {
+                let pts = scratch.accum_pts[base + i];
                 total += pts;
-                total_games[base + r] += scratch.accum_games[base + r] as f64;
-                total_pts[base + r] += pts;
+                total_games[base + i] += scratch.accum_games[base + i] as f64;
+                total_pts[base + i] += pts;
             }
             if total != 0.0 {
                 sim_matrix[sim_offset + p] = total as f32;
@@ -1240,8 +1310,8 @@ pub fn run_tournament_sim(sim: &PreparedSim, parallel: bool) -> SimResults {
     let mut finals_map: HashMap<String, u32> = HashMap::new();
     let mut champ_map: HashMap<String, u32> = HashMap::new();
     let mut team_playoff_sims: HashMap<String, u32> = HashMap::new();
-    let mut total_games = vec![0.0f64; num_players * NUM_ROUNDS];
-    let mut total_pts = vec![0.0f64; num_players * NUM_ROUNDS];
+    let mut total_games = vec![0.0f64; num_players * NUM_GAME_SLOTS];
+    let mut total_pts = vec![0.0f64; num_players * NUM_GAME_SLOTS];
 
     let mut sim_cursor = 0usize;
     for shard in shards {
@@ -1364,21 +1434,31 @@ pub fn run_tournament_sim(sim: &PreparedSim, parallel: bool) -> SimResults {
     let mut sorted_buf: Vec<f32> = vec![0.0; total_sims];
 
     for (col, p) in sim.players.iter().enumerate() {
-        let base = col * NUM_ROUNDS;
-        let games = [
-            total_games[base],
-            total_games[base + 1],
-            total_games[base + 2],
-            total_games[base + 3],
-        ];
-        let pts = [
-            total_pts[base],
-            total_pts[base + 1],
-            total_pts[base + 2],
-            total_pts[base + 3],
-        ];
-        if games.iter().all(|g| *g == 0.0) {
+        let base = col * NUM_GAME_SLOTS;
+        // Per-(round,gameNum) raw totals, length 28.
+        let mut games_by_game = vec![0.0f64; NUM_GAME_SLOTS];
+        let mut pts_by_game = vec![0.0f64; NUM_GAME_SLOTS];
+        let mut total_raw = 0.0f64;
+        let mut any_games = 0.0f64;
+        for i in 0..NUM_GAME_SLOTS {
+            let g = total_games[base + i];
+            let pt = total_pts[base + i];
+            games_by_game[i] = g;
+            pts_by_game[i] = pt;
+            total_raw += pt;
+            any_games += g;
+        }
+        if any_games == 0.0 {
             continue;
+        }
+        // Per-round rollup (length 4) for backward compat.
+        let mut games = [0.0f64; 4];
+        let mut pts = [0.0f64; 4];
+        for r in 0..4 {
+            for g in 0..7 {
+                games[r] += games_by_game[r * 7 + g];
+                pts[r] += pts_by_game[r * 7 + g];
+            }
         }
         let divisor = (*team_playoff_sims
             .get(&p.team)
@@ -1386,7 +1466,7 @@ pub fn run_tournament_sim(sim: &PreparedSim, parallel: bool) -> SimResults {
         if divisor <= 0.0 {
             continue;
         }
-        let mean_pts = (pts[0] + pts[1] + pts[2] + pts[3]) / divisor;
+        let mean_pts = total_raw / divisor;
 
         // Stddev + percentiles via sim matrix column.
         let mut sum_sq = 0.0;
@@ -1401,6 +1481,14 @@ pub fn run_tournament_sim(sim: &PreparedSim, parallel: bool) -> SimResults {
         let p10 = sorted_buf[(0.1 * total_sims as f64).floor() as usize] as f64;
         let p90 = sorted_buf[(0.9 * total_sims as f64).floor() as usize] as f64;
 
+        let projected_points_by_game: Vec<f64> = pts_by_game
+            .iter()
+            .map(|pt| pt / divisor)
+            .collect();
+        let projected_games_by_game: Vec<f64> = games_by_game
+            .iter()
+            .map(|g| g / divisor)
+            .collect();
         players_out.push(PlayerProjection {
             espn_id: p.espn_id.clone(),
             name: p.name.clone(),
@@ -1421,6 +1509,8 @@ pub fn run_tournament_sim(sim: &PreparedSim, parallel: bool) -> SimResults {
                 games[2] / divisor,
                 games[3] / divisor,
             ],
+            projected_points_by_game,
+            projected_games_by_game,
             stddev,
             p10,
             p90,
