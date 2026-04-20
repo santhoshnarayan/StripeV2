@@ -21,8 +21,8 @@ let initialized: Promise<unknown> | null = null;
 function ensureInit(): Promise<unknown> {
   if (!initialized) {
     // Path is the static asset under /public/wasm/. The Rust crate is rebuilt
-    // via `pnpm --filter @repo/sim-engine-wasm build` which copies the binary
-    // into apps/web/public/wasm/sim_engine.wasm.
+    // via `pnpm --filter @repo/sim-engine-wasm regenerate` which copies the
+    // binary into apps/web/public/wasm/sim_engine.wasm.
     initialized = init("/wasm/sim_engine.wasm");
   }
   return initialized;
