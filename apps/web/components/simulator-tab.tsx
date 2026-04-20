@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { BracketView } from "@/components/sim/bracket-view";
-import { BracketMobileView } from "@/components/sim/bracket-mobile-view";
+import { BracketMobileColumnsView } from "@/components/sim/bracket-mobile-view";
 import { AdjustmentsView } from "@/components/sim/adjustments-view";
 import { AdjustmentsTab as ExploreAdjustmentsTab, setBracketConstants } from "@/components/sim/adjustments-tab-explore";
 import { InjuriesView } from "@/components/sim/injuries-view";
@@ -546,7 +546,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
       {subTab === "bracket" ? (
         <>
           <div className="md:hidden">
-            <BracketMobileView simData={simData} simResults={simResults} />
+            <BracketMobileColumnsView simData={simData} simResults={simResults} />
           </div>
           <div className="hidden md:block">
             <BracketView simData={simData} simResults={simResults} />

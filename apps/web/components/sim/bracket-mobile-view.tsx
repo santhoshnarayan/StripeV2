@@ -319,6 +319,113 @@ export function BracketMobileView({
   simData: SimData;
   simResults: SimResults | null;
 }) {
+  const [round, setRound] = useState<RoundKey>("r1");
+  const { schedule } = useBracketSchedule();
+
+  const seriesByKey = useMemo(() => {
+    const map: Record<string, SeriesState> = {};
+    for (const [key, games] of Object.entries(schedule)) {
+      map[key] = computeSeriesState(games);
+    }
+    return map;
+  }, [schedule]);
+
+  const matchups = useMemo(
+    () => buildRoundMatchups(simData, simResults, round),
+    [simData, simResults, round],
+  );
+
+  const westMatchups = matchups.filter((m) => m.conf === "west");
+  const eastMatchups = matchups.filter((m) => m.conf === "east");
+  const finalMatchups = matchups.filter((m) => m.conf === "finals");
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 overflow-x-auto no-scrollbar">
+        {(Object.keys(ROUND_LABELS) as RoundKey[]).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setRound(k)}
+            className={cn(
+              "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+              round === k
+                ? "bg-foreground text-background"
+                : "bg-muted text-muted-foreground hover:bg-muted/70",
+            )}
+          >
+            {ROUND_LABELS[k]}
+          </button>
+        ))}
+      </div>
+
+      {westMatchups.length > 0 ? (
+        <section className="space-y-2">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            West
+          </h3>
+          <div className="space-y-2">
+            {westMatchups.map((m) => (
+              <MatchupCard
+                key={m.seriesKey}
+                matchup={m}
+                series={seriesByKey[m.seriesKey] ?? null}
+                round={round}
+                simResults={simResults}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {eastMatchups.length > 0 ? (
+        <section className="space-y-2">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            East
+          </h3>
+          <div className="space-y-2">
+            {eastMatchups.map((m) => (
+              <MatchupCard
+                key={m.seriesKey}
+                matchup={m}
+                series={seriesByKey[m.seriesKey] ?? null}
+                round={round}
+                simResults={simResults}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {finalMatchups.length > 0 ? (
+        <section className="space-y-2">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Finals
+          </h3>
+          <div className="space-y-2">
+            {finalMatchups.map((m) => (
+              <MatchupCard
+                key={m.seriesKey}
+                matchup={m}
+                series={seriesByKey[m.seriesKey] ?? null}
+                round={round}
+                simResults={simResults}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+export function BracketMobileColumnsView({
+  simData,
+  simResults,
+}: {
+  simData: SimData;
+  simResults: SimResults | null;
+}) {
   const [tab, setTab] = useState<TabKey>("west");
   const { schedule } = useBracketSchedule();
 
