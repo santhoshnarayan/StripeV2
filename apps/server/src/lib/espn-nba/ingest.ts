@@ -606,13 +606,27 @@ export async function syncLiveGames(): Promise<number> {
 /** Compute live points per player — used to hydrate league standings.
  *  Only counts playoff series (R1/R2/CF/Finals). Play-in games have
  *  seriesKey=null (matchSeriesForTeams only matches playoff series) and
- *  are intentionally excluded so they show in the ticker but not standings. */
-export async function computeLivePointsByPlayer(): Promise<Map<string, number>> {
+ *  are intentionally excluded so they show in the ticker but not standings.
+ *
+ *  Pass `playerIds` (typically the league's rostered set) to scope the
+ *  aggregate query to those players — otherwise the join scans every
+ *  playoff player-game row, which dominates the league endpoint latency. */
+export async function computeLivePointsByPlayer(
+  playerIds?: Iterable<string>,
+): Promise<Map<string, number>> {
+  const ids = playerIds ? Array.from(new Set(playerIds)) : null;
+  if (ids && ids.length === 0) return new Map();
+  const whereClause = ids
+    ? and(
+        sql`${nbaGame.seriesKey} IS NOT NULL`,
+        inArray(nbaPlayerGameStats.playerId, ids),
+      )
+    : sql`${nbaGame.seriesKey} IS NOT NULL`;
   const rows = await db
     .select({ playerId: nbaPlayerGameStats.playerId, pts: sql<number>`sum(${nbaPlayerGameStats.points})` })
     .from(nbaPlayerGameStats)
     .innerJoin(nbaGame, eq(nbaPlayerGameStats.gameId, nbaGame.id))
-    .where(sql`${nbaGame.seriesKey} IS NOT NULL`)
+    .where(whereClause)
     .groupBy(nbaPlayerGameStats.playerId);
   const out = new Map<string, number>();
   for (const r of rows) out.set(r.playerId, Number(r.pts) || 0);

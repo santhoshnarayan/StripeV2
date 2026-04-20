@@ -1777,7 +1777,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
           .orderBy(desc(leagueAction.sequenceNumber))
           .limit(100)
       : [],
-    livePoints: Object.fromEntries(await computeLivePointsByPlayer()),
+    livePoints: Object.fromEntries(await computeLivePointsByPlayer(rosteredPlayerIds)),
     liveGames: await (async () => {
       const now = new Date();
       const start = new Date(now);
