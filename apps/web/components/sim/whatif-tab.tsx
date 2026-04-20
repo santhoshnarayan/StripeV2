@@ -25,10 +25,14 @@ import {
   SERIES_KEYS,
   type LiveGameState,
   type PlayinKey,
+  type PlayerAdjustment,
   type SeriesKey,
   type SimData,
   type SimResults,
 } from "@/lib/sim";
+import { AdjustmentsTab as ExploreAdjustmentsTab } from "@/components/sim/adjustments-tab-explore";
+import { InjuriesView } from "@/components/sim/injuries-view";
+import type { SimPlayer } from "@/lib/sim";
 
 interface RosterInputLite {
   userId: string;
@@ -43,9 +47,19 @@ interface WhatIfTabProps {
   progress: number;
   rosters?: RosterInputLite[];
   viewerUserId?: string;
+  // Adjustments editing context
+  teamPlayers?: Record<string, SimPlayer[]>;
+  adjustments?: Record<string, PlayerAdjustment>;
+  defaultAdjustments?: Record<string, PlayerAdjustment>;
+  playoffMpgByEspnId?: Record<string, number>;
+  onUpdateAdjustment?: (espnId: string, update: Partial<PlayerAdjustment>) => void;
+  onLoadAdjustments?: (adjs: Record<string, PlayerAdjustment>) => void;
+  onResetAdjustments?: () => void;
+  onRunSim?: () => void;
+  adjustmentsDirty?: boolean;
 }
 
-type WhatIfSubTab = "players" | "teams" | "fantasy";
+type WhatIfSubTab = "players" | "teams" | "fantasy" | "adjustments" | "injuries";
 type PlayerView = "simple" | "round" | "game";
 
 const ROUND_LABELS = ["R1", "R2", "CF", "Finals"] as const;
@@ -993,6 +1007,15 @@ export function WhatIfTab({
   progress,
   rosters,
   viewerUserId,
+  teamPlayers,
+  adjustments,
+  defaultAdjustments,
+  playoffMpgByEspnId,
+  onUpdateAdjustment,
+  onLoadAdjustments,
+  onResetAdjustments,
+  onRunSim,
+  adjustmentsDirty,
 }: WhatIfTabProps) {
   const [forces, setForces] = useState<ForceMap>({});
   const [subTab, setSubTab] = useState<WhatIfSubTab>("teams");
@@ -1248,12 +1271,18 @@ export function WhatIfTab({
       </Card>
 
       {/* Sub-tab nav */}
-      <div className="flex flex-nowrap gap-1 overflow-x-auto">
+      <div className="flex flex-nowrap items-center gap-1 overflow-x-auto">
         {([
-          { id: "teams", label: "Teams" },
-          { id: "players", label: "Players" },
+          { id: "teams" as WhatIfSubTab, label: "Teams" },
+          { id: "players" as WhatIfSubTab, label: "Players" },
           ...(rosters && rosters.length > 0
             ? [{ id: "fantasy" as WhatIfSubTab, label: "Fantasy Teams" }]
+            : []),
+          ...(teamPlayers
+            ? [
+                { id: "adjustments" as WhatIfSubTab, label: "Adjustments" },
+                { id: "injuries" as WhatIfSubTab, label: "Injuries" },
+              ]
             : []),
         ] as const).map((t) => (
           <button
@@ -1270,7 +1299,38 @@ export function WhatIfTab({
             {t.label}
           </button>
         ))}
+        {onRunSim && adjustmentsDirty ? (
+          <div className="ml-auto flex items-center gap-2 pl-2">
+            <span className="text-xs text-amber-600 dark:text-amber-400">
+              Unapplied edits
+            </span>
+            <Button
+              size="sm"
+              onClick={onRunSim}
+              disabled={simulating}
+            >
+              {simulating ? `${Math.round(progress * 100)}%` : "Re-run sim"}
+            </Button>
+          </div>
+        ) : null}
       </div>
+
+      {subTab === "adjustments" && simData && teamPlayers && adjustments && defaultAdjustments && playoffMpgByEspnId && onUpdateAdjustment && onLoadAdjustments && onResetAdjustments ? (
+        <ExploreAdjustmentsTab
+          teamPlayers={teamPlayers}
+          adjustments={adjustments}
+          defaultAdjustments={defaultAdjustments}
+          playoffMinutes={simData.playoffMinutes}
+          playoffMpgByEspnId={playoffMpgByEspnId}
+          onUpdateAdjustment={onUpdateAdjustment}
+          onLoadAdjustments={onLoadAdjustments}
+          onResetAdjustments={onResetAdjustments}
+        />
+      ) : null}
+
+      {subTab === "injuries" && simData ? (
+        <InjuriesView injuries={simData.injuries ?? {}} />
+      ) : null}
 
       {subTab === "teams" ? (
         <Card>

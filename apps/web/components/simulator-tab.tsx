@@ -12,8 +12,7 @@ import {
 import { BracketView } from "@/components/sim/bracket-view";
 import { BracketMobileColumnsView } from "@/components/sim/bracket-mobile-view";
 import { AdjustmentsView } from "@/components/sim/adjustments-view";
-import { AdjustmentsTab as ExploreAdjustmentsTab, setBracketConstants } from "@/components/sim/adjustments-tab-explore";
-import { InjuriesView } from "@/components/sim/injuries-view";
+import { setBracketConstants } from "@/components/sim/adjustments-tab-explore";
 import { WhatIfTab } from "@/components/sim/whatif-tab";
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { SimulatorLeaderboard } from "@/components/league/simulator-leaderboard";
@@ -188,6 +187,13 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
     import("@/lib/sim").PlayerAdjustment[] | null
   >(null);
   const adjustments = localAdjustments ?? simData?.adjustments ?? [];
+  const lastRunAdjustmentsKeyRef = useRef<string>("");
+  const [lastRunKey, setLastRunKey] = useState<string>("");
+  const currentAdjustmentsKey = useMemo(
+    () => JSON.stringify(adjustments),
+    [adjustments],
+  );
+  const adjustmentsDirty = lastRunKey !== "" && currentAdjustmentsKey !== lastRunKey;
 
   const playerRatingLookup = useMemo(() => {
     if (!simData) return new Map();
@@ -259,6 +265,9 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
         );
         setSimResults(results);
         setCachedSimResults(cacheKey, results);
+        const key = JSON.stringify(adjs);
+        lastRunAdjustmentsKeyRef.current = key;
+        setLastRunKey(key);
       } catch (simError) {
         setError(simError instanceof Error ? simError.message : "Simulation failed");
       } finally {
@@ -451,8 +460,6 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
       { id: "exposure" as SimSubTab, label: "Exposure" },
       { id: "advisor" as SimSubTab, label: "Advisor" },
     ] : []),
-    { id: "adjustments", label: "Adjustments" },
-    { id: "injuries", label: "Injuries" },
   ];
 
   if (loading && !simResults) {
@@ -562,26 +569,20 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
           progress={progress}
           rosters={rosterInputs}
           viewerUserId={leagueData?.viewerUserId}
-        />
-      ) : null}
-
-      {subTab === "adjustments" && simData ? (
-        <ExploreAdjustmentsTab
           teamPlayers={teamPlayers}
           adjustments={adjustmentsRecord}
           defaultAdjustments={defaultAdjustmentsRecord}
-          playoffMinutes={simData.playoffMinutes}
           playoffMpgByEspnId={playoffMpgByEspnId}
           onUpdateAdjustment={(espnId, update) => {
             setLocalAdjustments((prev) => {
-              const current = prev ?? simData.adjustments ?? [];
+              const current = prev ?? simData?.adjustments ?? [];
               const idx = current.findIndex((a) => a.espn_id === espnId);
               if (idx >= 0) {
                 const updated = [...current];
                 updated[idx] = { ...updated[idx], ...update };
                 return updated;
               }
-              const player = simData.simPlayers.find((p) => p.espn_id === espnId);
+              const player = simData?.simPlayers.find((p) => p.espn_id === espnId);
               if (!player) return current;
               return [
                 ...current,
@@ -609,11 +610,9 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
             setLocalAdjustments(arr);
           }}
           onResetAdjustments={() => setLocalAdjustments(null)}
+          onRunSim={() => void handleRunSim()}
+          adjustmentsDirty={adjustmentsDirty}
         />
-      ) : null}
-
-      {subTab === "injuries" && simData ? (
-        <InjuriesView injuries={simData.injuries ?? {}} />
       ) : null}
 
       {subTab === "teams" && simResults ? (
