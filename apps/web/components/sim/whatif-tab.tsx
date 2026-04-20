@@ -59,7 +59,7 @@ interface WhatIfTabProps {
   adjustmentsDirty?: boolean;
 }
 
-type WhatIfSubTab = "players" | "teams" | "fantasy" | "adjustments" | "injuries";
+type WhatIfSubTab = "players" | "teams" | "fantasy" | "ratings" | "adjustments" | "injuries";
 type PlayerView = "simple" | "round" | "game";
 
 const ROUND_LABELS = ["R1", "R2", "CF", "Finals"] as const;
@@ -91,6 +91,45 @@ function r2Key(conf: "east" | "west", half: "top" | "bot"): SeriesKey {
  *  real playoffs. We don't use a sim-consensus heuristic here because a big
  *  rating gap can push the sim to 99%+ on a series that's only 1-0, which
  *  would incorrectly auto-advance the favorite. */
+const LEAGUE_AVG_RTG = 114;
+type ScenarioId = "full" | "out" | "doubtful" | "questionable";
+const SCENARIOS: { id: ScenarioId; label: string; excludesStatuses: Set<string> }[] = [
+  { id: "full", label: "Full strength", excludesStatuses: new Set() },
+  { id: "out", label: "Out", excludesStatuses: new Set(["out"]) },
+  { id: "doubtful", label: "+ Doubtful", excludesStatuses: new Set(["out", "doubtful"]) },
+  { id: "questionable", label: "+ Questionable", excludesStatuses: new Set(["out", "doubtful", "questionable"]) },
+];
+
+interface TeamRating {
+  ortg: number;
+  drtg: number;
+  net: number;
+}
+
+function computeTeamRatingForScenario(
+  teamPlayers: SimPlayer[],
+  baselineMpgByNbaId: Record<string, number>,
+  excludedNamesLower: Set<string>,
+): TeamRating {
+  const active = teamPlayers.filter((p) => !excludedNamesLower.has(p.name.toLowerCase()));
+  let totalBase = 0;
+  for (const p of active) {
+    totalBase += baselineMpgByNbaId[p.nba_id] ?? p.mpg ?? 0;
+  }
+  if (totalBase <= 0) return { ortg: LEAGUE_AVG_RTG, drtg: LEAGUE_AVG_RTG, net: 0 };
+  const scale = 240 / totalBase;
+  let oAdj = 0;
+  let dAdj = 0;
+  for (const p of active) {
+    const mins = (baselineMpgByNbaId[p.nba_id] ?? p.mpg ?? 0) * scale;
+    oAdj += (p.o_lebron * mins) / 48;
+    dAdj += (p.d_lebron * mins) / 48;
+  }
+  const ortg = LEAGUE_AVG_RTG + oAdj;
+  const drtg = LEAGUE_AVG_RTG - dAdj;
+  return { ortg, drtg, net: ortg - drtg };
+}
+
 function computeDecidedWinners(
   results: SimResults,
   liveGames: LiveGameState[] | undefined,
@@ -1085,6 +1124,58 @@ export function WhatIfTab({
     [condManagers],
   );
 
+  const teamRatings = useMemo(() => {
+    if (!simData) return [];
+    const playersByTeam = new Map<string, SimPlayer[]>();
+    for (const p of simData.simPlayers) {
+      if (!playersByTeam.has(p.team)) playersByTeam.set(p.team, []);
+      playersByTeam.get(p.team)!.push(p);
+    }
+    const statusByNameLower = new Map<string, string>();
+    for (const [name, entry] of Object.entries(simData.injuries ?? {})) {
+      if (name === "_meta") continue;
+      statusByNameLower.set(name.toLowerCase(), entry.status.toLowerCase());
+    }
+    const teamList: {
+      team: string;
+      fullName: string;
+      seed: number | null;
+      scenarios: Record<ScenarioId, TeamRating>;
+    }[] = [];
+    const seen = new Set<string>();
+    const bracketTeams: { team: string; seed: number | null }[] = [
+      ...simData.bracket.eastSeeds.map(([s, t]) => ({ team: t, seed: s })),
+      ...(simData.bracket.eastPlayin ?? []).map(([s, t]) => ({ team: t, seed: s })),
+      ...simData.bracket.westSeeds.map(([s, t]) => ({ team: t, seed: s })),
+      ...(simData.bracket.westPlayin ?? []).map(([s, t]) => ({ team: t, seed: s })),
+    ];
+    for (const { team, seed } of bracketTeams) {
+      if (seen.has(team)) continue;
+      seen.add(team);
+      const tp = playersByTeam.get(team) ?? [];
+      const baselineMpg = simData.playoffMinutes[team] ?? {};
+      const scenarios = {} as Record<ScenarioId, TeamRating>;
+      for (const sc of SCENARIOS) {
+        const excludeNames = new Set<string>();
+        for (const p of tp) {
+          const st = statusByNameLower.get(p.name.toLowerCase());
+          if (st && sc.excludesStatuses.has(st)) {
+            excludeNames.add(p.name.toLowerCase());
+          }
+        }
+        scenarios[sc.id] = computeTeamRatingForScenario(tp, baselineMpg, excludeNames);
+      }
+      teamList.push({
+        team,
+        fullName: simData.bracket.teamFullNames[team] ?? team,
+        seed,
+        scenarios,
+      });
+    }
+    teamList.sort((a, b) => b.scenarios.full.net - a.scenarios.full.net);
+    return teamList;
+  }, [simData]);
+
   if (!simResults || !simData) {
     return (
       <div className="py-12 text-center text-sm text-muted-foreground">
@@ -1278,6 +1369,7 @@ export function WhatIfTab({
           ...(rosters && rosters.length > 0
             ? [{ id: "fantasy" as WhatIfSubTab, label: "Fantasy Teams" }]
             : []),
+          { id: "ratings" as WhatIfSubTab, label: "Team Ratings" },
           ...(teamPlayers
             ? [
                 { id: "adjustments" as WhatIfSubTab, label: "Adjustments" },
@@ -1568,6 +1660,93 @@ export function WhatIfTab({
                 </table>
               </div>
             )}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {subTab === "ratings" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Team Ratings — Lineup Scenarios</CardTitle>
+            <CardDescription>
+              Minute-weighted LEBRON ratings. League avg = {LEAGUE_AVG_RTG}. Scenarios drop
+              players based on current injury status and redistribute minutes proportionally.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-xl border border-border/80">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <tr className="border-b border-border/40">
+                    <th rowSpan={2} className="px-3 py-2 text-left font-medium">Team</th>
+                    <th rowSpan={2} className="px-3 py-2 text-right font-medium">Seed</th>
+                    {SCENARIOS.map((sc) => (
+                      <th
+                        key={sc.id}
+                        colSpan={3}
+                        className="px-2 py-2 text-center font-semibold border-x border-border/40"
+                      >
+                        {sc.label}
+                      </th>
+                    ))}
+                  </tr>
+                  <tr>
+                    {SCENARIOS.map((sc) => (
+                      <Fragment key={sc.id}>
+                        <th className="px-2 py-1 text-right font-medium">ORtg</th>
+                        <th className="px-2 py-1 text-right font-medium">DRtg</th>
+                        <th className="px-2 py-1 text-right font-medium border-r border-border/40">Net</th>
+                      </Fragment>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {teamRatings.map((t) => (
+                    <tr key={t.team} className="border-t border-border/60">
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <TeamLogo team={t.team} size={20} />
+                          <span className="font-medium text-foreground">{t.team}</span>
+                          <span className="text-xs text-muted-foreground truncate">
+                            {t.fullName}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        {t.seed ?? "PI"}
+                      </td>
+                      {SCENARIOS.map((sc) => {
+                        const r = t.scenarios[sc.id];
+                        const fullNet = t.scenarios.full.net;
+                        const netDelta = r.net - fullNet;
+                        return (
+                          <Fragment key={sc.id}>
+                            <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">
+                              {r.ortg.toFixed(1)}
+                            </td>
+                            <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">
+                              {r.drtg.toFixed(1)}
+                            </td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-foreground border-r border-border/40">
+                              {r.net >= 0 ? "+" : ""}{r.net.toFixed(1)}
+                              {sc.id !== "full" && Math.abs(netDelta) > 0.05 ? (
+                                <span
+                                  className={`ml-1 text-[10px] font-normal ${
+                                    netDelta >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"
+                                  }`}
+                                >
+                                  ({netDelta >= 0 ? "+" : ""}{netDelta.toFixed(1)})
+                                </span>
+                              ) : null}
+                            </td>
+                          </Fragment>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardContent>
         </Card>
       ) : null}
