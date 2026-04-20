@@ -79,6 +79,62 @@ function orderMatchup(
 
 // ─── Game + Series simulation ──────────────────────────────────────
 
+/** NBA overtime is 5 min vs 48 of regulation → shared by OT loops below. */
+const OT_FRAC = 5 / 48;
+const TOTAL_PTS = 220;
+/** Physical cap — a player cannot play more than the game's regulation length. */
+const MAX_PLAYER_MINUTES = 48;
+/** Dirichlet concentration for the per-team point share (higher = tighter). */
+const CONCENTRATION = 20;
+/** 2 play-in + 4 rounds × 7 games. Mirrors `InjuryEntry.availability` shape. */
+const NUM_AVAIL_SLOTS = 30;
+/** alpha = min(1, gp / ACTUAL_BLEND_CAP_GAMES) — fully trust actuals after 5 games. */
+const ACTUAL_BLEND_CAP_GAMES = 5;
+
+/**
+ * Fill `baseMins` up to `target` using sqrt(base) weights (concave — stars
+ * absorb proportionally less of the deficit than rotation players). Caps
+ * each slot at 48 min and iteratively re-routes overflow to uncapped slots.
+ */
+function sqrtRedistribute(baseMins: number[], target: number): number[] {
+  const n = baseMins.length;
+  if (n === 0 || target <= 0) return new Array(n).fill(0);
+  let total = 0;
+  for (let i = 0; i < n; i++) total += baseMins[i];
+  if (total <= 0) return new Array(n).fill(0);
+  if (total >= target) {
+    const scale = target / total;
+    return baseMins.map((m) => m * scale);
+  }
+  const weights = baseMins.map((m) => Math.sqrt(m));
+  const out = baseMins.slice();
+  const capped = new Array(n).fill(false);
+  for (let iter = 0; iter <= n; iter++) {
+    let curTotal = 0;
+    for (let i = 0; i < n; i++) curTotal += out[i];
+    const deficit = target - curTotal;
+    if (deficit <= 1e-9) break;
+    let sumW = 0;
+    for (let i = 0; i < n; i++) if (!capped[i]) sumW += weights[i];
+    if (sumW <= 1e-9) break;
+    let newlyCapped = false;
+    for (let i = 0; i < n; i++) {
+      if (capped[i]) continue;
+      const add = (deficit * weights[i]) / sumW;
+      const candidate = out[i] + add;
+      if (candidate > MAX_PLAYER_MINUTES) {
+        out[i] = MAX_PLAYER_MINUTES;
+        capped[i] = true;
+        newlyCapped = true;
+      } else {
+        out[i] = candidate;
+      }
+    }
+    if (!newlyCapped) break;
+  }
+  return out;
+}
+
 function simulateGame(
   homeRating: number,
   awayRating: number,
@@ -88,139 +144,44 @@ function simulateGame(
 ): { homeWins: boolean; homeScore: number; awayScore: number } {
   const spread = homeRating - awayRating + hca;
   const margin = rng.normal(spread, stdev);
-  const totalPts = 220;
-  const homeScore = Math.round((totalPts + margin) / 2);
-  const awayScore = Math.round((totalPts - margin) / 2);
-  return { homeWins: margin > 0, homeScore, awayScore };
+  let homeScore = Math.round((TOTAL_PTS + margin) / 2);
+  let awayScore = Math.round((TOTAL_PTS - margin) / 2);
+  // HCA is regulation-only; OT is played on a neutral spread.
+  const otSpread = (homeRating - awayRating) * OT_FRAC;
+  const otStdev = stdev * Math.sqrt(OT_FRAC);
+  const otPot = TOTAL_PTS * OT_FRAC;
+  while (homeScore === awayScore) {
+    const m = rng.normal(otSpread, otStdev);
+    homeScore += Math.round((otPot + m) / 2);
+    awayScore += Math.round((otPot - m) / 2);
+  }
+  return { homeWins: homeScore > awayScore, homeScore, awayScore };
 }
 
-// ─── LEBRON player-based team rating ─────────────────────────────
-// Ported from explore/misc/sports/espn/nba/playoff_sim/web/src/lib/simulator.ts
-// Uses ALL rostered players with projected playoff minutes (not just top 8).
-// Minutes are scaled so the total reaches 240 (5 players × 48 mins).
+// ─── Mask-cache: precomputed per-active-set team state ───────────────
+// Replaces the old per-game `calcLebronRating` path. For each team we
+// enumerate every possible "which injured players sit" bitmask (2^k, where
+// k = injured players with any avail<1) at prepare time. The hot path then
+// samples a mask from the availability vector and looks up the entry in O(1).
 
-function calcLebronRating(
-  roster: SimPlayer[],
-  playoffMinutes: Record<string, number> | null,
-  adjustmentsById: Map<string, PlayerAdjustment>,
-  injuriesByName: Map<string, InjuryEntry>,
-  rng: RNG,
-  gameNum: number,
-): { rating: number; playerMinutes: Map<string, number> } {
-  // Filter to players who are "available" for this game
-  const active: SimPlayer[] = [];
-  for (const p of roster) {
-    if (p.mpg <= 0) continue;
-    const injury = injuriesByName.get(p.name);
-    if (injury) {
-      const avail = injury.availability[Math.min(gameNum, injury.availability.length - 1)] ?? 1;
-      if (rng.random() >= avail) continue; // player sits this game
-    }
-    active.push(p);
-  }
-
-  if (active.length === 0) return { rating: -10, playerMinutes: new Map() };
-
-  const playerMinutes = new Map<string, number>();
-
-  if (playoffMinutes) {
-    // Collect base minutes + any overrides from adjustments
-    let overriddenTotal = 0;
-    let baseTotal = 0;
-    const baseMins = new Map<string, number>();
-    const overrides = new Map<string, number>();
-
-    for (const p of active) {
-      const adj = adjustmentsById.get(p.espn_id);
-      const base = playoffMinutes[p.nba_id] ?? 0;
-      if (base <= 0 && !adj?.minutes_override) continue;
-
-      if (adj?.minutes_override != null) {
-        overrides.set(p.espn_id, adj.minutes_override);
-        overriddenTotal += adj.minutes_override;
-      } else {
-        baseMins.set(p.espn_id, base);
-        baseTotal += base;
-      }
-    }
-
-    // Scale non-overridden minutes so total = 240
-    const remaining = Math.max(0, 240 - overriddenTotal);
-    const scale = baseTotal > 0 ? remaining / baseTotal : 0;
-
-    let rating = 0;
-    for (const p of active) {
-      const adj = adjustmentsById.get(p.espn_id);
-      const override = overrides.get(p.espn_id);
-      const base = baseMins.get(p.espn_id);
-      const mins = override ?? (base != null ? base * scale : 0);
-      if (mins <= 0) continue;
-
-      const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
-      rating += (lebron * mins) / 48;
-      playerMinutes.set(p.espn_id, mins);
-    }
-    return { rating, playerMinutes };
-  }
-
-  // Fallback: top-5 by MPG, rest share the remainder
-  active.sort((a, b) => b.mpg - a.mpg);
-  const top5 = active.slice(0, 5);
-  const rest = active.slice(5);
-  const top5Mins = top5.reduce((s, p) => s + p.mpg, 0);
-  const remainingMins = Math.max(0, 240 - top5Mins);
-  const restTotal = rest.reduce((s, p) => s + p.mpg, 0);
-
-  let rating = 0;
-  for (const p of top5) {
-    const adj = adjustmentsById.get(p.espn_id);
-    const mins = adj?.minutes_override ?? p.mpg;
-    const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
-    rating += (lebron * mins) / 48;
-    playerMinutes.set(p.espn_id, mins);
-  }
-  for (const p of rest) {
-    const adj = adjustmentsById.get(p.espn_id);
-    const mins = adj?.minutes_override ?? (restTotal > 0 ? p.mpg * (remainingMins / restTotal) : 0);
-    const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
-    rating += (lebron * mins) / 48;
-    playerMinutes.set(p.espn_id, mins);
-  }
-  return { rating, playerMinutes };
+/** Precomputed rating + Dirichlet distribution for a specific active set. */
+interface TeamMaskEntry {
+  rating: number;
+  dist: TeamPointDistribution;
 }
 
-function getTeamRating(
-  team: string,
-  netRatings: Record<string, number>,
-  rostersByTeam: Record<string, SimPlayer[]>,
-  playoffMinutes: Record<string, Record<string, number>>,
-  adjustmentsById: Map<string, PlayerAdjustment>,
-  injuriesByName: Map<string, InjuryEntry>,
-  config: SimConfig,
-  rng: RNG,
-  gameNum: number,
-  aliases: Record<string, string>,
-  aliasesRev: Record<string, string>,
-): { rating: number; playerMinutes: Map<string, number> } {
-  const netKey = resolveTeam(team, netRatings, aliases, aliasesRev);
-  const nrRating = netRatings[netKey] ?? 0;
-
-  if (config.model === "netrtg") {
-    return { rating: nrRating, playerMinutes: new Map() };
-  }
-
-  const rosterKey = resolveTeam(team, rostersByTeam, aliases, aliasesRev);
-  const roster = rostersByTeam[rosterKey] ?? [];
-  const pm = playoffMinutes[team] ?? playoffMinutes[rosterKey] ?? null;
-  const result = calcLebronRating(roster, pm, adjustmentsById, injuriesByName, rng, gameNum);
-
-  if (config.model === "lebron") {
-    return result;
-  }
-
-  // blend
-  const blended = config.blendWeight * result.rating + (1 - config.blendWeight) * nrRating;
-  return { rating: blended, playerMinutes: result.playerMinutes };
+/** Per-team bundle of precomputed mask entries + info to re-derive the mask. */
+interface TeamPrecomputed {
+  /** Per-injured-player availability vectors (length 30). Hot loop reads these
+   *  directly so no HashMap touch per game. Bit i of `mask` = injured[i] sits. */
+  injuredAvailability: number[][];
+  /** Length 30 × 2^k. entries[availIdx * maskCount + mask] is the resolved
+   *  state for that (game slot, active set). Per-game variants exist so
+   *  actuals from sim'd game G don't leak into the minutes distribution
+   *  used to predict game G itself. */
+  entries: TeamMaskEntry[];
+  /** 2^k — stride for indexing `entries` by availIdx. */
+  maskCount: number;
 }
 
 interface SeriesPlayerAccum {
@@ -246,22 +207,82 @@ interface TeamPointDistribution {
 interface SimContext {
   config: SimConfig;
   netRatings: Record<string, number>;
-  rostersByTeam: Record<string, SimPlayer[]>;
-  playoffMinutes: Record<string, Record<string, number>>;
-  adjustmentsById: Map<string, PlayerAdjustment>;
-  injuriesByName: Map<string, InjuryEntry>;
-  playerLookup: Map<string, SimPlayer>;
   seriesPattern: boolean[];
   aliases: Record<string, string>;
   aliasesRev: Record<string, string>;
   liveByKey: Map<string, LiveGameState[]>;
-  /** team abbrev (any known alias) → precomputed distribution. */
-  teamDistByKey: Map<string, TeamPointDistribution>;
+  /** team abbrev (any known alias) → precomputed mask cache. */
+  teamPrecomputed: Map<string, TeamPrecomputed>;
   /** playerIndex: espnId → column in simMatrix / row in accum typed arrays. */
   playerIndex: Map<string, number>;
   numPlayers: number;
   /** Scratch buffer reused by the Dirichlet sampler. */
   scratchShares: Float64Array;
+}
+
+/** Sample the per-game active-set mask for `team` by rolling each injured
+ *  player's availability once, then return the precomputed entry. */
+function sampleTeamState(
+  ctx: SimContext,
+  team: string,
+  rng: RNG,
+  availIdx: number,
+): TeamMaskEntry | undefined {
+  const pre = ctx.teamPrecomputed.get(team);
+  if (!pre) return undefined;
+  let mask = 0;
+  const inj = pre.injuredAvailability;
+  for (let bit = 0; bit < inj.length; bit++) {
+    const avail = inj[bit];
+    if (avail.length === 0) continue;
+    const i = Math.min(availIdx, avail.length - 1);
+    if (rng.random() >= avail[i]) mask |= 1 << bit;
+  }
+  const slot = Math.min(availIdx, NUM_AVAIL_SLOTS - 1);
+  return pre.entries[slot * pre.maskCount + mask];
+}
+
+/** Combine the precomputed LEBRON-style rating with the configured model. */
+function resolveRating(
+  ctx: SimContext,
+  team: string,
+  state: TeamMaskEntry | undefined,
+): number {
+  const netKey = resolveTeam(team, ctx.netRatings, ctx.aliases, ctx.aliasesRev);
+  const nrRating = ctx.netRatings[netKey] ?? 0;
+  switch (ctx.config.model) {
+    case "netrtg":
+      return nrRating;
+    case "lebron":
+      return state?.rating ?? -10;
+    case "blend": {
+      const lebron = state?.rating ?? -10;
+      return ctx.config.blendWeight * lebron + (1 - ctx.config.blendWeight) * nrRating;
+    }
+  }
+}
+
+/** Spread `score` across players using the precomputed Dirichlet alphas. */
+function trackTeamWithDist(
+  dist: TeamPointDistribution,
+  scratch: Float64Array,
+  rng: RNG,
+  score: number,
+  accumGames: Float32Array,
+  accumPts: Float64Array,
+  roundIdx: number,
+  gameNum: number,
+): void {
+  if (dist.count === 0) return;
+  const count = dist.count;
+  rng.dirichletInto(dist.alphas, scratch, count);
+  const slot = roundIdx * 7 + gameNum;
+  const playerIdx = dist.playerIdx;
+  for (let i = 0; i < count; i++) {
+    const offset = playerIdx[i] * 28 + slot;
+    accumGames[offset] += 1;
+    accumPts[offset] += score * scratch[i];
+  }
 }
 
 function simulateSeries(
@@ -274,39 +295,23 @@ function simulateSeries(
   gameOffset: number,
   seriesKey?: string,
 ): string {
-  const hResult = getTeamRating(higher, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameOffset, ctx.aliases, ctx.aliasesRev);
-  const lResult = getTeamRating(lower, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameOffset, ctx.aliases, ctx.aliasesRev);
-  const hRating = hResult.rating;
-  const lRating = lResult.rating;
-
   let hWins = 0;
   let lWins = 0;
 
   const liveGames = seriesKey ? ctx.liveByKey.get(seriesKey) : undefined;
+  const accumGames = accum.games;
+  const accumPts = accum.pts;
+  const scratch = ctx.scratchShares;
 
   for (let gameNum = 0; gameNum < 7; gameNum++) {
     if (hWins === 4 || lWins === 4) break;
 
-    // Distribute points to players using Dirichlet, using precomputed
-    // per-team (playerIdx, alphas) typed arrays — no per-call allocation.
-    const accumGames = accum.games;
-    const accumPts = accum.pts;
-    const scratch = ctx.scratchShares;
-    const trackTeam = (team: string, score: number) => {
-      const dist = ctx.teamDistByKey.get(team);
-      if (!dist || dist.count === 0) return;
-      const count = dist.count;
-      rng.dirichletInto(dist.alphas, scratch, count);
-      const playerIdx = dist.playerIdx;
-      for (let i = 0; i < count; i++) {
-        const offset = playerIdx[i] * 28 + roundIdx * 7 + gameNum;
-        accumGames[offset] += 1;
-        accumPts[offset] += score * scratch[i];
-      }
-    };
-
-    const hTeam = higher;
-    const lTeam = lower;
+    // Sample per-game active set (mask) and look up precomputed rating + dist.
+    const availIdx = gameOffset + gameNum;
+    const hState = sampleTeamState(ctx, higher, rng, availIdx);
+    const lState = sampleTeamState(ctx, lower, rng, availIdx);
+    const hRating = resolveRating(ctx, higher, hState);
+    const lRating = resolveRating(ctx, lower, lState);
 
     // ── Live-game injection ────────────────────────────────────────
     const live = liveGames?.find((g) => g.gameNum === gameNum + 1);
@@ -339,19 +344,29 @@ function simulateSeries(
           else lWins++;
           continue;
         }
-        // Simulate only the remaining fraction; HCA is already baked into
-        // progress, so we don't re-apply it to the remainder.
         const scaledStd = ctx.config.stdev * Math.sqrt(frac);
         const spread = (hRating - lRating) * frac;
         const margin = rng.normal(spread, scaledStd);
-        const remainingTotal = 220 * frac;
-        const remainderHigher = Math.max(0, Math.round((remainingTotal + margin) / 2));
-        const remainderLower = Math.max(0, Math.round((remainingTotal - margin) / 2));
-        trackTeam(hTeam, remainderHigher);
-        trackTeam(lTeam, remainderLower);
-        const finalHigher = higherActual + remainderHigher;
-        const finalLower = lowerActual + remainderLower;
-        if (finalHigher >= finalLower) hWins++;
+        const remainingTotal = TOTAL_PTS * frac;
+        let remainderHigher = Math.max(0, Math.round((remainingTotal + margin) / 2));
+        let remainderLower = Math.max(0, Math.round((remainingTotal - margin) / 2));
+        let finalHigher = higherActual + remainderHigher;
+        let finalLower = lowerActual + remainderLower;
+        const otSpread = (hRating - lRating) * OT_FRAC;
+        const otStdev = ctx.config.stdev * Math.sqrt(OT_FRAC);
+        const otPot = TOTAL_PTS * OT_FRAC;
+        while (finalHigher === finalLower) {
+          const m = rng.normal(otSpread, otStdev);
+          const dh = Math.max(0, Math.round((otPot + m) / 2));
+          const dl = Math.max(0, Math.round((otPot - m) / 2));
+          remainderHigher += dh;
+          remainderLower += dl;
+          finalHigher += dh;
+          finalLower += dl;
+        }
+        if (hState) trackTeamWithDist(hState.dist, scratch, rng, remainderHigher, accumGames, accumPts, roundIdx, gameNum);
+        if (lState) trackTeamWithDist(lState.dist, scratch, rng, remainderLower, accumGames, accumPts, roundIdx, gameNum);
+        if (finalHigher > finalLower) hWins++;
         else lWins++;
         continue;
       }
@@ -367,13 +382,10 @@ function simulateSeries(
     if (higherWon) hWins++;
     else lWins++;
 
-    if (higherHome) {
-      trackTeam(hTeam, homeScore);
-      trackTeam(lTeam, awayScore);
-    } else {
-      trackTeam(lTeam, homeScore);
-      trackTeam(hTeam, awayScore);
-    }
+    const higherScore = higherHome ? homeScore : awayScore;
+    const lowerScore = higherHome ? awayScore : homeScore;
+    if (hState) trackTeamWithDist(hState.dist, scratch, rng, higherScore, accumGames, accumPts, roundIdx, gameNum);
+    if (lState) trackTeamWithDist(lState.dist, scratch, rng, lowerScore, accumGames, accumPts, roundIdx, gameNum);
   }
 
   return hWins === 4 ? higher : lower;
@@ -386,9 +398,11 @@ function simulatePlayInGame(
   rng: RNG,
   gameNum: number,
 ): { winner: string; loser: string } {
-  const hResult = getTeamRating(higher, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameNum, ctx.aliases, ctx.aliasesRev);
-  const lResult = getTeamRating(lower, ctx.netRatings, ctx.rostersByTeam, ctx.playoffMinutes, ctx.adjustmentsById, ctx.injuriesByName, ctx.config, rng, gameNum, ctx.aliases, ctx.aliasesRev);
-  const { homeWins } = simulateGame(hResult.rating, lResult.rating, rng, ctx.config.hca, ctx.config.stdev);
+  const hState = sampleTeamState(ctx, higher, rng, gameNum);
+  const lState = sampleTeamState(ctx, lower, rng, gameNum);
+  const hRating = resolveRating(ctx, higher, hState);
+  const lRating = resolveRating(ctx, lower, lState);
+  const { homeWins } = simulateGame(hRating, lRating, rng, ctx.config.hca, ctx.config.stdev);
   return homeWins
     ? { winner: higher, loser: lower }
     : { winner: lower, loser: higher };
@@ -466,49 +480,192 @@ export async function runTournamentSim(
   allPlayerIds.forEach((id, idx) => playerIndex.set(id, idx));
   const numPlayers = allPlayerIds.length;
 
-  // Precompute per-team Dirichlet distributions once. Keyed by every known
-  // alias so `trackTeam(team, …)` can skip the alias resolution on the hot path.
-  const teamDistByKey = new Map<string, TeamPointDistribution>();
+  // Per-team precomputed mask cache. For each team we:
+  //   1. Identify the "base active" players (mpg>0 with playoff minutes or override).
+  //   2. Within those, find the injured subset (players with any avail<1). Cap
+  //      at 16 for the mask-space bound.
+  //   3. For each availIdx G ∈ 0..30 enumerate 2^k masks; per-G the base mins
+  //      are blended from pre-projection + cumulative actuals from slots < G
+  //      (so sim(G) never sees its own data). Resolve rating + Dirichlet alphas
+  //      into entries[G * maskCount + mask].
+  const teamPrecomputed = new Map<string, TeamPrecomputed>();
   let maxTeamCount = 1;
-  const CONCENTRATION = 20;
+  const actualsByGame = data.actualsByGame ?? {};
   for (const teamKey of Object.keys(rostersByTeam)) {
     const roster = rostersByTeam[teamKey];
     const pm = playoffMinutes[teamKey] ?? {};
-    const idx: number[] = [];
-    const w: number[] = [];
-    let total = 0;
+    const teamActuals = actualsByGame[teamKey] ?? {};
+
+    // Base-active = mpg>0 AND (has pm entry OR has minutes_override).
+    const baseActive: SimPlayer[] = [];
     for (const p of roster) {
-      const mins = pm[p.nba_id] ?? 0;
-      if (mins <= 0) continue;
-      const playerIdx = playerIndex.get(p.espn_id);
-      if (playerIdx == null) continue;
-      const ptsPerMin = p.mpg > 0 ? p.ppg / p.mpg : 1;
-      const ww = ptsPerMin * mins;
-      idx.push(playerIdx);
-      w.push(ww);
-      total += ww;
+      if (p.mpg <= 0) continue;
+      const adj = adjustmentsById.get(p.espn_id);
+      const hasOverride = adj?.minutes_override != null;
+      const baseMin = pm[p.nba_id] ?? 0;
+      if (baseMin <= 0 && !hasOverride) continue;
+      baseActive.push(p);
     }
-    const count = idx.length;
-    const alphas = new Float64Array(count);
-    if (total > 0) {
-      for (let i = 0; i < count; i++) alphas[i] = (w[i] / total) * CONCENTRATION;
+
+    // Per-base-active player: flatten actuals into a [NUM_AVAIL_SLOTS] array
+    // (0 where no data). Used to accumulate cumulative actuals-before-G.
+    const actualsBySlot: Float64Array[] = baseActive.map((p) => {
+      const arr = new Float64Array(NUM_AVAIL_SLOTS);
+      const perSlot = teamActuals[p.nba_id];
+      if (perSlot) {
+        for (const [slotStr, mins] of Object.entries(perSlot)) {
+          const slot = Number(slotStr);
+          if (Number.isInteger(slot) && slot >= 0 && slot < NUM_AVAIL_SLOTS && mins > 0) {
+            arr[slot] = mins;
+          }
+        }
+      }
+      return arr;
+    });
+
+    // Injured within active: any avail<1 → will sit in some fraction of sims.
+    const injuredIdxInActive: number[] = [];
+    for (let i = 0; i < baseActive.length; i++) {
+      const injury = injuriesByName.get(baseActive[i].name);
+      if (injury && injury.availability.some((a) => a < 1)) {
+        injuredIdxInActive.push(i);
+      }
     }
-    const dist: TeamPointDistribution = {
-      count,
-      playerIdx: Int32Array.from(idx),
-      alphas,
-    };
-    teamDistByKey.set(teamKey, dist);
-    if (count > maxTeamCount) maxTeamCount = count;
+    // Keep 2^k bounded.
+    if (injuredIdxInActive.length > 16) injuredIdxInActive.length = 16;
+    const k = injuredIdxInActive.length;
+
+    // Hoisted availability vectors (length 30 each).
+    const injuredAvailability: number[][] = injuredIdxInActive.map((i) => {
+      const entry = injuriesByName.get(baseActive[i].name);
+      return entry ? entry.availability.slice() : [];
+    });
+
+    const maskCount = 1 << k;
+    const entries: TeamMaskEntry[] = new Array(NUM_AVAIL_SLOTS * maskCount);
+    for (let availIdx = 0; availIdx < NUM_AVAIL_SLOTS; availIdx++) {
+      // Per-player blended base minutes at this slot. alpha = min(1, gp/5);
+      // blended = alpha * actual_mpg + (1-alpha) * pre_proj. Only slots <G
+      // contribute so we never leak game G's own actuals.
+      const blendedMins = new Float64Array(baseActive.length);
+      for (let bi = 0; bi < baseActive.length; bi++) {
+        const pre = pm[baseActive[bi].nba_id] ?? 0;
+        let gp = 0;
+        let total = 0;
+        const slots = actualsBySlot[bi];
+        for (let prev = 0; prev < availIdx; prev++) {
+          const m = slots[prev];
+          if (m > 0) {
+            gp++;
+            total += m;
+          }
+        }
+        if (gp > 0) {
+          const actualMpg = total / gp;
+          const alpha = Math.min(1, gp / ACTUAL_BLEND_CAP_GAMES);
+          blendedMins[bi] = alpha * actualMpg + (1 - alpha) * pre;
+        } else {
+          blendedMins[bi] = pre;
+        }
+      }
+
+      for (let mask = 0; mask < maskCount; mask++) {
+        // Determine sitting set for this mask.
+        const sitting = new Array<boolean>(baseActive.length).fill(false);
+        for (let bit = 0; bit < k; bit++) {
+          if ((mask >> bit) & 1) sitting[injuredIdxInActive[bit]] = true;
+        }
+
+        // Split active into override / base slots.
+        const overrides: { pi: number; mins: number }[] = [];
+        const baseMinsRaw: { pi: number; mins: number }[] = [];
+        let overriddenTotal = 0;
+        for (let i = 0; i < baseActive.length; i++) {
+          if (sitting[i]) continue;
+          const p = baseActive[i];
+          const pi = playerIndex.get(p.espn_id);
+          if (pi == null) continue;
+          const adj = adjustmentsById.get(p.espn_id);
+          if (adj?.minutes_override != null) {
+            const o = adj.minutes_override;
+            if (o > 0) {
+              overrides.push({ pi, mins: o });
+              overriddenTotal += o;
+            }
+            continue;
+          }
+          const base = blendedMins[i];
+          if (base > 0) baseMinsRaw.push({ pi, mins: base });
+        }
+
+        const targetForBase = Math.max(0, 240 - overriddenTotal);
+        const redistributed = sqrtRedistribute(baseMinsRaw.map((e) => e.mins), targetForBase);
+
+        const idxList: number[] = [];
+        const alphaList: number[] = [];
+        let alphaTotal = 0;
+        let rating = 0;
+
+        // Overrides use fixed minutes.
+        for (const { pi, mins } of overrides) {
+          const p = simPlayers[pi];
+          const adj = adjustmentsById.get(p.espn_id);
+          const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
+          rating += (lebron * mins) / 48;
+          const ptsPerMin = p.mpg > 0 ? p.ppg / p.mpg : 1;
+          const w = ptsPerMin * mins;
+          if (w > 0) {
+            idxList.push(pi);
+            alphaList.push(w);
+            alphaTotal += w;
+          }
+        }
+        // Redistributed baseline mins.
+        for (let i = 0; i < baseMinsRaw.length; i++) {
+          const mins = redistributed[i];
+          if (mins <= 0) continue;
+          const p = simPlayers[baseMinsRaw[i].pi];
+          const adj = adjustmentsById.get(p.espn_id);
+          const lebron = p.lebron + (adj?.o_lebron_delta ?? 0) + (adj?.d_lebron_delta ?? 0);
+          rating += (lebron * mins) / 48;
+          const ptsPerMin = p.mpg > 0 ? p.ppg / p.mpg : 1;
+          const w = ptsPerMin * mins;
+          if (w > 0) {
+            idxList.push(baseMinsRaw[i].pi);
+            alphaList.push(w);
+            alphaTotal += w;
+          }
+        }
+
+        // Normalize to Dirichlet concentration.
+        if (alphaTotal > 0) {
+          for (let i = 0; i < alphaList.length; i++) {
+            alphaList[i] = (alphaList[i] / alphaTotal) * CONCENTRATION;
+          }
+        }
+        if (idxList.length === 0) rating = -10;
+
+        const count = idxList.length;
+        if (count > maxTeamCount) maxTeamCount = count;
+        entries[availIdx * maskCount + mask] = {
+          rating,
+          dist: {
+            count,
+            playerIdx: Int32Array.from(idxList),
+            alphas: Float64Array.from(alphaList),
+          },
+        };
+      }
+    }
+
+    teamPrecomputed.set(teamKey, { injuredAvailability, entries, maskCount });
   }
-  // Mirror the distribution map across team aliases so hot-path lookups never
-  // need to run `resolveTeam`. Both directions of each alias point to the
-  // same underlying distribution object.
+  // Mirror across aliases so hot-path lookups never resolveTeam.
   for (const [seedAbbr, csvAbbr] of Object.entries(aliases)) {
-    const d = teamDistByKey.get(seedAbbr) ?? teamDistByKey.get(csvAbbr);
+    const d = teamPrecomputed.get(seedAbbr) ?? teamPrecomputed.get(csvAbbr);
     if (d) {
-      teamDistByKey.set(seedAbbr, d);
-      teamDistByKey.set(csvAbbr, d);
+      teamPrecomputed.set(seedAbbr, d);
+      teamPrecomputed.set(csvAbbr, d);
     }
   }
 
@@ -516,16 +673,11 @@ export async function runTournamentSim(
   const ctx: SimContext = {
     config,
     netRatings,
-    rostersByTeam,
-    playoffMinutes,
-    adjustmentsById,
-    injuriesByName,
-    playerLookup,
     seriesPattern: bracket.seriesPattern,
     aliases,
     aliasesRev,
     liveByKey: buildLiveGameMap(data.liveGames),
-    teamDistByKey,
+    teamPrecomputed,
     playerIndex,
     numPlayers,
     scratchShares: new Float64Array(maxTeamCount),
@@ -774,7 +926,8 @@ export async function runTournamentSim(
   ];
 
   const teams: TeamSimResult[] = allTeamAbbrs.map((team) => {
-    const result = getTeamRating(team, netRatings, rostersByTeam, playoffMinutes, adjustmentsById, injuriesByName, config, rng, 0, aliases, aliasesRev);
+    const state = sampleTeamState(ctx, team, rng, 0);
+    const rating = resolveRating(ctx, team, state);
     const eastSeed = bracket.eastSeeds.find(([, t]) => t === team);
     const westSeed = bracket.westSeeds.find(([, t]) => t === team);
     const seed = eastSeed?.[0] ?? westSeed?.[0] ?? null;
@@ -793,7 +946,7 @@ export async function runTournamentSim(
       fullName: bracket.teamFullNames[team] ?? team,
       seed,
       conference,
-      rating: result.rating,
+      rating,
       r1: ((r1Counts[team] ?? 0) / n) * 100,
       r2: ((r2Counts[team] ?? 0) / n) * 100,
       cf: ((cfCounts[team] ?? 0) / n) * 100,

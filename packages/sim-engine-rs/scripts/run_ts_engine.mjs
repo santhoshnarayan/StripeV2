@@ -21,6 +21,7 @@ const mainRepoRoot = resolve(worktreeRoot, "..", "..", "..");
 // Resolve tsx — first try worktree node_modules, then several main-repo paths.
 const tsxCandidates = [
   resolve(worktreeRoot, "node_modules/.bin/tsx"),
+  resolve(worktreeRoot, "apps/server/node_modules/.bin/tsx"),
   resolve(mainRepoRoot, "node_modules/.bin/tsx"),
   resolve(mainRepoRoot, "node_modules/.pnpm/node_modules/.bin/tsx"),
   resolve(mainRepoRoot, "apps/server/node_modules/.bin/tsx"),

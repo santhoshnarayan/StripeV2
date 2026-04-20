@@ -14,7 +14,7 @@ use std::process::Command;
 
 use sim_engine_rs::{prepare, run_tournament_sim, Model, SimConfig, SimData};
 
-const SIMS: usize = 2_000;
+const SIMS: usize = 5_000;
 const TEAM_PCT_TOL: f64 = 2.5;
 const PLAYER_MEAN_TOL: f64 = 3.5;
 

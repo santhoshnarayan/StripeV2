@@ -209,6 +209,14 @@ pub struct SimData {
     pub injuries: HashMap<String, serde_json::Value>,
     #[serde(rename = "liveGames", default)]
     pub live_games: Vec<LiveGameState>,
+    /// Per-game actual minutes from completed playoff games.
+    /// Shape: team → nba_id → availIdx (stringified) → minutes. availIdx uses
+    /// the 30-slot layout [P1, P2, R1G1..R1G7, R2G1..R2G7, CFG1..CFG7, FG1..FG7].
+    /// Engine aggregates cumulatively at prepare time: when simulating at
+    /// avail_idx G, actuals from slots < G fold into the per-player minutes
+    /// blend (weighted by gp/5). Missing → no actuals.
+    #[serde(rename = "actualsByGame", default)]
+    pub actuals_by_game: HashMap<String, HashMap<String, HashMap<String, f64>>>,
 }
 
 // ─── Output ─────────────────────────────────────────────────────────────────
@@ -288,6 +296,36 @@ pub struct TeamPointDistribution {
     pub alphas: Vec<f64>,
 }
 
+/// Precomputed rating + point-share distribution for a specific active set
+/// (i.e. a single `mask` value within a team). Built once in `prepare()` and
+/// read-only during the hot sim loop.
+#[derive(Clone)]
+pub struct TeamMaskEntry {
+    pub rating: f64,
+    pub dist: TeamPointDistribution,
+}
+
+/// Per-team precomputed bundle: for every (availIdx, mask) pair we cache the
+/// resolved rating + Dirichlet distribution. Length of `entries` is
+/// `NUM_AVAIL_SLOTS * mask_count` with the stride-major layout
+/// `entries[avail_idx * mask_count + mask]`. Per-game (not just per-team)
+/// because minute blending is game-specific: at slot G we fold in cumulative
+/// actuals from slots < G, so sim(G) never sees its own actuals.
+#[derive(Clone)]
+pub struct TeamPrecomputed {
+    /// Global player indices for the "injured" subset — matches the bit order
+    /// of `mask` (bit i = injured[i] is sitting this game).
+    pub injured_player_idx: Vec<usize>,
+    /// Per-injured-player availability vector (length 30 — same indexing as
+    /// InjuryEntry). Hoisted so the hot loop doesn't touch HashMaps.
+    pub injured_availability: Vec<Vec<f64>>,
+    /// Length `NUM_AVAIL_SLOTS * mask_count`. Indexed by
+    /// `avail_idx * mask_count + mask`.
+    pub entries: Vec<TeamMaskEntry>,
+    /// 1 << k. Stride used to index `entries` by avail_idx.
+    pub mask_count: usize,
+}
+
 /// Static, immutable precomputed inputs that every sim/thread shares.
 pub struct PreparedSim {
     pub config: SimConfig,
@@ -303,7 +341,10 @@ pub struct PreparedSim {
     pub aliases: HashMap<String, String>,
     pub aliases_rev: HashMap<String, String>,
     pub live_by_key: HashMap<String, Vec<LiveGameState>>,
-    pub team_dist_by_key: HashMap<String, TeamPointDistribution>,
+    /// Per-team mask-indexed distributions — replaces the old flat
+    /// `team_dist_by_key`. Keyed by every known alias so hot-path lookups
+    /// never need to resolve.
+    pub team_precomputed: HashMap<String, TeamPrecomputed>,
     pub max_team_count: usize,
     pub team_names: Vec<String>,
     pub team_index: HashMap<String, u16>,
@@ -314,8 +355,65 @@ const NUM_ROUNDS: usize = 4;
 /// Per-(round,gameNum) accumulator dimension. Index = round * 7 + game_num
 /// where game_num ∈ 0..7 (NBA series caps at 7 games).
 const NUM_GAME_SLOTS: usize = NUM_ROUNDS * 7;
+/// availIdx slots: 2 play-in + 4 rounds × 7 games = 30. Mirrors the shape
+/// of `InjuryEntry.availability` arrays.
+const NUM_AVAIL_SLOTS: usize = 30;
+/// Alpha blend caps when a player has 5+ completed games of actuals.
+const ACTUAL_BLEND_CAP_GAMES: f64 = 5.0;
 const CONCENTRATION: f64 = 20.0;
 const TOTAL_PTS: f64 = 220.0;
+/// Physical cap — a player cannot play more than the game's regulation length.
+const MAX_PLAYER_MINUTES: f64 = 48.0;
+
+/// Fill `base_mins` up to `target` using sqrt(base) weights (concave — stars
+/// absorb proportionally less of the deficit than rotation players). Caps
+/// each slot at 48 min and iteratively re-routes overflow to uncapped slots.
+/// Returns the redistributed vector. If current total ≥ target, pro-rata
+/// scales down.
+fn sqrt_redistribute(base_mins: &[f64], target: f64) -> Vec<f64> {
+    let n = base_mins.len();
+    let total: f64 = base_mins.iter().sum();
+    if n == 0 || total <= 0.0 || target <= 0.0 {
+        return vec![0.0; n];
+    }
+    if total >= target {
+        let scale = target / total;
+        return base_mins.iter().map(|m| m * scale).collect();
+    }
+    let weights: Vec<f64> = base_mins.iter().map(|m| m.sqrt()).collect();
+    let mut out = base_mins.to_vec();
+    let mut capped = vec![false; n];
+    for _ in 0..=n {
+        let cur_total: f64 = out.iter().sum();
+        let deficit = target - cur_total;
+        if deficit <= 1e-9 {
+            break;
+        }
+        let sum_w: f64 = (0..n).filter(|&i| !capped[i]).map(|i| weights[i]).sum();
+        if sum_w <= 1e-9 {
+            break;
+        }
+        let mut newly_capped = false;
+        for i in 0..n {
+            if capped[i] {
+                continue;
+            }
+            let add = deficit * weights[i] / sum_w;
+            let candidate = out[i] + add;
+            if candidate > MAX_PLAYER_MINUTES {
+                out[i] = MAX_PLAYER_MINUTES;
+                capped[i] = true;
+                newly_capped = true;
+            } else {
+                out[i] = candidate;
+            }
+        }
+        if !newly_capped {
+            break;
+        }
+    }
+    out
+}
 
 fn build_alias_rev(aliases: &HashMap<String, String>) -> HashMap<String, String> {
     let mut rev = HashMap::with_capacity(aliases.len());
@@ -420,61 +518,255 @@ pub fn prepare(data: SimData, config: SimConfig) -> PreparedSim {
         }
     }
 
-    // Per-team Dirichlet distributions (point-share weights)
-    let mut team_dist_by_key: HashMap<String, TeamPointDistribution> = HashMap::new();
+    // Per-team precomputed mask entries. For each team we:
+    //   1. Identify the "base active" players (mpg>0 with playoff minutes or override).
+    //   2. Within those, find the injured subset (players with an InjuryEntry
+    //      that has any avail<1). Cap at 16 for the mask-space bound — teams
+    //      with more simultaneous injuries collapse the tail to always-out.
+    //   3. Enumerate 2^k masks *per avail_idx*; for each slot G fold in the
+    //      cumulative actual minutes from slots < G (no leakage of game G's
+    //      own data), blend with pre-projection via alpha = min(1, gp/5),
+    //      then resolve rating + Dirichlet alphas.
+    let mut team_precomputed: HashMap<String, TeamPrecomputed> = HashMap::new();
     let mut max_team_count: usize = 1;
+    let empty_pm: HashMap<String, f64> = HashMap::new();
+    let empty_actuals: HashMap<String, HashMap<String, f64>> = HashMap::new();
     for (team_key, roster_idxs) in &rosters_by_team {
-        let pm = data.playoff_minutes.get(team_key);
-        let empty: HashMap<String, f64> = HashMap::new();
-        let pm = pm.unwrap_or(&empty);
-        let mut idx: Vec<i32> = Vec::new();
-        let mut w: Vec<f64> = Vec::new();
-        let mut total: f64 = 0.0;
+        let pm = data.playoff_minutes.get(team_key).unwrap_or(&empty_pm);
+        let team_actuals = data
+            .actuals_by_game
+            .get(team_key)
+            .unwrap_or(&empty_actuals);
+
+        // Collect base-active players (matches old calc_lebron_rating filter).
+        let mut base_active: Vec<usize> = Vec::new();
         for &pi in roster_idxs {
             let p = &players[pi];
-            let mins = *pm.get(&p.nba_id).unwrap_or(&0.0);
-            if mins <= 0.0 {
+            if p.mpg <= 0.0 {
                 continue;
             }
-            let pts_per_min = if p.mpg > 0.0 { p.ppg / p.mpg } else { 1.0 };
-            let ww = pts_per_min * mins;
-            idx.push(pi as i32);
-            w.push(ww);
-            total += ww;
+            let adj = adjustments_by_id.get(&p.espn_id);
+            let has_override = adj.and_then(|a| a.minutes_override).is_some();
+            let base_min = *pm.get(&p.nba_id).unwrap_or(&0.0);
+            if base_min <= 0.0 && !has_override {
+                continue;
+            }
+            base_active.push(pi);
         }
-        let count = idx.len();
-        let mut alphas = vec![0.0f64; count];
-        if total > 0.0 {
-            for i in 0..count {
-                alphas[i] = (w[i] / total) * CONCENTRATION;
+
+        // Per-base-active player: flatten actuals into a [NUM_AVAIL_SLOTS]
+        // array of minutes (0.0 where no data). Used to accumulate cumulative
+        // actuals-before-G as we iterate G ∈ 0..NUM_AVAIL_SLOTS.
+        let mut actuals_by_slot: Vec<[f64; NUM_AVAIL_SLOTS]> =
+            vec![[0.0; NUM_AVAIL_SLOTS]; base_active.len()];
+        for (bi, &pi) in base_active.iter().enumerate() {
+            let nba_id = &players[pi].nba_id;
+            if let Some(per_slot) = team_actuals.get(nba_id) {
+                for (slot_str, mins) in per_slot {
+                    if let Ok(slot) = slot_str.parse::<usize>() {
+                        if slot < NUM_AVAIL_SLOTS && *mins > 0.0 {
+                            actuals_by_slot[bi][slot] = *mins;
+                        }
+                    }
+                }
             }
         }
-        team_dist_by_key.insert(
+
+        // Injured = base-active players with at least one avail<1.
+        let mut injured_within_active: Vec<usize> = Vec::new(); // indices into base_active
+        for (bi, &pi) in base_active.iter().enumerate() {
+            let name = &players[pi].name;
+            if let Some(entry) = injuries_by_name.get(name) {
+                if entry.availability.iter().any(|a| *a < 1.0) {
+                    injured_within_active.push(bi);
+                }
+            }
+        }
+        // Hard cap to keep 2^k bounded. 16 = 65k masks per team, still fine
+        // but well past any realistic scenario.
+        if injured_within_active.len() > 16 {
+            injured_within_active.truncate(16);
+        }
+        let k = injured_within_active.len();
+        let mask_count: usize = 1 << k;
+
+        // Snapshot per-injured availability vectors for the hot loop.
+        let injured_availability: Vec<Vec<f64>> = injured_within_active
+            .iter()
+            .map(|&bi| {
+                let name = &players[base_active[bi]].name;
+                injuries_by_name
+                    .get(name)
+                    .map(|e| e.availability.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let injured_player_idx: Vec<usize> = injured_within_active
+            .iter()
+            .map(|&bi| base_active[bi])
+            .collect();
+
+        // Outer loop: one blended base-minutes vector per avail_idx, then
+        // enumerate 2^k masks. `entries` layout is `avail_idx * mask_count + mask`.
+        let mut entries: Vec<TeamMaskEntry> = Vec::with_capacity(NUM_AVAIL_SLOTS * mask_count);
+        for avail_idx in 0..NUM_AVAIL_SLOTS {
+            // Per-player blended minutes at this slot. alpha = min(1, gp/5);
+            // blended = alpha * actual_mpg + (1-alpha) * pre_proj. Only slots
+            // strictly before G contribute — sim(G) must not see its own data.
+            let mut blended_mins: Vec<f64> = Vec::with_capacity(base_active.len());
+            for (bi, &pi) in base_active.iter().enumerate() {
+                let nba_id = &players[pi].nba_id;
+                let pre = *pm.get(nba_id).unwrap_or(&0.0);
+                let mut gp = 0.0f64;
+                let mut total = 0.0f64;
+                for prev in 0..avail_idx {
+                    let m = actuals_by_slot[bi][prev];
+                    if m > 0.0 {
+                        gp += 1.0;
+                        total += m;
+                    }
+                }
+                let blended = if gp > 0.0 {
+                    let actual_mpg = total / gp;
+                    let alpha = (gp / ACTUAL_BLEND_CAP_GAMES).min(1.0);
+                    alpha * actual_mpg + (1.0 - alpha) * pre
+                } else {
+                    pre
+                };
+                blended_mins.push(blended);
+            }
+
+            for mask in 0u32..(mask_count as u32) {
+                // Active set for this mask: base_active minus any player whose
+                // position in `injured_within_active` has its bit set.
+                let mut sitting = vec![false; base_active.len()];
+                for (bit, &bi) in injured_within_active.iter().enumerate() {
+                    if (mask >> bit) & 1 == 1 {
+                        sitting[bi] = true;
+                    }
+                }
+
+                // Split active into (override, base) and sum.
+                let mut overrides: Vec<(usize, f64)> = Vec::new();
+                let mut base_mins_raw: Vec<(usize, f64)> = Vec::new();
+                let mut overridden_total = 0.0f64;
+                for (bi, &pi) in base_active.iter().enumerate() {
+                    if sitting[bi] {
+                        continue;
+                    }
+                    let p = &players[pi];
+                    let adj = adjustments_by_id.get(&p.espn_id);
+                    if let Some(o) = adj.and_then(|a| a.minutes_override) {
+                        if o > 0.0 {
+                            overrides.push((pi, o));
+                            overridden_total += o;
+                        }
+                        continue;
+                    }
+                    let base = blended_mins[bi];
+                    if base > 0.0 {
+                        base_mins_raw.push((pi, base));
+                    }
+                }
+
+                let target_for_base = (240.0 - overridden_total).max(0.0);
+                // Apply sqrt-weighted redistribution to the non-override pool so
+                // the active pool reaches `target_for_base`. 48-min physical cap.
+                let base_vals: Vec<f64> = base_mins_raw.iter().map(|&(_, m)| m).collect();
+                let redistributed = sqrt_redistribute(&base_vals, target_for_base);
+
+                // Build final (pi, mins) pairs + compute rating + Dirichlet alphas.
+                let mut pi_list: Vec<i32> = Vec::new();
+                let mut alpha_list: Vec<f64> = Vec::new();
+                let mut alpha_weight_total = 0.0f64;
+                let mut rating = 0.0f64;
+                // Overrides are fixed minutes.
+                for &(pi, mins) in &overrides {
+                    let p = &players[pi];
+                    let adj = adjustments_by_id.get(&p.espn_id);
+                    let lebron = p.lebron
+                        + adj.map(|a| a.o_lebron_delta).unwrap_or(0.0)
+                        + adj.map(|a| a.d_lebron_delta).unwrap_or(0.0);
+                    rating += (lebron * mins) / 48.0;
+                    let pts_per_min = if p.mpg > 0.0 { p.ppg / p.mpg } else { 1.0 };
+                    let w = pts_per_min * mins;
+                    if w > 0.0 {
+                        pi_list.push(pi as i32);
+                        alpha_list.push(w);
+                        alpha_weight_total += w;
+                    }
+                }
+                // Redistributed baseline mins.
+                for (i, &(pi, _)) in base_mins_raw.iter().enumerate() {
+                    let mins = redistributed[i];
+                    if mins <= 0.0 {
+                        continue;
+                    }
+                    let p = &players[pi];
+                    let adj = adjustments_by_id.get(&p.espn_id);
+                    let lebron = p.lebron
+                        + adj.map(|a| a.o_lebron_delta).unwrap_or(0.0)
+                        + adj.map(|a| a.d_lebron_delta).unwrap_or(0.0);
+                    rating += (lebron * mins) / 48.0;
+                    let pts_per_min = if p.mpg > 0.0 { p.ppg / p.mpg } else { 1.0 };
+                    let w = pts_per_min * mins;
+                    if w > 0.0 {
+                        pi_list.push(pi as i32);
+                        alpha_list.push(w);
+                        alpha_weight_total += w;
+                    }
+                }
+
+                // Normalize alphas to Dirichlet concentration.
+                if alpha_weight_total > 0.0 {
+                    for a in &mut alpha_list {
+                        *a = (*a / alpha_weight_total) * CONCENTRATION;
+                    }
+                }
+                // Empty active set fallback (every player injured out): leave
+                // rating at -10.0 like the old path.
+                if pi_list.is_empty() {
+                    rating = -10.0;
+                }
+
+                let count = pi_list.len();
+                if count > max_team_count {
+                    max_team_count = count;
+                }
+                entries.push(TeamMaskEntry {
+                    rating,
+                    dist: TeamPointDistribution {
+                        count,
+                        player_idx: pi_list,
+                        alphas: alpha_list,
+                    },
+                });
+            }
+        }
+
+        team_precomputed.insert(
             team_key.clone(),
-            TeamPointDistribution {
-                count,
-                player_idx: idx,
-                alphas,
+            TeamPrecomputed {
+                injured_player_idx,
+                injured_availability,
+                entries,
+                mask_count,
             },
         );
-        if count > max_team_count {
-            max_team_count = count;
-        }
     }
-    // Mirror the distribution map across team aliases so hot-path lookups
-    // never need to resolve aliases.
+    // Mirror across aliases so hot-path lookups never need to resolve.
     let alias_pairs: Vec<(String, String)> = aliases
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     for (seed_abbr, csv_abbr) in alias_pairs {
-        let d = team_dist_by_key
+        let d = team_precomputed
             .get(&seed_abbr)
-            .or_else(|| team_dist_by_key.get(&csv_abbr))
+            .or_else(|| team_precomputed.get(&csv_abbr))
             .cloned();
         if let Some(d) = d {
-            team_dist_by_key.insert(seed_abbr, d.clone());
-            team_dist_by_key.insert(csv_abbr, d);
+            team_precomputed.insert(seed_abbr, d.clone());
+            team_precomputed.insert(csv_abbr, d);
         }
     }
 
@@ -538,7 +830,7 @@ pub fn prepare(data: SimData, config: SimConfig) -> PreparedSim {
         aliases,
         aliases_rev,
         live_by_key,
-        team_dist_by_key,
+        team_precomputed,
         max_team_count,
         team_names,
         team_index,
@@ -575,6 +867,10 @@ impl SimScratch {
 
 // ─── Game / series simulation ───────────────────────────────────────────────
 
+/// NBA overtime is 5 minutes vs. 48 of regulation, so OT points + variance
+/// scale by this fraction. Applied per OT period in the tie-break loop.
+const OT_FRAC: f64 = 5.0 / 48.0;
+
 #[inline]
 fn simulate_game(
     home_rating: f64,
@@ -585,178 +881,74 @@ fn simulate_game(
 ) -> (bool, i32, i32) {
     let spread = home_rating - away_rating + hca;
     let margin = rng.normal(spread, stdev);
-    let home = ((TOTAL_PTS + margin) / 2.0).round() as i32;
-    let away = ((TOTAL_PTS - margin) / 2.0).round() as i32;
-    (margin > 0.0, home, away)
+    let mut home = ((TOTAL_PTS + margin) / 2.0).round() as i32;
+    let mut away = ((TOTAL_PTS - margin) / 2.0).round() as i32;
+    // Pre-bias removes HCA so OT is played on neutral spread; HCA only drives regulation.
+    let ot_spread = home_rating - away_rating;
+    let ot_stdev = stdev * OT_FRAC.sqrt();
+    let ot_pot = TOTAL_PTS * OT_FRAC;
+    while home == away {
+        let m = rng.normal(ot_spread * OT_FRAC, ot_stdev);
+        home += ((ot_pot + m) / 2.0).round() as i32;
+        away += ((ot_pot - m) / 2.0).round() as i32;
+    }
+    (home > away, home, away)
 }
 
-fn calc_lebron_rating(
-    sim: &PreparedSim,
-    roster: &[usize],
-    pm: Option<&HashMap<String, f64>>,
+/// Sample the active-mask for a team/game and return the precomputed entry.
+/// O(k) where k = injured-player count (typically 0–3). Rng advances once
+/// per injured player, so sim determinism is preserved.
+#[inline]
+fn sample_team_state<'a>(
+    sim: &'a PreparedSim,
+    team: &str,
     rng: &mut Rng,
-    game_num: usize,
-) -> f64 {
-    // Filter to active players for this game.
-    let mut active: Vec<usize> = Vec::with_capacity(roster.len());
-    for &pi in roster {
-        let p = &sim.players[pi];
-        if p.mpg <= 0.0 {
+    avail_idx: usize,
+) -> Option<&'a TeamMaskEntry> {
+    let pre = sim.team_precomputed.get(team)?;
+    let mut mask: u32 = 0;
+    for (bit, avail) in pre.injured_availability.iter().enumerate() {
+        if avail.is_empty() {
             continue;
         }
-        if let Some(injury) = sim.injuries_by_name.get(&p.name) {
-            let avail = if injury.availability.is_empty() {
-                1.0
-            } else {
-                let i = game_num.min(injury.availability.len() - 1);
-                injury.availability[i]
-            };
-            if rng.random() >= avail {
-                continue;
-            }
+        let i = avail_idx.min(avail.len() - 1);
+        if rng.random() >= avail[i] {
+            mask |= 1 << bit;
         }
-        active.push(pi);
     }
-    if active.is_empty() {
-        return -10.0;
-    }
-
-    if let Some(pm) = pm {
-        // Collect base minutes and overrides.
-        let mut base_total = 0.0f64;
-        let mut overridden_total = 0.0f64;
-        let mut base_mins: Vec<(usize, f64)> = Vec::with_capacity(active.len());
-        let mut overrides: Vec<(usize, f64)> = Vec::new();
-
-        for &pi in &active {
-            let p = &sim.players[pi];
-            let adj = sim.adjustments_by_id.get(&p.espn_id);
-            let base = *pm.get(&p.nba_id).unwrap_or(&0.0);
-            let override_min = adj.and_then(|a| a.minutes_override);
-            if base <= 0.0 && override_min.is_none() {
-                continue;
-            }
-            if let Some(o) = override_min {
-                overrides.push((pi, o));
-                overridden_total += o;
-            } else {
-                base_mins.push((pi, base));
-                base_total += base;
-            }
-        }
-
-        let remaining = (240.0 - overridden_total).max(0.0);
-        let scale = if base_total > 0.0 {
-            remaining / base_total
-        } else {
-            0.0
-        };
-
-        let mut rating = 0.0f64;
-        for (pi, mins) in &overrides {
-            let p = &sim.players[*pi];
-            let adj = sim.adjustments_by_id.get(&p.espn_id);
-            let lebron = p.lebron
-                + adj.map(|a| a.o_lebron_delta).unwrap_or(0.0)
-                + adj.map(|a| a.d_lebron_delta).unwrap_or(0.0);
-            if *mins > 0.0 {
-                rating += (lebron * mins) / 48.0;
-            }
-        }
-        for (pi, base) in &base_mins {
-            let p = &sim.players[*pi];
-            let adj = sim.adjustments_by_id.get(&p.espn_id);
-            let mins = base * scale;
-            if mins <= 0.0 {
-                continue;
-            }
-            let lebron = p.lebron
-                + adj.map(|a| a.o_lebron_delta).unwrap_or(0.0)
-                + adj.map(|a| a.d_lebron_delta).unwrap_or(0.0);
-            rating += (lebron * mins) / 48.0;
-        }
-        return rating;
-    }
-
-    // Fallback path: top-5 by MPG, rest share remainder.
-    let mut ranked: Vec<usize> = active.clone();
-    ranked.sort_by(|&a, &b| {
-        sim.players[b]
-            .mpg
-            .partial_cmp(&sim.players[a].mpg)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let top5_n = ranked.len().min(5);
-    let top5 = &ranked[..top5_n];
-    let rest = &ranked[top5_n..];
-    let top5_mins: f64 = top5.iter().map(|&i| sim.players[i].mpg).sum();
-    let remaining_mins = (240.0 - top5_mins).max(0.0);
-    let rest_total: f64 = rest.iter().map(|&i| sim.players[i].mpg).sum();
-    let mut rating = 0.0f64;
-    for &pi in top5 {
-        let p = &sim.players[pi];
-        let adj = sim.adjustments_by_id.get(&p.espn_id);
-        let mins = adj.and_then(|a| a.minutes_override).unwrap_or(p.mpg);
-        let lebron = p.lebron
-            + adj.map(|a| a.o_lebron_delta).unwrap_or(0.0)
-            + adj.map(|a| a.d_lebron_delta).unwrap_or(0.0);
-        rating += (lebron * mins) / 48.0;
-    }
-    for &pi in rest {
-        let p = &sim.players[pi];
-        let adj = sim.adjustments_by_id.get(&p.espn_id);
-        let mins = adj
-            .and_then(|a| a.minutes_override)
-            .unwrap_or(if rest_total > 0.0 {
-                p.mpg * (remaining_mins / rest_total)
-            } else {
-                0.0
-            });
-        let lebron = p.lebron
-            + adj.map(|a| a.o_lebron_delta).unwrap_or(0.0)
-            + adj.map(|a| a.d_lebron_delta).unwrap_or(0.0);
-        rating += (lebron * mins) / 48.0;
-    }
-    rating
+    let slot = avail_idx.min(NUM_AVAIL_SLOTS - 1);
+    pre.entries
+        .get(slot * pre.mask_count + mask as usize)
 }
 
-fn get_team_rating(sim: &PreparedSim, team: &str, rng: &mut Rng, game_num: usize) -> f64 {
+/// Combine the precomputed LEBRON-style rating with the configured model
+/// (netrtg / lebron / blend). Net rating lookups are mask-independent.
+#[inline]
+fn resolve_rating(sim: &PreparedSim, team: &str, state: Option<&TeamMaskEntry>) -> f64 {
     let net_key = resolve_team(team, &sim.net_ratings, &sim.aliases, &sim.aliases_rev);
     let nr_rating = *sim.net_ratings.get(&net_key).unwrap_or(&0.0);
-
-    if matches!(sim.config.model, Model::Netrtg) {
-        return nr_rating;
+    match sim.config.model {
+        Model::Netrtg => nr_rating,
+        Model::Lebron => state.map(|s| s.rating).unwrap_or(-10.0),
+        Model::Blend => {
+            let lebron = state.map(|s| s.rating).unwrap_or(-10.0);
+            sim.config.blend_weight * lebron + (1.0 - sim.config.blend_weight) * nr_rating
+        }
     }
-
-    let roster_key = resolve_team(team, &sim.rosters_by_team, &sim.aliases, &sim.aliases_rev);
-    let empty: Vec<usize> = Vec::new();
-    let roster = sim.rosters_by_team.get(&roster_key).unwrap_or(&empty);
-    let pm = sim
-        .playoff_minutes
-        .get(team)
-        .or_else(|| sim.playoff_minutes.get(&roster_key));
-    let lebron = calc_lebron_rating(sim, roster, pm, rng, game_num);
-
-    if matches!(sim.config.model, Model::Lebron) {
-        return lebron;
-    }
-    sim.config.blend_weight * lebron + (1.0 - sim.config.blend_weight) * nr_rating
 }
 
 #[inline]
-fn track_team(
-    sim: &PreparedSim,
+fn track_team_with_dist(
+    dist: &TeamPointDistribution,
     scratch: &mut SimScratch,
     rng: &mut Rng,
-    team: &str,
     score: i32,
     round_idx: usize,
     game_num: usize,
 ) {
-    let dist = match sim.team_dist_by_key.get(team) {
-        Some(d) if d.count > 0 => d,
-        _ => return,
-    };
+    if dist.count == 0 {
+        return;
+    }
     let count = dist.count;
     rng.dirichlet_into(&dist.alphas[..count], &mut scratch.scratch_shares[..count]);
     let s = score as f64;
@@ -779,9 +971,6 @@ fn simulate_series(
     game_offset: usize,
     series_key: &str,
 ) -> String {
-    let h_rating = get_team_rating(sim, higher, rng, game_offset);
-    let l_rating = get_team_rating(sim, lower, rng, game_offset);
-
     let mut h_wins = 0;
     let mut l_wins = 0;
 
@@ -791,6 +980,13 @@ fn simulate_series(
         if h_wins == 4 || l_wins == 4 {
             break;
         }
+        // Availability indexing mirrors the original `game_offset + gameNum`
+        // scheme (P1/P2/R1G1..R1G7/R2G1..R2G7/CFG1..CFG7/FG1..FG7 = 0..29).
+        let avail_idx = game_offset + game_num;
+        let h_state = sample_team_state(sim, higher, rng, avail_idx);
+        let l_state = sample_team_state(sim, lower, rng, avail_idx);
+        let h_rating = resolve_rating(sim, higher, h_state);
+        let l_rating = resolve_rating(sim, lower, l_state);
 
         let live =
             live_games.and_then(|games| games.iter().find(|g| g.game_num as usize == game_num + 1));
@@ -843,13 +1039,32 @@ fn simulate_series(
                 let spread = (h_rating - l_rating) * frac;
                 let margin = rng.normal(spread, scaled_std);
                 let remaining_total = TOTAL_PTS * frac;
-                let rem_h = ((remaining_total + margin) / 2.0).round().max(0.0) as i32;
-                let rem_l = ((remaining_total - margin) / 2.0).round().max(0.0) as i32;
-                track_team(sim, scratch, rng, higher, rem_h, round_idx, game_num);
-                track_team(sim, scratch, rng, lower, rem_l, round_idx, game_num);
-                let final_h = higher_actual + rem_h;
-                let final_l = lower_actual + rem_l;
-                if final_h >= final_l {
+                let mut rem_h = ((remaining_total + margin) / 2.0).round().max(0.0) as i32;
+                let mut rem_l = ((remaining_total - margin) / 2.0).round().max(0.0) as i32;
+                let mut final_h = higher_actual + rem_h;
+                let mut final_l = lower_actual + rem_l;
+                // If the (partial) remainder leaves scores tied at the buzzer,
+                // simulate 5-min OT periods until someone wins — additional
+                // OT points fold into the Dirichlet tracking below.
+                let ot_spread = (h_rating - l_rating) * OT_FRAC;
+                let ot_stdev = sim.config.stdev * OT_FRAC.sqrt();
+                let ot_pot = TOTAL_PTS * OT_FRAC;
+                while final_h == final_l {
+                    let m = rng.normal(ot_spread, ot_stdev);
+                    let dh = ((ot_pot + m) / 2.0).round().max(0.0) as i32;
+                    let dl = ((ot_pot - m) / 2.0).round().max(0.0) as i32;
+                    rem_h += dh;
+                    rem_l += dl;
+                    final_h += dh;
+                    final_l += dl;
+                }
+                if let Some(s) = h_state {
+                    track_team_with_dist(&s.dist, scratch, rng, rem_h, round_idx, game_num);
+                }
+                if let Some(s) = l_state {
+                    track_team_with_dist(&s.dist, scratch, rng, rem_l, round_idx, game_num);
+                }
+                if final_h > final_l {
                     h_wins += 1;
                 } else {
                     l_wins += 1;
@@ -873,12 +1088,16 @@ fn simulate_series(
             l_wins += 1;
         }
 
-        if higher_home {
-            track_team(sim, scratch, rng, higher, home_score, round_idx, game_num);
-            track_team(sim, scratch, rng, lower, away_score, round_idx, game_num);
+        let (higher_score, lower_score) = if higher_home {
+            (home_score, away_score)
         } else {
-            track_team(sim, scratch, rng, lower, home_score, round_idx, game_num);
-            track_team(sim, scratch, rng, higher, away_score, round_idx, game_num);
+            (away_score, home_score)
+        };
+        if let Some(s) = h_state {
+            track_team_with_dist(&s.dist, scratch, rng, higher_score, round_idx, game_num);
+        }
+        if let Some(s) = l_state {
+            track_team_with_dist(&s.dist, scratch, rng, lower_score, round_idx, game_num);
         }
     }
 
@@ -896,8 +1115,10 @@ fn simulate_play_in_game(
     rng: &mut Rng,
     game_num: usize,
 ) -> (String, String) {
-    let h_rating = get_team_rating(sim, higher, rng, game_num);
-    let l_rating = get_team_rating(sim, lower, rng, game_num);
+    let h_state = sample_team_state(sim, higher, rng, game_num);
+    let l_state = sample_team_state(sim, lower, rng, game_num);
+    let h_rating = resolve_rating(sim, higher, h_state);
+    let l_rating = resolve_rating(sim, lower, l_state);
     let (home_wins, _, _) =
         simulate_game(h_rating, l_rating, rng, sim.config.hca, sim.config.stdev);
     if home_wins {
@@ -1378,7 +1599,8 @@ pub fn run_tournament_sim(sim: &PreparedSim, parallel: bool) -> SimResults {
     let teams: Vec<TeamSimResult> = all_team_abbrs
         .iter()
         .map(|team| {
-            let rating = get_team_rating(sim, team, &mut tmp_rng, 0);
+            let state = sample_team_state(sim, team, &mut tmp_rng, 0);
+            let rating = resolve_rating(sim, team, state);
             let east_seed = sim
                 .bracket
                 .east_seeds

@@ -80,6 +80,13 @@ export interface SimData {
   adjustments: PlayerAdjustment[];
   injuries: Record<string, InjuryEntry>;
   liveGames?: LiveGameState[];
+  /** Per-game actual minutes from completed playoff games.
+   *  Shape: team → nba_id → availIdx → minutes. availIdx uses the same 0..29
+   *  slot layout as InjuryEntry.availability (P1, P2, R1G1..FG7). The engine
+   *  aggregates these cumulatively at prepare time: when sim'ing a game at
+   *  availIdx G, actuals from all slots < G are folded into the minutes
+   *  distribution (weighted by gp/5). Missing team/player → no actuals. */
+  actualsByGame?: Record<string, Record<string, Record<number, number>>>;
 }
 
 // ─── Simulation configuration ──────────────────────────────────────

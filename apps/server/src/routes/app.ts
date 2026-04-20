@@ -28,6 +28,7 @@ import {
 } from "@repo/db";
 import { auth } from "../auth.js";
 import { decryptBidAmount, encryptBidAmount } from "../lib/bid-crypto.js";
+import { loadActualsByGame } from "../lib/sim/merge-playoff-minutes.js";
 import { streamSSE } from "hono/streaming";
 import {
   getAuction,
@@ -160,6 +161,7 @@ appRouter.get("/sim-data", async (c) => {
         readFile(path.join(dataDir, "nba-adjustments-2026.json"), "utf8"),
         readFile(path.join(dataDir, "nba-injuries-2026.json"), "utf8"),
       ]);
+    const actualsByGame = await loadActualsByGame(dataDir);
     simDataCache = JSON.stringify({
       bracket: JSON.parse(bracket),
       netRatings: JSON.parse(netRatings),
@@ -167,6 +169,7 @@ appRouter.get("/sim-data", async (c) => {
       playoffMinutes: JSON.parse(playoffMinutes),
       adjustments: JSON.parse(adjustments),
       injuries: JSON.parse(injuries),
+      actualsByGame,
     });
   }
   return c.body(simDataCache, 200, {

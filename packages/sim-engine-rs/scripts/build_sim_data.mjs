@@ -17,6 +17,14 @@ const simPlayers = JSON.parse(readFileSync(resolve(dataDir, "nba-players-2026.js
 const playoffMinutes = JSON.parse(readFileSync(resolve(dataDir, "nba-playoff-minutes-2026.json"), "utf8"));
 const adjustments = JSON.parse(readFileSync(resolve(dataDir, "nba-adjustments-2026.json"), "utf8"));
 const injuries = JSON.parse(readFileSync(resolve(dataDir, "nba-injuries-2026.json"), "utf8"));
+let actualsByGame = {};
+try {
+  actualsByGame = JSON.parse(
+    readFileSync(resolve(dataDir, "nba-playoff-minutes-actual-2026.json"), "utf8"),
+  );
+} catch (e) {
+  if (e.code !== "ENOENT") throw e;
+}
 
 // Inject default availability arrays on adjustments — TS treats missing as all 1s.
 for (const a of adjustments) {
@@ -35,6 +43,7 @@ const out = {
   adjustments,
   injuries,
   liveGames: [],
+  actualsByGame,
 };
 
 const target = process.argv[2] ?? resolve(here, "..", "fixtures", "sim-data.json");

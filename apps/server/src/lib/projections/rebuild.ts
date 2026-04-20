@@ -25,6 +25,7 @@ import {
   type RosterInput,
   type SimData,
 } from "@repo/sim";
+import { loadActualsByGame } from "../sim/merge-playoff-minutes.js";
 
 const SIM_COUNT_PER_EVENT = 2_000;
 
@@ -43,6 +44,7 @@ interface StaticSimData {
   playoffMinutes: SimData["playoffMinutes"];
   adjustments: SimData["adjustments"];
   injuries: SimData["injuries"];
+  actualsByGame: NonNullable<SimData["actualsByGame"]>;
 }
 
 let staticSimDataCache: StaticSimData | null = null;
@@ -59,6 +61,7 @@ async function loadStaticSimData(): Promise<StaticSimData> {
       readFile(path.join(dataDir, "nba-adjustments-2026.json"), "utf8"),
       readFile(path.join(dataDir, "nba-injuries-2026.json"), "utf8"),
     ]);
+  const actualsByGame = await loadActualsByGame(dataDir);
   staticSimDataCache = {
     bracket: JSON.parse(bracket),
     netRatings: JSON.parse(netRatings),
@@ -66,6 +69,7 @@ async function loadStaticSimData(): Promise<StaticSimData> {
     playoffMinutes: JSON.parse(playoffMinutes),
     adjustments: JSON.parse(adjustments),
     injuries: JSON.parse(injuries),
+    actualsByGame,
   };
   return staticSimDataCache;
 }
