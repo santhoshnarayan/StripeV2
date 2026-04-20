@@ -319,3 +319,233 @@ adminRouter.get("/logs", async (c) => {
   );
   return c.json({ entries });
 });
+
+// ---------- Infra usage (Vercel / Railway / PlanetScale) ----------
+
+type UsageUnit = {
+  label: string;
+  value: string | number;
+  unit?: string;
+  limit?: number | string;
+  rate?: string;
+};
+
+type UsageResponse =
+  | { configured: false; needsEnv: string[] }
+  | {
+      configured: true;
+      project?: string;
+      units: UsageUnit[];
+      projectedCost?: { amount: number; currency: string; period?: string };
+      notes?: string[];
+      error?: string;
+    };
+
+adminRouter.get("/usage/vercel", async (c) => {
+  const token = process.env.VERCEL_TOKEN;
+  const projectId = process.env.VERCEL_PROJECT_ID;
+  if (!token || !projectId) {
+    const payload: UsageResponse = {
+      configured: false,
+      needsEnv: ["VERCEL_TOKEN", "VERCEL_PROJECT_ID"],
+    };
+    return c.json(payload, 503);
+  }
+
+  const teamParam = process.env.VERCEL_TEAM_ID ? `teamId=${process.env.VERCEL_TEAM_ID}` : "";
+  const projectUrl = `https://api.vercel.com/v9/projects/${projectId}${teamParam ? `?${teamParam}` : ""}`;
+  const deploymentsUrl = `https://api.vercel.com/v6/deployments?projectId=${projectId}&limit=100${teamParam ? `&${teamParam}` : ""}`;
+
+  const [projectRes, deploymentsRes] = await Promise.all([
+    fetch(projectUrl, { headers: { authorization: `Bearer ${token}` } }),
+    fetch(deploymentsUrl, { headers: { authorization: `Bearer ${token}` } }),
+  ]);
+
+  if (!projectRes.ok) {
+    const text = await projectRes.text();
+    const payload: UsageResponse = {
+      configured: true,
+      units: [],
+      error: `Vercel request failed (${projectRes.status}): ${text.slice(0, 200)}`,
+    };
+    return c.json(payload, 502);
+  }
+
+  const project = (await projectRes.json()) as {
+    name: string;
+    framework?: string | null;
+    accountId?: string;
+  };
+
+  const deployments = deploymentsRes.ok
+    ? ((await deploymentsRes.json()) as {
+        deployments?: Array<{
+          created: number;
+          state?: string;
+          readyState?: string;
+          target?: string | null;
+        }>;
+      })
+    : { deployments: [] };
+
+  const now = Date.now();
+  const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+  const recent = (deployments.deployments ?? []).filter((d) => d.created >= thirtyDaysAgo);
+  const prod = recent.filter((d) => d.target === "production").length;
+  const preview = recent.filter((d) => d.target !== "production").length;
+  const errored = recent.filter((d) => d.readyState === "ERROR" || d.state === "ERROR").length;
+
+  const units: UsageUnit[] = [
+    { label: "Deployments (30d)", value: recent.length },
+    { label: "Production", value: prod },
+    { label: "Preview", value: preview },
+    { label: "Errored builds", value: errored },
+    { label: "Framework", value: project.framework ?? "—" },
+  ];
+
+  const payload: UsageResponse = {
+    configured: true,
+    project: project.name,
+    units,
+    notes: [
+      "Bandwidth / function invocations / Fluid Compute hours live under a team-scoped billing endpoint not yet wired up.",
+    ],
+  };
+  return c.json(payload);
+});
+
+adminRouter.get("/usage/railway", async (c) => {
+  const token = process.env.RAILWAY_API_TOKEN;
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  if (!token || !projectId) {
+    const payload: UsageResponse = {
+      configured: false,
+      needsEnv: ["RAILWAY_API_TOKEN", "RAILWAY_PROJECT_ID"],
+    };
+    return c.json(payload, 503);
+  }
+
+  const query = `
+    query Project($id: String!) {
+      project(id: $id) {
+        name
+        services { edges { node { id name } } }
+        environments { edges { node { id name } } }
+      }
+    }
+  `;
+  const res = await fetch(RAILWAY_GRAPHQL, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ query, variables: { id: projectId } }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    const payload: UsageResponse = {
+      configured: true,
+      units: [],
+      error: `Railway request failed (${res.status}): ${text.slice(0, 200)}`,
+    };
+    return c.json(payload, 502);
+  }
+
+  const body = (await res.json()) as {
+    data?: {
+      project?: {
+        name: string;
+        services: { edges: Array<{ node: { id: string; name: string } }> };
+        environments: { edges: Array<{ node: { id: string; name: string } }> };
+      };
+    };
+  };
+  const project = body.data?.project;
+  if (!project) {
+    const payload: UsageResponse = {
+      configured: true,
+      units: [],
+      error: "Railway project not found",
+    };
+    return c.json(payload, 502);
+  }
+
+  const serviceNames = project.services.edges.map((e) => e.node.name);
+  const envNames = project.environments.edges.map((e) => e.node.name);
+
+  const units: UsageUnit[] = [
+    { label: "Services", value: project.services.edges.length },
+    { label: "Environments", value: project.environments.edges.length },
+  ];
+
+  const payload: UsageResponse = {
+    configured: true,
+    project: project.name,
+    units,
+    notes: [
+      `Services: ${serviceNames.join(", ") || "—"}`,
+      `Environments: ${envNames.join(", ") || "—"}`,
+      "vCPU-min / RAM-hr / egress totals require the `usage` GraphQL query scoped to a workspace token — not yet wired.",
+    ],
+  };
+  return c.json(payload);
+});
+
+adminRouter.get("/usage/planetscale", async (c) => {
+  const token = process.env.PLANETSCALE_SERVICE_TOKEN;
+  const tokenId = process.env.PLANETSCALE_SERVICE_TOKEN_ID;
+  const org = process.env.PLANETSCALE_ORG;
+  const database = process.env.PLANETSCALE_MGMT_DATABASE || process.env.PLANETSCALE_DATABASE;
+  if (!token || !tokenId || !org || !database) {
+    const payload: UsageResponse = {
+      configured: false,
+      needsEnv: [
+        "PLANETSCALE_SERVICE_TOKEN",
+        "PLANETSCALE_SERVICE_TOKEN_ID",
+        "PLANETSCALE_ORG",
+        "PLANETSCALE_DATABASE",
+      ],
+    };
+    return c.json(payload, 503);
+  }
+
+  const auth = `${tokenId}:${token}`;
+  const res = await fetch(
+    `https://api.planetscale.com/v1/organizations/${org}/databases/${database}`,
+    { headers: { authorization: auth, accept: "application/json" } },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    const payload: UsageResponse = {
+      configured: true,
+      units: [],
+      error: `PlanetScale request failed (${res.status}): ${text.slice(0, 200)}`,
+    };
+    return c.json(payload, 502);
+  }
+  const db = (await res.json()) as {
+    name: string;
+    plan?: string;
+    region?: { slug?: string };
+    storage?: number;
+  };
+
+  const units: UsageUnit[] = [
+    { label: "Database", value: db.name },
+    { label: "Plan", value: db.plan ?? "—" },
+    { label: "Region", value: db.region?.slug ?? "—" },
+    {
+      label: "Storage",
+      value: db.storage ? (db.storage / 1024 / 1024 / 1024).toFixed(2) : "—",
+      unit: db.storage ? "GB" : undefined,
+    },
+  ];
+  const payload: UsageResponse = {
+    configured: true,
+    project: db.name,
+    units,
+    notes: [
+      "Row reads / writes / connection counts come from `/databases/{db}/usage` — not yet wired up.",
+    ],
+  };
+  return c.json(payload);
+});
