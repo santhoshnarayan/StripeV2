@@ -1275,7 +1275,7 @@ export function WhatIfTab({
           <CardHeader>
             <CardTitle>Teams — Conditional Advancement</CardTitle>
             <CardDescription>
-              % of {surviving.toLocaleString()} surviving sims that win each round.
+              % of {surviving.toLocaleString()} surviving sims that reach each round.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1285,9 +1285,9 @@ export function WhatIfTab({
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Team</th>
                     <th className="px-3 py-2 text-right font-medium">Seed</th>
-                    <th className="px-3 py-2 text-right font-medium">R1%</th>
                     <th className="px-3 py-2 text-right font-medium">R2%</th>
                     <th className="px-3 py-2 text-right font-medium">CF%</th>
+                    <th className="px-3 py-2 text-right font-medium">Finals%</th>
                     <th className="px-3 py-2 text-right font-medium">Champ%</th>
                   </tr>
                 </thead>
