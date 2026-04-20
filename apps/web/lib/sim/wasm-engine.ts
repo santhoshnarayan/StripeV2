@@ -5,7 +5,7 @@
 // resolves to the same `SimResults` shape the TS engine produces — letting
 // useAutoSim treat it as a drop-in replacement for `runTournamentSim`.
 
-import type { SimData, SimResults } from "@repo/sim";
+import { runTournamentSim, type SimConfig, type SimData, type SimResults } from "@repo/sim";
 
 type Pending = {
   resolve: (r: SimResults) => void;
@@ -60,4 +60,26 @@ export function runWasmSim(data: SimData, sims?: number): Promise<SimResults> {
     pending.set(reqId, { resolve, reject });
     w.postMessage({ type: "run", reqId, data, sims });
   });
+}
+
+/** Runs a tournament sim using the WASM engine when available, falling back to
+ *  the TS engine if the worker is unavailable or fails. Progress callbacks only
+ *  fire on the TS path; for WASM we emit a synthetic 0 and 1 so UIs that drive
+ *  spinners off progress still transition cleanly. */
+export async function runSimAuto(
+  data: SimData,
+  config: SimConfig,
+  onProgress?: (p: number) => void,
+): Promise<SimResults> {
+  if (wasmAvailable()) {
+    try {
+      onProgress?.(0);
+      const results = await runWasmSim(data, config.sims);
+      onProgress?.(1);
+      return results;
+    } catch (err) {
+      console.warn("[sim] wasm engine failed, falling back to TS:", err);
+    }
+  }
+  return runTournamentSim(data, config, onProgress);
 }

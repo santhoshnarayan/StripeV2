@@ -18,7 +18,6 @@ import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { SimulatorLeaderboard } from "@/components/league/simulator-leaderboard";
 import { appApiFetch } from "@/lib/app-api";
 import {
-  runTournamentSim,
   getCachedSimResults,
   setCachedSimResults,
   DEFAULT_SIM_CONFIG,
@@ -27,6 +26,7 @@ import {
   type SimResults,
   type MarginalValue,
 } from "@/lib/sim";
+import { runSimAuto } from "@/lib/sim/wasm-engine";
 
 import {
   computeManagerProjections,
@@ -258,7 +258,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
       setProgress(0);
       await new Promise((r) => setTimeout(r, 0));
       try {
-        const results = await runTournamentSim(
+        const results = await runSimAuto(
           { ...data, adjustments: adjs },
           cfg,
           (p) => setProgress(p),

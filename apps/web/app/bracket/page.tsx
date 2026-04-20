@@ -13,12 +13,12 @@ import { BracketView } from "@/components/sim/bracket-view";
 import { BracketMobileView } from "@/components/sim/bracket-mobile-view";
 import { appApiFetch } from "@/lib/app-api";
 import {
-  runTournamentSim,
   DEFAULT_SIM_CONFIG,
   type SimConfig,
   type SimData,
   type SimResults,
 } from "@/lib/sim";
+import { runSimAuto } from "@/lib/sim/wasm-engine";
 
 export default function BracketPage() {
   const [simData, setSimData] = useState<SimData | null>(null);
@@ -57,7 +57,7 @@ export default function BracketPage() {
     setProgress(0);
     await new Promise((r) => setTimeout(r, 0));
     try {
-      const results = await runTournamentSim(simData, config, (p) =>
+      const results = await runSimAuto(simData, config, (p) =>
         setProgress(p),
       );
       setSimResults(results);
