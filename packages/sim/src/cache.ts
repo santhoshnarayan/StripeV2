@@ -10,18 +10,30 @@ import type { LiveGameState, SimResults } from "./types";
  * when live-game polling returns an unchanged snapshot.
  */
 type CacheEntry = {
+  version: number;
   results: SimResults;
   liveFingerprint: string;
 };
 
+/**
+ * Bump on incompatible engine changes (e.g., series-key semantics, R2
+ * pairing fixes). Cached entries from older versions are treated as misses,
+ * so the auto-runner recomputes against the current engine.
+ */
+const CACHE_VERSION = 2;
+
 const simCache = new Map<string, CacheEntry>();
 
 export function getCachedSimResults(key: string): SimResults | null {
-  return simCache.get(key)?.results ?? null;
+  const entry = simCache.get(key);
+  if (!entry || entry.version !== CACHE_VERSION) return null;
+  return entry.results;
 }
 
 export function getCachedEntry(key: string): CacheEntry | null {
-  return simCache.get(key) ?? null;
+  const entry = simCache.get(key);
+  if (!entry || entry.version !== CACHE_VERSION) return null;
+  return entry;
 }
 
 export function setCachedSimResults(
@@ -29,7 +41,7 @@ export function setCachedSimResults(
   results: SimResults,
   liveFingerprint = "",
 ): void {
-  simCache.set(key, { results, liveFingerprint });
+  simCache.set(key, { version: CACHE_VERSION, results, liveFingerprint });
 }
 
 export function clearCachedSimResults(key: string): void {
