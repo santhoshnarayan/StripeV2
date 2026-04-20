@@ -429,10 +429,18 @@ export async function enqueueProjectionRebuild(
   return jobId;
 }
 
-/** Returns true if this league has a queued or running rebuild job. Used by
- *  the live-update auto-trigger to coalesce ingest bursts (we don't want to
- *  start a fresh sim every cron tick if the previous one is still running). */
+/** Jobs older than this with status queued/running are presumed dead (process
+ *  crashed or restarted mid-rebuild). The auto-trigger will ignore them so
+ *  fresh rebuilds can be enqueued without manual intervention. */
+const ZOMBIE_JOB_THRESHOLD_MS = 15 * 60 * 1000;
+
+/** Returns true if this league has a queued or running rebuild job younger
+ *  than the zombie threshold. Used by the live-update auto-trigger to coalesce
+ *  ingest bursts (we don't want to start a fresh sim every cron tick if the
+ *  previous one is still running) — but stale jobs from a crashed/restarted
+ *  process are ignored so the auto-trigger self-heals. */
 async function hasInFlightRebuild(leagueId: string): Promise<boolean> {
+  const cutoff = new Date(Date.now() - ZOMBIE_JOB_THRESHOLD_MS);
   const rows = await db
     .select({ id: nbaProjectionJob.id })
     .from(nbaProjectionJob)
@@ -440,10 +448,29 @@ async function hasInFlightRebuild(leagueId: string): Promise<boolean> {
       and(
         eq(nbaProjectionJob.leagueId, leagueId),
         inArray(nbaProjectionJob.status, ["queued", "running"]),
+        sql`${nbaProjectionJob.updatedAt} >= ${cutoff}`,
       ),
     )
     .limit(1);
   return rows.length > 0;
+}
+
+/** On server boot, mark any queued/running rebuild jobs as failed so the
+ *  auto-trigger isn't blocked by zombie rows from a previous process. The
+ *  staleness guard inside hasInFlightRebuild also handles this defensively,
+ *  but explicit cleanup keeps the job table tidy. */
+export async function recoverProjectionJobs(): Promise<number> {
+  const result = await db
+    .update(nbaProjectionJob)
+    .set({
+      status: "failed",
+      lastError: "process restarted before completion",
+      finishedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(inArray(nbaProjectionJob.status, ["queued", "running"]))
+    .returning({ id: nbaProjectionJob.id });
+  return result.length;
 }
 
 /** Auto-triggered from the live-ingest cron after a syncLiveGames batch.

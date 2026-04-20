@@ -11,6 +11,7 @@ import { startCronJobs } from "./cron/index.js";
 import { startWorker } from "./tasks/queue.js";
 import { recoverAuctions } from "./lib/auction-queue.js";
 import { recoverSnakeDrafts } from "./lib/snake-queue.js";
+import { recoverProjectionJobs } from "./lib/projections/rebuild.js";
 
 const app = new Hono();
 
@@ -101,6 +102,11 @@ app.on(["GET", "POST"], "/graphql", async (c) => {
 startCronJobs();
 recoverAuctions().catch((err) => console.error("[auction] Recovery failed:", err));
 recoverSnakeDrafts().catch((err) => console.error("[snake] Recovery failed:", err));
+recoverProjectionJobs()
+  .then((n) => {
+    if (n > 0) console.log(`[projections] marked ${n} zombie job(s) as failed`);
+  })
+  .catch((err) => console.error("[projections] Recovery failed:", err));
 
 if (process.env.REDIS_URL) {
   startWorker();
