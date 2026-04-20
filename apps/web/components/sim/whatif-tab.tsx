@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   CardContent,
@@ -1061,6 +1061,32 @@ export function WhatIfTab({
   const [playerView, setPlayerView] = useState<PlayerView>("simple");
   const [teamsMode, setTeamsMode] = useState<"cumulative" | "exact">("cumulative");
   const [playerMetric, setPlayerMetric] = useState<"total" | "ppg" | "pplay">("total");
+  const [playerProTeamFilter, setPlayerProTeamFilter] = useState<string>("all");
+  const [playerManagerFilter, setPlayerManagerFilter] = useState<string>("all");
+  type PlayerSortKey =
+    | "cond"
+    | "base"
+    | "delta"
+    | "r0"
+    | "r1"
+    | "r2"
+    | "r3"
+    | "total";
+  const [playerSortKey, setPlayerSortKey] = useState<PlayerSortKey>("cond");
+  const [playerSortDir, setPlayerSortDir] = useState<"asc" | "desc">("desc");
+  const togglePlayerSort = useCallback(
+    (key: PlayerSortKey) => {
+      setPlayerSortKey((prev) => {
+        if (prev === key) {
+          setPlayerSortDir((d) => (d === "desc" ? "asc" : "desc"));
+          return prev;
+        }
+        setPlayerSortDir("desc");
+        return key;
+      });
+    },
+    [],
+  );
 
   const decidedWinners = useMemo(
     () =>
@@ -1112,13 +1138,95 @@ export function WhatIfTab({
       ),
     [condTeams],
   );
-  const sortedPlayers = useMemo(
-    () =>
-      [...condPlayers]
-        .sort((a, b) => b.conditionalPoints - a.conditionalPoints)
-        .slice(0, 200),
-    [condPlayers],
-  );
+  const playerToManager = useMemo(() => {
+    const map = new Map<string, { userId: string; name: string }>();
+    if (!rosters) return map;
+    for (const r of rosters) {
+      for (const pid of r.playerIds) {
+        map.set(pid, { userId: r.userId, name: r.name });
+      }
+    }
+    return map;
+  }, [rosters]);
+
+  const proTeamOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of condPlayers) set.add(p.team);
+    return Array.from(set).sort();
+  }, [condPlayers]);
+
+  const managerOptions = useMemo(() => {
+    if (!rosters) return [];
+    return rosters.map((r) => ({ userId: r.userId, name: r.name }));
+  }, [rosters]);
+
+  const filteredPlayers = useMemo(() => {
+    return condPlayers.filter((p) => {
+      if (playerProTeamFilter !== "all" && p.team !== playerProTeamFilter) return false;
+      if (playerManagerFilter !== "all") {
+        const mgr = playerToManager.get(p.espnId);
+        if (playerManagerFilter === "none") {
+          if (mgr) return false;
+        } else if (mgr?.userId !== playerManagerFilter) return false;
+      }
+      return true;
+    });
+  }, [condPlayers, playerProTeamFilter, playerManagerFilter, playerToManager]);
+
+  const sortedPlayers = useMemo(() => {
+    const rate = (pts: number, games: number) => (games > 0 ? pts / games : 0);
+    const sumArr = (a: number[]) => a.reduce((s, x) => s + x, 0);
+    // Per-view sort: the key space covers all tables (simple: base/cond/delta;
+    // round/game: r0..r3/total). For keys that don't apply to the current
+    // metric, fall back to conditionalPoints desc.
+    const roundPoints = (p: ConditionalPlayerRow, r: number): number => {
+      if (playerMetric === "total") return p.conditionalPointsByRound[r] ?? 0;
+      if (playerMetric === "ppg") {
+        return rate(p.baselinePointsByRound[r] ?? 0, p.baselineGamesByRound[r] ?? 0);
+      }
+      return (p.teamReachProb[r] ?? 0) * 100;
+    };
+    const totalMetric = (p: ConditionalPlayerRow): number => {
+      if (playerMetric === "total") return p.conditionalPoints;
+      const games = sumArr(p.conditionalGamesByRound);
+      if (playerMetric === "ppg") return rate(p.conditionalPoints, games);
+      return games;
+    };
+    const keyValue = (p: ConditionalPlayerRow): number => {
+      switch (playerSortKey) {
+        case "base": {
+          if (playerMetric === "total") return p.baselinePoints;
+          if (playerMetric === "ppg") {
+            return rate(p.baselinePoints, sumArr(p.baselineGamesByRound));
+          }
+          return sumArr(p.baselineGamesByRound);
+        }
+        case "delta":
+          return totalMetric(p) - (playerMetric === "total"
+            ? p.baselinePoints
+            : playerMetric === "ppg"
+              ? rate(p.baselinePoints, sumArr(p.baselineGamesByRound))
+              : sumArr(p.baselineGamesByRound));
+        case "r0":
+          return roundPoints(p, 0);
+        case "r1":
+          return roundPoints(p, 1);
+        case "r2":
+          return roundPoints(p, 2);
+        case "r3":
+          return roundPoints(p, 3);
+        case "total":
+          return totalMetric(p);
+        case "cond":
+        default:
+          return p.conditionalPoints;
+      }
+    };
+    const sign = playerSortDir === "desc" ? -1 : 1;
+    return [...filteredPlayers]
+      .sort((a, b) => sign * (keyValue(a) - keyValue(b)))
+      .slice(0, 200);
+  }, [filteredPlayers, playerSortKey, playerSortDir, playerMetric]);
   const sortedManagers = useMemo(
     () => [...condManagers].sort((a, b) => b.conditionalWinPct - a.conditionalWinPct),
     [condManagers],
@@ -1534,6 +1642,33 @@ export function WhatIfTab({
                 </CardDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <select
+                  className="h-7 rounded-md border border-border/60 bg-background px-2 text-xs"
+                  value={playerProTeamFilter}
+                  onChange={(e) => setPlayerProTeamFilter(e.target.value)}
+                >
+                  <option value="all">All teams</option>
+                  {proTeamOptions.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                {managerOptions.length > 0 ? (
+                  <select
+                    className="h-7 rounded-md border border-border/60 bg-background px-2 text-xs"
+                    value={playerManagerFilter}
+                    onChange={(e) => setPlayerManagerFilter(e.target.value)}
+                  >
+                    <option value="all">All managers</option>
+                    <option value="none">Undrafted</option>
+                    {managerOptions.map((m) => (
+                      <option key={m.userId} value={m.userId}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
                 <div className="flex shrink-0 gap-1 rounded-lg bg-muted/40 p-0.5">
                   {([
                     { id: "total", label: "Total" },
@@ -1582,11 +1717,31 @@ export function WhatIfTab({
           <CardContent>
             <div className="overflow-x-auto rounded-xl border border-border/80">
               {playerView === "simple" ? (
-                <PlayersSimpleTable players={sortedPlayers} metric={playerMetric} />
+                <PlayersSimpleTable
+                  players={sortedPlayers}
+                  metric={playerMetric}
+                  playerToManager={playerToManager}
+                  sortKey={playerSortKey}
+                  sortDir={playerSortDir}
+                  onSort={togglePlayerSort}
+                />
               ) : playerView === "round" ? (
-                <PlayersRoundTable players={sortedPlayers} metric={playerMetric} />
+                <PlayersRoundTable
+                  players={sortedPlayers}
+                  metric={playerMetric}
+                  playerToManager={playerToManager}
+                  sortKey={playerSortKey}
+                  sortDir={playerSortDir}
+                  onSort={togglePlayerSort}
+                />
               ) : (
-                <PlayersGameTable players={sortedPlayers} />
+                <PlayersGameTable
+                  players={sortedPlayers}
+                  playerToManager={playerToManager}
+                  sortKey={playerSortKey}
+                  sortDir={playerSortDir}
+                  onSort={togglePlayerSort}
+                />
               )}
             </div>
           </CardContent>
@@ -1893,12 +2048,82 @@ function ChampionPicker({
 
 // ── Player tables (3 views) ────────────────────────────────────────────
 
+type PlayerSortKeyLocal =
+  | "cond"
+  | "base"
+  | "delta"
+  | "r0"
+  | "r1"
+  | "r2"
+  | "r3"
+  | "total";
+
+function SortArrow({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
+  if (!active) return <span className="ml-1 text-muted-foreground/30">↕</span>;
+  return <span className="ml-1 text-foreground/70">{dir === "desc" ? "↓" : "↑"}</span>;
+}
+
+function SortableTh({
+  label,
+  sortKey,
+  currentKey,
+  currentDir,
+  onSort,
+  className,
+}: {
+  label: React.ReactNode;
+  sortKey: PlayerSortKeyLocal;
+  currentKey: PlayerSortKeyLocal;
+  currentDir: "asc" | "desc";
+  onSort: (k: PlayerSortKeyLocal) => void;
+  className?: string;
+}) {
+  const active = currentKey === sortKey;
+  return (
+    <th className={className}>
+      <button
+        type="button"
+        className={[
+          "inline-flex items-center justify-end gap-0.5 font-medium uppercase tracking-wider text-[10px]",
+          active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+        ].join(" ")}
+        onClick={() => onSort(sortKey)}
+      >
+        {label}
+        <SortArrow active={active} dir={currentDir} />
+      </button>
+    </th>
+  );
+}
+
+function ManagerCell({
+  mgr,
+  size = "sm",
+}: {
+  mgr?: { userId: string; name: string };
+  size?: "sm" | "xs";
+}) {
+  const cls = size === "xs" ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-xs";
+  if (!mgr) {
+    return <td className={cls + " text-muted-foreground/40"}>—</td>;
+  }
+  return <td className={cls + " text-muted-foreground truncate max-w-[120px]"}>{mgr.name}</td>;
+}
+
 function PlayersSimpleTable({
   players,
   metric,
+  playerToManager,
+  sortKey,
+  sortDir,
+  onSort,
 }: {
   players: ConditionalPlayerRow[];
   metric: "total" | "ppg" | "pplay";
+  playerToManager: Map<string, { userId: string; name: string }>;
+  sortKey: PlayerSortKeyLocal;
+  sortDir: "asc" | "desc";
+  onSort: (k: PlayerSortKeyLocal) => void;
 }) {
   const sum = (a: number[]) => a.reduce((s, x) => s + x, 0);
   const rate = (pts: number, games: number) => (games > 0 ? pts / games : 0);
@@ -1914,9 +2139,31 @@ function PlayersSimpleTable({
           <th className="px-3 py-2 text-right font-medium">#</th>
           <th className="px-3 py-2 text-left font-medium">Player</th>
           <th className="px-3 py-2 text-left font-medium">Team</th>
-          <th className="px-3 py-2 text-right font-medium">{headerLabels.base}</th>
-          <th className="px-3 py-2 text-right font-medium">{headerLabels.cond}</th>
-          <th className="px-3 py-2 text-right font-medium">Δ</th>
+          <th className="px-3 py-2 text-left font-medium">Manager</th>
+          <SortableTh
+            label={headerLabels.base}
+            sortKey="base"
+            currentKey={sortKey}
+            currentDir={sortDir}
+            onSort={onSort}
+            className="px-3 py-2 text-right font-medium"
+          />
+          <SortableTh
+            label={headerLabels.cond}
+            sortKey="cond"
+            currentKey={sortKey}
+            currentDir={sortDir}
+            onSort={onSort}
+            className="px-3 py-2 text-right font-medium"
+          />
+          <SortableTh
+            label="Δ"
+            sortKey="delta"
+            currentKey={sortKey}
+            currentDir={sortDir}
+            onSort={onSort}
+            className="px-3 py-2 text-right font-medium"
+          />
         </tr>
       </thead>
       <tbody>
@@ -1938,6 +2185,7 @@ function PlayersSimpleTable({
             digits = 1;
           }
           const delta = condVal - baseVal;
+          const mgr = playerToManager.get(p.espnId);
           return (
             <tr key={p.espnId} className="border-t border-border/60">
               <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
@@ -1955,6 +2203,7 @@ function PlayersSimpleTable({
                   {p.team}
                 </div>
               </td>
+              <ManagerCell mgr={mgr} />
               <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
                 {baseVal.toFixed(digits)}
               </td>
@@ -1974,9 +2223,17 @@ function PlayersSimpleTable({
 function PlayersRoundTable({
   players,
   metric,
+  playerToManager,
+  sortKey,
+  sortDir,
+  onSort,
 }: {
   players: ConditionalPlayerRow[];
   metric: "total" | "ppg" | "pplay";
+  playerToManager: Map<string, { userId: string; name: string }>;
+  sortKey: PlayerSortKeyLocal;
+  sortDir: "asc" | "desc";
+  onSort: (k: PlayerSortKeyLocal) => void;
 }) {
   const rate = (pts: number, games: number) => (games > 0 ? pts / games : 0);
   const cellValue = (p: ConditionalPlayerRow, r: number): { value: number; empty: boolean; fmt: (v: number) => string } => {
@@ -2001,6 +2258,7 @@ function PlayersRoundTable({
     return { value: games, fmt: (x) => x.toFixed(1) };
   };
   const totalLabel = metric === "total" ? "Total" : metric === "ppg" ? "PPG" : "E[GP]";
+  const roundKeys: PlayerSortKeyLocal[] = ["r0", "r1", "r2", "r3"];
   return (
     <table className="w-full text-left text-sm">
       <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -2008,19 +2266,32 @@ function PlayersRoundTable({
           <th className="px-3 py-2 text-right font-medium">#</th>
           <th className="px-3 py-2 text-left font-medium">Player</th>
           <th className="px-3 py-2 text-left font-medium">Team</th>
-          {ROUND_LABELS.map((r) => (
-            <th key={r} className="px-3 py-2 text-right font-medium">
-              {r}
-            </th>
+          <th className="px-3 py-2 text-left font-medium">Manager</th>
+          {ROUND_LABELS.map((r, idx) => (
+            <SortableTh
+              key={r}
+              label={r}
+              sortKey={roundKeys[idx]}
+              currentKey={sortKey}
+              currentDir={sortDir}
+              onSort={onSort}
+              className="px-3 py-2 text-right font-medium"
+            />
           ))}
-          <th className="px-3 py-2 text-right font-medium border-l border-border/50">
-            {totalLabel}
-          </th>
+          <SortableTh
+            label={totalLabel}
+            sortKey="total"
+            currentKey={sortKey}
+            currentDir={sortDir}
+            onSort={onSort}
+            className="px-3 py-2 text-right font-medium border-l border-border/50"
+          />
         </tr>
       </thead>
       <tbody>
         {players.map((p, idx) => {
           const tot = totalValue(p);
+          const mgr = playerToManager.get(p.espnId);
           return (
             <tr key={p.espnId} className="border-t border-border/60">
               <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
@@ -2038,6 +2309,7 @@ function PlayersRoundTable({
                   {p.team}
                 </div>
               </td>
+              <ManagerCell mgr={mgr} />
               {[0, 1, 2, 3].map((r) => {
                 const c = cellValue(p, r);
                 return (
@@ -2062,19 +2334,33 @@ function PlayersRoundTable({
 
 /** Game-by-game: each round shows Pts / PPG / GP triplet so you can see
  *  per-game expectations within that round. */
-function PlayersGameTable({ players }: { players: ConditionalPlayerRow[] }) {
+function PlayersGameTable({
+  players,
+  playerToManager,
+  sortKey,
+  sortDir,
+  onSort,
+}: {
+  players: ConditionalPlayerRow[];
+  playerToManager: Map<string, { userId: string; name: string }>;
+  sortKey: PlayerSortKeyLocal;
+  sortDir: "asc" | "desc";
+  onSort: (k: PlayerSortKeyLocal) => void;
+}) {
   // Per-game view: G1..G7 within each of R1/R2/CF/Finals (28 cells per row),
-  // plus a Total. Each cell shows expected points in that game across surviving
-  // sims (= 0 when the series didn't reach that game in any surviving sim).
+  // with a per-round Σ column after each round and a grand Total. Each game
+  // cell shows expected points in that game across surviving sims (= 0 when
+  // the series didn't reach that game in any surviving sim).
+  const roundKeys: PlayerSortKeyLocal[] = ["r0", "r1", "r2", "r3"];
   return (
     <table className="w-full text-left text-xs">
       <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
         <tr className="border-b border-border/40">
-          <th colSpan={3} />
+          <th colSpan={4} />
           {ROUND_LABELS.map((r) => (
             <th
               key={r}
-              colSpan={7}
+              colSpan={8}
               className="px-1 py-2 text-center font-semibold border-x border-border/40"
             >
               {r}
@@ -2088,27 +2374,44 @@ function PlayersGameTable({ players }: { players: ConditionalPlayerRow[] }) {
           <th className="px-2 py-2 text-right font-medium">#</th>
           <th className="px-2 py-2 text-left font-medium">Player</th>
           <th className="px-2 py-2 text-left font-medium">Team</th>
-          {ROUND_LABELS.map((r) =>
-            Array.from({ length: 7 }, (_, g) => (
-              <th
-                key={`${r}-g${g + 1}`}
-                className={[
-                  "px-1 py-2 text-right font-medium",
-                  g === 0 ? "border-l border-border/40" : "",
-                ].join(" ")}
-              >
-                G{g + 1}
-              </th>
-            )),
-          )}
-          <th className="px-2 py-2 text-right font-medium border-l border-border/40">
-            Pts
-          </th>
+          <th className="px-2 py-2 text-left font-medium">Manager</th>
+          {ROUND_LABELS.map((r, rIdx) => (
+            <Fragment key={r}>
+              {Array.from({ length: 7 }, (_, g) => (
+                <th
+                  key={`${r}-g${g + 1}`}
+                  className={[
+                    "px-1 py-2 text-right font-medium",
+                    g === 0 ? "border-l border-border/40" : "",
+                  ].join(" ")}
+                >
+                  G{g + 1}
+                </th>
+              ))}
+              <SortableTh
+                label="Σ"
+                sortKey={roundKeys[rIdx]}
+                currentKey={sortKey}
+                currentDir={sortDir}
+                onSort={onSort}
+                className="px-1 py-2 text-right font-semibold bg-muted/20"
+              />
+            </Fragment>
+          ))}
+          <SortableTh
+            label="Pts"
+            sortKey="total"
+            currentKey={sortKey}
+            currentDir={sortDir}
+            onSort={onSort}
+            className="px-2 py-2 text-right font-medium border-l border-border/40"
+          />
         </tr>
       </thead>
       <tbody>
         {players.map((p, idx) => {
           const byGame = p.conditionalPointsByGame;
+          const mgr = playerToManager.get(p.espnId);
           return (
             <tr key={p.espnId} className="border-t border-border/60">
               <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
@@ -2126,21 +2429,41 @@ function PlayersGameTable({ players }: { players: ConditionalPlayerRow[] }) {
                   {p.team}
                 </div>
               </td>
-              {Array.from({ length: 28 }, (_, i) => {
-                const pts = byGame[i] ?? 0;
-                const dim = pts < 0.05;
-                const isFirstOfRound = i % 7 === 0;
+              <ManagerCell mgr={mgr} size="xs" />
+              {ROUND_LABELS.map((_, rIdx) => {
+                let roundSum = 0;
+                const cells: React.ReactElement[] = [];
+                for (let g = 0; g < 7; g++) {
+                  const i = rIdx * 7 + g;
+                  const pts = byGame[i] ?? 0;
+                  roundSum += pts;
+                  const dim = pts < 0.05;
+                  cells.push(
+                    <td
+                      key={i}
+                      className={[
+                        "px-1 py-1.5 text-right tabular-nums",
+                        g === 0 ? "border-l border-border/40" : "",
+                        dim ? "text-muted-foreground/30" : "text-foreground",
+                      ].join(" ")}
+                    >
+                      {dim ? "—" : pts.toFixed(1)}
+                    </td>,
+                  );
+                }
+                const dimSum = roundSum < 0.05;
                 return (
-                  <td
-                    key={i}
-                    className={[
-                      "px-1 py-1.5 text-right tabular-nums",
-                      isFirstOfRound ? "border-l border-border/40" : "",
-                      dim ? "text-muted-foreground/30" : "text-foreground",
-                    ].join(" ")}
-                  >
-                    {dim ? "—" : pts.toFixed(1)}
-                  </td>
+                  <Fragment key={rIdx}>
+                    {cells}
+                    <td
+                      className={[
+                        "px-1 py-1.5 text-right tabular-nums font-semibold bg-muted/20",
+                        dimSum ? "text-muted-foreground/40" : "text-foreground",
+                      ].join(" ")}
+                    >
+                      {dimSum ? "—" : roundSum.toFixed(1)}
+                    </td>
+                  </Fragment>
                 );
               })}
               <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-foreground border-l border-border/40">
