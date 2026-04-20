@@ -13,12 +13,19 @@ import {
 import type { SimData, SimResults } from "@/lib/sim";
 
 type RoundKey = "r1" | "r2" | "cf" | "finals";
+type TabKey = "west" | "east" | "championship";
+
+const TAB_LABELS: Record<TabKey, string> = {
+  west: "West",
+  east: "East",
+  championship: "Championship",
+};
 
 const ROUND_LABELS: Record<RoundKey, string> = {
   r1: "Round 1",
   r2: "Conf Semis",
   cf: "Conf Finals",
-  finals: "Finals",
+  finals: "NBA Finals",
 };
 
 type Matchup = {
@@ -312,7 +319,7 @@ export function BracketMobileView({
   simData: SimData;
   simResults: SimResults | null;
 }) {
-  const [round, setRound] = useState<RoundKey>("r1");
+  const [tab, setTab] = useState<TabKey>("west");
   const { schedule } = useBracketSchedule();
 
   const seriesByKey = useMemo(() => {
@@ -323,91 +330,79 @@ export function BracketMobileView({
     return map;
   }, [schedule]);
 
-  const matchups = useMemo(
-    () => buildRoundMatchups(simData, simResults, round),
-    [simData, simResults, round],
+  const r1All = useMemo(
+    () => buildRoundMatchups(simData, simResults, "r1"),
+    [simData, simResults],
+  );
+  const r2All = useMemo(
+    () => buildRoundMatchups(simData, simResults, "r2"),
+    [simData, simResults],
+  );
+  const cfAll = useMemo(
+    () => buildRoundMatchups(simData, simResults, "cf"),
+    [simData, simResults],
+  );
+  const finalsAll = useMemo(
+    () => buildRoundMatchups(simData, simResults, "finals"),
+    [simData, simResults],
   );
 
-  const westMatchups = matchups.filter((m) => m.conf === "west");
-  const eastMatchups = matchups.filter((m) => m.conf === "east");
-  const finalMatchups = matchups.filter((m) => m.conf === "finals");
+  const columns: { label: string; round: RoundKey; matchups: Matchup[] }[] =
+    tab === "west"
+      ? [
+          { label: ROUND_LABELS.r1, round: "r1", matchups: r1All.filter((m) => m.conf === "west") },
+          { label: ROUND_LABELS.r2, round: "r2", matchups: r2All.filter((m) => m.conf === "west") },
+        ]
+      : tab === "east"
+        ? [
+            { label: ROUND_LABELS.r1, round: "r1", matchups: r1All.filter((m) => m.conf === "east") },
+            { label: ROUND_LABELS.r2, round: "r2", matchups: r2All.filter((m) => m.conf === "east") },
+          ]
+        : [
+            { label: ROUND_LABELS.cf, round: "cf", matchups: cfAll },
+            { label: ROUND_LABELS.finals, round: "finals", matchups: finalsAll },
+          ];
 
   return (
     <div className="space-y-4">
       <div className="flex gap-1 overflow-x-auto no-scrollbar">
-        {(Object.keys(ROUND_LABELS) as RoundKey[]).map((k) => (
+        {(Object.keys(TAB_LABELS) as TabKey[]).map((k) => (
           <button
             key={k}
             type="button"
-            onClick={() => setRound(k)}
+            onClick={() => setTab(k)}
             className={cn(
               "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors",
-              round === k
+              tab === k
                 ? "bg-foreground text-background"
                 : "bg-muted text-muted-foreground hover:bg-muted/70",
             )}
           >
-            {ROUND_LABELS[k]}
+            {TAB_LABELS[k]}
           </button>
         ))}
       </div>
 
-      {westMatchups.length > 0 ? (
-        <section className="space-y-2">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            West
-          </h3>
-          <div className="space-y-2">
-            {westMatchups.map((m) => (
-              <MatchupCard
-                key={m.seriesKey}
-                matchup={m}
-                series={seriesByKey[m.seriesKey] ?? null}
-                round={round}
-                simResults={simResults}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {eastMatchups.length > 0 ? (
-        <section className="space-y-2">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            East
-          </h3>
-          <div className="space-y-2">
-            {eastMatchups.map((m) => (
-              <MatchupCard
-                key={m.seriesKey}
-                matchup={m}
-                series={seriesByKey[m.seriesKey] ?? null}
-                round={round}
-                simResults={simResults}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {finalMatchups.length > 0 ? (
-        <section className="space-y-2">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Finals
-          </h3>
-          <div className="space-y-2">
-            {finalMatchups.map((m) => (
-              <MatchupCard
-                key={m.seriesKey}
-                matchup={m}
-                series={seriesByKey[m.seriesKey] ?? null}
-                round={round}
-                simResults={simResults}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <div className="grid grid-cols-2 gap-2">
+        {columns.map((col) => (
+          <section key={col.round} className="space-y-2 min-w-0">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {col.label}
+            </h3>
+            <div className="space-y-2">
+              {col.matchups.map((m) => (
+                <MatchupCard
+                  key={m.seriesKey}
+                  matchup={m}
+                  series={seriesByKey[m.seriesKey] ?? null}
+                  round={col.round}
+                  simResults={simResults}
+                />
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
