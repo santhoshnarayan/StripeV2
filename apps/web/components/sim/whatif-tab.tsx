@@ -607,6 +607,59 @@ function ConferenceBracket({
   );
 }
 
+// ── Bracket path helpers (for upstream auto-fill) ─────────────────────
+
+function seedToR1Pair(seed: number): "1v8" | "4v5" | "3v6" | "2v7" | null {
+  if (seed === 1 || seed === 8) return "1v8";
+  if (seed === 4 || seed === 5) return "4v5";
+  if (seed === 3 || seed === 6) return "3v6";
+  if (seed === 2 || seed === 7) return "2v7";
+  return null;
+}
+
+function r1PairToR2Half(pair: "1v8" | "4v5" | "3v6" | "2v7"): "top" | "bot" {
+  // Per engine: top=1v8×4v5 (Half A), bot=2v7×3v6 (Half B).
+  return pair === "1v8" || pair === "4v5" ? "top" : "bot";
+}
+
+function findTeamConfAndSeed(
+  team: string,
+  simData: SimData,
+): { conf: "east" | "west"; seed: number } | null {
+  for (const [seed, t] of simData.bracket.eastSeeds) {
+    if (t === team) return { conf: "east", seed };
+  }
+  for (const [seed, t] of simData.bracket.westSeeds) {
+    if (t === team) return { conf: "west", seed };
+  }
+  return null;
+}
+
+/** All series upstream of `targetKey` that this team must also win to reach
+ *  `targetKey` (excludes targetKey). Used by updateForce to auto-fill the
+ *  prerequisite chain when the user picks a team for a downstream slot. */
+function upstreamSeriesChain(
+  team: string,
+  targetKey: SeriesKey,
+  simData: SimData,
+): SeriesKey[] {
+  const tcs = findTeamConfAndSeed(team, simData);
+  if (!tcs) return [];
+  const { conf, seed } = tcs;
+  const pair = seedToR1Pair(seed);
+  if (!pair) return [];
+  const half = r1PairToR2Half(pair);
+  const fullPath: SeriesKey[] = [
+    `r1.${conf}.${pair}` as SeriesKey,
+    `r2.${conf}.${half}` as SeriesKey,
+    `cf.${conf}` as SeriesKey,
+    "finals" as SeriesKey,
+  ];
+  const idx = fullPath.indexOf(targetKey);
+  if (idx === -1) return [];
+  return fullPath.slice(0, idx);
+}
+
 // ── Main component ────────────────────────────────────────────────────
 
 export function WhatIfTab({
@@ -686,8 +739,49 @@ export function WhatIfTab({
   const updateForce = (key: SlotKey, value: number | null) => {
     setForces((prev) => {
       const next = { ...prev };
-      if (value == null) delete next[key];
-      else next[key] = value;
+      const isSeriesKey = SERIES_KEYS.includes(key as SeriesKey);
+
+      if (value == null) {
+        // Clearing this slot. Also clear DOWNSTREAM forces for the same team —
+        // if they no longer win this round, they can't have won later rounds.
+        const teamIdx = prev[key];
+        delete next[key];
+        if (isSeriesKey && teamIdx != null && simData) {
+          const team = simResults.teamNames[teamIdx];
+          // Build the full path; everything strictly downstream of `key` that
+          // is currently forced to this team should also clear.
+          const tcs = findTeamConfAndSeed(team, simData);
+          if (tcs) {
+            const pair = seedToR1Pair(tcs.seed);
+            if (pair) {
+              const half = r1PairToR2Half(pair);
+              const fullPath: SeriesKey[] = [
+                `r1.${tcs.conf}.${pair}` as SeriesKey,
+                `r2.${tcs.conf}.${half}` as SeriesKey,
+                `cf.${tcs.conf}` as SeriesKey,
+                "finals" as SeriesKey,
+              ];
+              const idx = fullPath.indexOf(key as SeriesKey);
+              if (idx >= 0) {
+                for (const downKey of fullPath.slice(idx + 1)) {
+                  if (next[downKey] === teamIdx) delete next[downKey];
+                }
+              }
+            }
+          }
+        }
+        return next;
+      }
+
+      next[key] = value;
+      // Setting a team to win series X → also force every prerequisite series
+      // on their bracket path so they can actually reach X.
+      if (isSeriesKey && simData) {
+        const team = simResults.teamNames[value];
+        for (const upKey of upstreamSeriesChain(team, key as SeriesKey, simData)) {
+          next[upKey] = value;
+        }
+      }
       return next;
     });
   };
