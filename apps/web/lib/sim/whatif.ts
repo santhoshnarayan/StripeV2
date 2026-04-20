@@ -33,10 +33,11 @@ export interface ConditionalTeamRow {
   seed: number | null;
   conference: "E" | "W" | null;
   rating: number;
-  /** Baseline (unconditional) % per round, taken from `simResults.teams[]`. */
-  base: { r1: number; r2: number; cf: number; finals: number };
+  /** Baseline (unconditional) % per round, taken from `simResults.teams[]`.
+   *  `r0` = reaches main bracket (trr ≥ 1). For play-in losers, < 100%. */
+  base: { r0: number; r1: number; r2: number; cf: number; finals: number };
   /** Conditional % per round, computed over surviving sims. */
-  cond: { r1: number; r2: number; cf: number; finals: number };
+  cond: { r0: number; r1: number; r2: number; cf: number; finals: number };
 }
 
 export interface ConditionalPlayerRow {
@@ -61,6 +62,9 @@ export interface ConditionalPlayerRow {
   baselineGamesByGame: number[];
   conditionalPointsByGame: number[];
   conditionalGamesByGame: number[];
+  /** P(player's team reaches each round | forcing), length 4 = [R1, R2, CF, Finals].
+   *  Same across all players on the same team. Used to show "team plays" probability. */
+  teamReachProb: number[];
 }
 
 export interface ConditionalManagerRow {
@@ -131,14 +135,18 @@ export function computeConditionalTeams(
 
   return results.teams.map((t) => {
     const trr = results.teamRoundReached[t.team];
+    let reachedR1 = 0;
     let wonR1 = 0;
     let wonR2 = 0;
     let wonCf = 0;
     let wonF = 0;
+    let baseReachedR1 = 0;
     if (trr) {
       for (let i = 0; i < N; i++) {
-        if (!mask[i]) continue;
         const r = trr[i];
+        if (r >= 1) baseReachedR1++;
+        if (!mask[i]) continue;
+        if (r >= 1) reachedR1++;
         if (r >= 2) wonR1++;
         if (r >= 3) wonR2++;
         if (r >= 4) wonCf++;
@@ -151,8 +159,9 @@ export function computeConditionalTeams(
       seed: t.seed,
       conference: t.conference,
       rating: t.rating,
-      base: { r1: t.r1, r2: t.r2, cf: t.cf, finals: t.finals },
+      base: { r0: N > 0 ? (baseReachedR1 / N) * 100 : 0, r1: t.r1, r2: t.r2, cf: t.cf, finals: t.finals },
       cond: {
+        r0: surviving > 0 ? (reachedR1 / denom) * 100 : 0,
         r1: surviving > 0 ? (wonR1 / denom) * 100 : 0,
         r2: surviving > 0 ? (wonR2 / denom) * 100 : 0,
         cf: surviving > 0 ? (wonCf / denom) * 100 : 0,
@@ -258,6 +267,13 @@ export function computeConditionalPlayers(
       }
     }
 
+    const reachProb = [0, 0, 0, 0];
+    if (tr && surviving > 0) {
+      for (let r = 0; r < 4; r++) {
+        reachProb[r] = tr.cond[r] / surviving;
+      }
+    }
+
     rows.push({
       espnId,
       name: baseProjection.name,
@@ -273,6 +289,7 @@ export function computeConditionalPlayers(
       baselineGamesByGame: baseGamesGame,
       conditionalPointsByGame: condPtsGame,
       conditionalGamesByGame: condGamesGame,
+      teamReachProb: reachProb,
     });
   }
   return rows;

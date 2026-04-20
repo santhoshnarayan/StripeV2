@@ -997,6 +997,8 @@ export function WhatIfTab({
   const [forces, setForces] = useState<ForceMap>({});
   const [subTab, setSubTab] = useState<WhatIfSubTab>("teams");
   const [playerView, setPlayerView] = useState<PlayerView>("simple");
+  const [teamsMode, setTeamsMode] = useState<"cumulative" | "exact">("cumulative");
+  const [playerMetric, setPlayerMetric] = useState<"total" | "ppg" | "pplay">("total");
 
   const decidedWinners = useMemo(
     () =>
@@ -1273,10 +1275,36 @@ export function WhatIfTab({
       {subTab === "teams" ? (
         <Card>
           <CardHeader>
-            <CardTitle>Teams — Conditional Advancement</CardTitle>
-            <CardDescription>
-              % of {surviving.toLocaleString()} surviving sims that reach each round.
-            </CardDescription>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>Teams — Conditional Advancement</CardTitle>
+                <CardDescription>
+                  {teamsMode === "cumulative"
+                    ? `% of ${surviving.toLocaleString()} surviving sims that reach each round.`
+                    : `% of ${surviving.toLocaleString()} surviving sims where team wins that round. Finals = championship.`}
+                </CardDescription>
+              </div>
+              <div className="flex shrink-0 gap-1 rounded-lg bg-muted/40 p-0.5">
+                {([
+                  { id: "cumulative", label: "Cumulative" },
+                  { id: "exact", label: "Exact" },
+                ] as const).map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    className={[
+                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                      teamsMode === v.id
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                    onClick={() => setTeamsMode(v.id)}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto rounded-xl border border-border/80">
@@ -1285,33 +1313,52 @@ export function WhatIfTab({
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Team</th>
                     <th className="px-3 py-2 text-right font-medium">Seed</th>
+                    <th className="px-3 py-2 text-right font-medium">R1%</th>
                     <th className="px-3 py-2 text-right font-medium">R2%</th>
                     <th className="px-3 py-2 text-right font-medium">CF%</th>
                     <th className="px-3 py-2 text-right font-medium">Finals%</th>
-                    <th className="px-3 py-2 text-right font-medium">Champ%</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedTeams.map((t) => (
-                    <tr key={t.team} className="border-t border-border/60">
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-2">
-                          <TeamLogo team={t.team} size={20} />
-                          <span className="font-medium text-foreground">{t.team}</span>
-                          <span className="text-xs text-muted-foreground truncate">
-                            {t.fullName}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {t.seed ?? "PI"}
-                      </td>
-                      <CondPctCell cond={t.cond.r1} base={t.base.r1} />
-                      <CondPctCell cond={t.cond.r2} base={t.base.r2} />
-                      <CondPctCell cond={t.cond.cf} base={t.base.cf} />
-                      <CondPctCell cond={t.cond.finals} base={t.base.finals} bold />
-                    </tr>
-                  ))}
+                  {sortedTeams.map((t) => {
+                    const cells = teamsMode === "cumulative"
+                      ? [
+                          { cond: t.cond.r0, base: t.base.r0 },
+                          { cond: t.cond.r1, base: t.base.r1 },
+                          { cond: t.cond.r2, base: t.base.r2 },
+                          { cond: t.cond.cf, base: t.base.cf },
+                        ]
+                      : [
+                          { cond: t.cond.r1, base: t.base.r1 },
+                          { cond: t.cond.r2, base: t.base.r2 },
+                          { cond: t.cond.cf, base: t.base.cf },
+                          { cond: t.cond.finals, base: t.base.finals },
+                        ];
+                    return (
+                      <tr key={t.team} className="border-t border-border/60">
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <TeamLogo team={t.team} size={20} />
+                            <span className="font-medium text-foreground">{t.team}</span>
+                            <span className="text-xs text-muted-foreground truncate">
+                              {t.fullName}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                          {t.seed ?? "PI"}
+                        </td>
+                        {cells.map((c, i) => (
+                          <CondPctCell
+                            key={i}
+                            cond={c.cond}
+                            base={c.base}
+                            bold={i === cells.length - 1}
+                          />
+                        ))}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1326,38 +1373,66 @@ export function WhatIfTab({
               <div>
                 <CardTitle>Players — Conditional Projected Points</CardTitle>
                 <CardDescription>
-                  Mean fantasy pts over surviving sims vs baseline. Top 200 by conditional points.
+                  {playerMetric === "total"
+                    ? "Mean fantasy pts over surviving sims vs baseline."
+                    : playerMetric === "ppg"
+                      ? "Per-game scoring rate assuming the team plays (baseline pts ÷ baseline games)."
+                      : "Probability the player's team reaches each round."}{" "}
+                  Top 200 by conditional points.
                 </CardDescription>
               </div>
-              <div className="flex shrink-0 gap-1 rounded-lg bg-muted/40 p-0.5">
-                {([
-                  { id: "simple", label: "Simple" },
-                  { id: "round", label: "Round" },
-                  { id: "game", label: "Game" },
-                ] as const).map((v) => (
-                  <button
-                    key={v.id}
-                    type="button"
-                    className={[
-                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                      playerView === v.id
-                        ? "bg-background text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground",
-                    ].join(" ")}
-                    onClick={() => setPlayerView(v.id)}
-                  >
-                    {v.label}
-                  </button>
-                ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex shrink-0 gap-1 rounded-lg bg-muted/40 p-0.5">
+                  {([
+                    { id: "total", label: "Total" },
+                    { id: "ppg", label: "PPG" },
+                    { id: "pplay", label: "P(play)" },
+                  ] as const).map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      className={[
+                        "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                        playerMetric === v.id
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      ].join(" ")}
+                      onClick={() => setPlayerMetric(v.id)}
+                    >
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex shrink-0 gap-1 rounded-lg bg-muted/40 p-0.5">
+                  {([
+                    { id: "simple", label: "Simple" },
+                    { id: "round", label: "Round" },
+                    { id: "game", label: "Game" },
+                  ] as const).map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      className={[
+                        "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                        playerView === v.id
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      ].join(" ")}
+                      onClick={() => setPlayerView(v.id)}
+                    >
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto rounded-xl border border-border/80">
               {playerView === "simple" ? (
-                <PlayersSimpleTable players={sortedPlayers} />
+                <PlayersSimpleTable players={sortedPlayers} metric={playerMetric} />
               ) : playerView === "round" ? (
-                <PlayersRoundTable players={sortedPlayers} />
+                <PlayersRoundTable players={sortedPlayers} metric={playerMetric} />
               ) : (
                 <PlayersGameTable players={sortedPlayers} />
               )}
@@ -1579,7 +1654,20 @@ function ChampionPicker({
 
 // ── Player tables (3 views) ────────────────────────────────────────────
 
-function PlayersSimpleTable({ players }: { players: ConditionalPlayerRow[] }) {
+function PlayersSimpleTable({
+  players,
+  metric,
+}: {
+  players: ConditionalPlayerRow[];
+  metric: "total" | "ppg" | "pplay";
+}) {
+  const sum = (a: number[]) => a.reduce((s, x) => s + x, 0);
+  const rate = (pts: number, games: number) => (games > 0 ? pts / games : 0);
+  const headerLabels = metric === "total"
+    ? { base: "Base", cond: "Cond", unit: "" }
+    : metric === "ppg"
+      ? { base: "Base PPG", cond: "Cond PPG", unit: "" }
+      : { base: "Base E[GP]", cond: "Cond E[GP]", unit: "" };
   return (
     <table className="w-full text-left text-sm">
       <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -1587,45 +1675,93 @@ function PlayersSimpleTable({ players }: { players: ConditionalPlayerRow[] }) {
           <th className="px-3 py-2 text-right font-medium">#</th>
           <th className="px-3 py-2 text-left font-medium">Player</th>
           <th className="px-3 py-2 text-left font-medium">Team</th>
-          <th className="px-3 py-2 text-right font-medium">Base</th>
-          <th className="px-3 py-2 text-right font-medium">Cond</th>
+          <th className="px-3 py-2 text-right font-medium">{headerLabels.base}</th>
+          <th className="px-3 py-2 text-right font-medium">{headerLabels.cond}</th>
           <th className="px-3 py-2 text-right font-medium">Δ</th>
         </tr>
       </thead>
       <tbody>
-        {players.map((p, idx) => (
-          <tr key={p.espnId} className="border-t border-border/60">
-            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-              {idx + 1}
-            </td>
-            <td className="px-3 py-2">
-              <div className="flex items-center gap-2">
-                <PlayerAvatar espnId={p.espnId} team={p.team} size={24} />
-                <span className="font-medium text-foreground">{p.name}</span>
-              </div>
-            </td>
-            <td className="px-3 py-2 text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <TeamLogo team={p.team} size={16} />
-                {p.team}
-              </div>
-            </td>
-            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-              {p.baselinePoints.toFixed(0)}
-            </td>
-            <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
-              {p.conditionalPoints.toFixed(0)}
-            </td>
-            <DeltaCell delta={p.delta} />
-          </tr>
-        ))}
+        {players.map((p, idx) => {
+          const baseTotalGames = sum(p.baselineGamesByRound);
+          const condTotalGames = sum(p.conditionalGamesByRound);
+          let baseVal: number, condVal: number, digits: number;
+          if (metric === "total") {
+            baseVal = p.baselinePoints;
+            condVal = p.conditionalPoints;
+            digits = 0;
+          } else if (metric === "ppg") {
+            baseVal = rate(p.baselinePoints, baseTotalGames);
+            condVal = rate(p.conditionalPoints, condTotalGames);
+            digits = 1;
+          } else {
+            baseVal = baseTotalGames;
+            condVal = condTotalGames;
+            digits = 1;
+          }
+          const delta = condVal - baseVal;
+          return (
+            <tr key={p.espnId} className="border-t border-border/60">
+              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                {idx + 1}
+              </td>
+              <td className="px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <PlayerAvatar espnId={p.espnId} team={p.team} size={24} />
+                  <span className="font-medium text-foreground">{p.name}</span>
+                </div>
+              </td>
+              <td className="px-3 py-2 text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <TeamLogo team={p.team} size={16} />
+                  {p.team}
+                </div>
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                {baseVal.toFixed(digits)}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums font-medium text-foreground">
+                {condVal.toFixed(digits)}
+              </td>
+              <DeltaCell delta={delta} />
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
 }
 
-/** Round-by-round: 4 columns (R1/R2/CF/Finals) of conditional projected points. */
-function PlayersRoundTable({ players }: { players: ConditionalPlayerRow[] }) {
+/** Round-by-round: 4 columns (R1/R2/CF/Finals) with switchable metric. */
+function PlayersRoundTable({
+  players,
+  metric,
+}: {
+  players: ConditionalPlayerRow[];
+  metric: "total" | "ppg" | "pplay";
+}) {
+  const rate = (pts: number, games: number) => (games > 0 ? pts / games : 0);
+  const cellValue = (p: ConditionalPlayerRow, r: number): { value: number; empty: boolean; fmt: (v: number) => string } => {
+    if (metric === "total") {
+      const v = p.conditionalPointsByRound[r] ?? 0;
+      return { value: v, empty: v <= 0.05, fmt: (x) => x.toFixed(1) };
+    }
+    if (metric === "ppg") {
+      const v = rate(p.baselinePointsByRound[r] ?? 0, p.baselineGamesByRound[r] ?? 0);
+      return { value: v, empty: v <= 0.05, fmt: (x) => x.toFixed(1) };
+    }
+    const v = (p.teamReachProb[r] ?? 0) * 100;
+    return { value: v, empty: v < 0.1, fmt: (x) => `${x.toFixed(0)}%` };
+  };
+  const totalValue = (p: ConditionalPlayerRow): { value: number; fmt: (v: number) => string } => {
+    if (metric === "total") return { value: p.conditionalPoints, fmt: (x) => x.toFixed(0) };
+    if (metric === "ppg") {
+      const games = p.conditionalGamesByRound.reduce((s, x) => s + x, 0);
+      return { value: rate(p.conditionalPoints, games), fmt: (x) => x.toFixed(1) };
+    }
+    const games = p.conditionalGamesByRound.reduce((s, x) => s + x, 0);
+    return { value: games, fmt: (x) => x.toFixed(1) };
+  };
+  const totalLabel = metric === "total" ? "Total" : metric === "ppg" ? "PPG" : "E[GP]";
   return (
     <table className="w-full text-left text-sm">
       <thead className="bg-muted/40 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -1639,41 +1775,47 @@ function PlayersRoundTable({ players }: { players: ConditionalPlayerRow[] }) {
             </th>
           ))}
           <th className="px-3 py-2 text-right font-medium border-l border-border/50">
-            Total
+            {totalLabel}
           </th>
         </tr>
       </thead>
       <tbody>
-        {players.map((p, idx) => (
-          <tr key={p.espnId} className="border-t border-border/60">
-            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-              {idx + 1}
-            </td>
-            <td className="px-3 py-2">
-              <div className="flex items-center gap-2">
-                <PlayerAvatar espnId={p.espnId} team={p.team} size={24} />
-                <span className="font-medium text-foreground">{p.name}</span>
-              </div>
-            </td>
-            <td className="px-3 py-2 text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <TeamLogo team={p.team} size={16} />
-                {p.team}
-              </div>
-            </td>
-            {p.conditionalPointsByRound.map((pts, ri) => (
-              <td
-                key={ri}
-                className="px-3 py-2 text-right tabular-nums text-foreground"
-              >
-                {pts > 0.05 ? pts.toFixed(1) : <span className="text-muted-foreground/40">—</span>}
+        {players.map((p, idx) => {
+          const tot = totalValue(p);
+          return (
+            <tr key={p.espnId} className="border-t border-border/60">
+              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                {idx + 1}
               </td>
-            ))}
-            <td className="px-3 py-2 text-right tabular-nums font-semibold text-foreground border-l border-border/50">
-              {p.conditionalPoints.toFixed(0)}
-            </td>
-          </tr>
-        ))}
+              <td className="px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <PlayerAvatar espnId={p.espnId} team={p.team} size={24} />
+                  <span className="font-medium text-foreground">{p.name}</span>
+                </div>
+              </td>
+              <td className="px-3 py-2 text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <TeamLogo team={p.team} size={16} />
+                  {p.team}
+                </div>
+              </td>
+              {[0, 1, 2, 3].map((r) => {
+                const c = cellValue(p, r);
+                return (
+                  <td
+                    key={r}
+                    className="px-3 py-2 text-right tabular-nums text-foreground"
+                  >
+                    {c.empty ? <span className="text-muted-foreground/40">—</span> : c.fmt(c.value)}
+                  </td>
+                );
+              })}
+              <td className="px-3 py-2 text-right tabular-nums font-semibold text-foreground border-l border-border/50">
+                {tot.fmt(tot.value)}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
