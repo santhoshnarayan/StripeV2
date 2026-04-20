@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   CardContent,
@@ -16,11 +16,10 @@ import {
   computeConditionalTeams,
   computeConditionalPlayers,
   computeConditionalManagers,
-  computeSlotOptions,
   type ForceMap,
   type SlotKey,
 } from "@/lib/sim/whatif";
-import type { SeriesKey, SimData, SimResults } from "@/lib/sim";
+import { SERIES_KEYS, type SeriesKey, type SimData, type SimResults } from "@/lib/sim";
 
 interface RosterInputLite {
   userId: string;
@@ -61,19 +60,32 @@ function r2Key(conf: "east" | "west", half: "top" | "bot"): SeriesKey {
   return `r2.${conf}.${half}` as SeriesKey;
 }
 
-const TEAMS_PER_SLOT_FALLBACK = 2;
+/** A series counts as "real-world decided" when ≥99.5% of baseline sims agree
+ *  on the winner — the live-game injector pins the result, so consensus = lock. */
+const DECIDED_THRESHOLD = 0.995;
 
-function topTeamsForSlot(
-  results: SimResults,
-  key: SlotKey,
-  excludeTeamIdx: Set<number> | null,
-  count: number,
-): Array<{ teamIdx: number; team: string; pct: number }> {
-  const opts = computeSlotOptions(results)[key] ?? [];
-  const filtered = excludeTeamIdx
-    ? opts.filter((o) => !excludeTeamIdx.has(o.teamIdx))
-    : opts;
-  return filtered.slice(0, count);
+function computeDecidedWinners(results: SimResults): Partial<Record<SeriesKey, number>> {
+  const out: Partial<Record<SeriesKey, number>> = {};
+  for (const k of SERIES_KEYS) {
+    const arr = results.seriesWinners[k];
+    if (!arr || arr.length === 0) continue;
+    const counts = new Map<number, number>();
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (v === 0xff) continue;
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    let bestIdx = -1;
+    let bestN = 0;
+    for (const [idx, n] of counts) {
+      if (n > bestN) {
+        bestN = n;
+        bestIdx = idx;
+      }
+    }
+    if (bestIdx >= 0 && bestN / arr.length >= DECIDED_THRESHOLD) out[k] = bestIdx;
+  }
+  return out;
 }
 
 // ── Bracket primitives (clickable) ────────────────────────────────────
@@ -91,6 +103,7 @@ function CompetitorRow({
   forced,
   faded,
   onClick,
+  placeholderHint,
   ariaLabel,
 }: {
   seed: number;
@@ -100,6 +113,7 @@ function CompetitorRow({
   forced?: boolean;
   faded?: boolean;
   onClick?: () => void;
+  placeholderHint?: string;
   ariaLabel?: string;
 }) {
   const isTBD = team === "TBD" || team === "Play-In" || team === "?";
@@ -109,9 +123,11 @@ function CompetitorRow({
     interactive ? "cursor-pointer" : "cursor-default",
     forced
       ? "bg-emerald-500/20 text-foreground"
-      : faded
-        ? "bg-transparent text-muted-foreground/60"
-        : "bg-transparent hover:bg-muted/60 text-foreground",
+      : isTBD
+        ? "bg-muted/20 text-muted-foreground/70"
+        : faded
+          ? "bg-transparent text-muted-foreground/60"
+          : "bg-transparent hover:bg-muted/60 text-foreground",
   ].join(" ");
   return (
     <button
@@ -131,7 +147,13 @@ function CompetitorRow({
         // eslint-disable-next-line @next/next/no-img-element
         <img src={teamLogoUrl(team)} alt="" width={16} height={16} className="shrink-0" />
       )}
-      <span className="truncate text-xs font-medium">{team}</span>
+      {isTBD ? (
+        <span className="truncate text-[11px] italic text-muted-foreground/70">
+          {placeholderHint ?? "TBD"}
+        </span>
+      ) : (
+        <span className="truncate text-xs font-medium">{team}</span>
+      )}
       {!isTBD && (
         <span className="ml-auto truncate text-[10px] tabular-nums text-muted-foreground">
           {pct != null ? `${pct.toFixed(0)}%` : (fullName ?? "")}
@@ -141,82 +163,212 @@ function CompetitorRow({
   );
 }
 
+/** Inline picker shown in place of a "TBD" competitor row. Lists every team
+ *  that has ever won `upstreamKey` in the baseline sims, with frequency.
+ *  Picking a team forces `upstreamKey` to that team — the slot then fills. */
+function TBDPicker({
+  results,
+  upstreamKey,
+  onPick,
+  placeholderHint,
+}: {
+  results: SimResults;
+  upstreamKey: SeriesKey;
+  onPick: (teamIdx: number) => void;
+  placeholderHint?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const options = useMemo(() => {
+    const arr = results.seriesWinners[upstreamKey];
+    if (!arr) return [] as Array<{ idx: number; team: string; pct: number }>;
+    const counts = new Map<number, number>();
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (v === 0xff) continue;
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    const total = arr.length;
+    return [...counts.entries()]
+      .map(([idx, n]) => ({ idx, team: results.teamNames[idx] ?? "?", pct: (n / total) * 100 }))
+      .sort((a, b) => b.pct - a.pct);
+  }, [results, upstreamKey]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative" style={{ width: "100%" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-1.5 px-2 transition-colors cursor-pointer bg-muted/20 text-muted-foreground/80 hover:bg-muted/60"
+        style={{ height: CELL_H }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="w-4 shrink-0" />
+        <span className="truncate text-[11px] italic">{placeholderHint ?? "Pick team…"}</span>
+        <span className="ml-auto text-[10px] text-muted-foreground">▾</span>
+      </button>
+      {open ? (
+        <div
+          className="absolute left-0 top-full z-50 mt-0.5 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-lg"
+          style={{ width: BOX_W }}
+          role="listbox"
+        >
+          {options.length === 0 ? (
+            <div className="px-2 py-1.5 text-[11px] italic text-muted-foreground">
+              No eligible teams
+            </div>
+          ) : (
+            options.map((o) => (
+              <button
+                key={o.idx}
+                type="button"
+                role="option"
+                className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs hover:bg-muted/60"
+                onClick={() => {
+                  onPick(o.idx);
+                  setOpen(false);
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={teamLogoUrl(o.team)} alt="" width={14} height={14} className="shrink-0" />
+                <span className="truncate font-medium text-foreground">{o.team}</span>
+                <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                  {o.pct.toFixed(0)}%
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SlotBox({
   slotKey,
   higher,
   lower,
+  higherUpstreamKey,
+  lowerUpstreamKey,
   results,
   forces,
+  decided,
+  mask,
   onForce,
-  flip,
 }: {
   slotKey: SeriesKey;
-  higher: { seed: number; team: string };
-  lower: { seed: number; team: string };
+  higher: { seed: number; team: string } | null;
+  lower: { seed: number; team: string } | null;
+  /** Series whose winner fills the higher position. When null, this is an R1
+   *  slot whose competitors are seeded directly (no upstream — TBD impossible). */
+  higherUpstreamKey?: SeriesKey;
+  lowerUpstreamKey?: SeriesKey;
   results: SimResults | null;
   forces: ForceMap;
+  decided: Partial<Record<SeriesKey, number>>;
+  mask: Uint8Array | null;
   onForce: (slot: SlotKey, teamIdx: number | null) => void;
-  flip?: boolean;
 }) {
+  const decidedIdx = decided[slotKey];
+  const isDecided = decidedIdx != null;
+  // A "decided" slot is locked — show the real-world winner, no override.
   const forced = forces[slotKey];
+  const effectiveForced = isDecided ? decidedIdx : forced;
+
   const teamIdx = (team: string): number | null => {
     if (!results) return null;
     const i = results.teamIndex.get(team);
     return i ?? null;
   };
-  const higherIdx = teamIdx(higher.team);
-  const lowerIdx = teamIdx(lower.team);
-  const isHigherForced = forced != null && forced === higherIdx;
-  const isLowerForced = forced != null && forced === lowerIdx;
 
-  // Conditional advance % for each team in this slot, computed cheaply from
-  // baseline winners array (so the user sees how often each side wins).
+  const higherShown = higher ?? { seed: 0, team: "TBD" };
+  const lowerShown = lower ?? { seed: 0, team: "TBD" };
+  const higherIdx = higher ? teamIdx(higher.team) : null;
+  const lowerIdx = lower ? teamIdx(lower.team) : null;
+  const isHigherForced = effectiveForced != null && effectiveForced === higherIdx;
+  const isLowerForced = effectiveForced != null && effectiveForced === lowerIdx;
+
+  // Conditional pct: % of *surviving* (mask) sims where each team won this
+  // slot. Uses mask so values reflect current force constraints — not baseline.
   const slotArr = results?.seriesWinners[slotKey];
   const totalSims = results?.numSims ?? 0;
   let higherWins = 0;
   let lowerWins = 0;
-  if (slotArr && higherIdx != null && lowerIdx != null) {
+  let surviving = 0;
+  if (slotArr && mask) {
     for (let i = 0; i < totalSims; i++) {
-      if (slotArr[i] === higherIdx) higherWins++;
-      else if (slotArr[i] === lowerIdx) lowerWins++;
+      if (!mask[i]) continue;
+      surviving++;
+      if (higherIdx != null && slotArr[i] === higherIdx) higherWins++;
+      else if (lowerIdx != null && slotArr[i] === lowerIdx) lowerWins++;
     }
   }
-  const denom = higherWins + lowerWins;
-  const higherPct = denom > 0 ? (higherWins / denom) * 100 : null;
-  const lowerPct = denom > 0 ? (lowerWins / denom) * 100 : null;
+  // Display pct as fraction of surviving sims (so "DET 75% / CLE 5%" tells you
+  // 20% of the time the matchup wasn't even DET vs CLE).
+  const higherPct = higherIdx != null && surviving > 0 ? (higherWins / surviving) * 100 : null;
+  const lowerPct = lowerIdx != null && surviving > 0 ? (lowerWins / surviving) * 100 : null;
 
   return (
     <div
-      className="overflow-hidden rounded-md border border-border bg-card"
+      className="overflow-visible rounded-md border border-border bg-card"
       style={{ width: BOX_W }}
     >
-      <CompetitorRow
-        seed={higher.seed}
-        team={higher.team}
-        pct={higherPct}
-        forced={isHigherForced}
-        faded={forced != null && !isHigherForced}
-        onClick={
-          higherIdx != null
-            ? () => onForce(slotKey, isHigherForced ? null : higherIdx)
-            : undefined
-        }
-        ariaLabel={`${flip ? "" : ""}force ${higher.team} to win ${slotKey}`}
-      />
+      {higher == null && higherUpstreamKey && results ? (
+        <TBDPicker
+          results={results}
+          upstreamKey={higherUpstreamKey}
+          onPick={(idx) => onForce(higherUpstreamKey, idx)}
+          placeholderHint="Click to pick"
+        />
+      ) : (
+        <CompetitorRow
+          seed={higherShown.seed}
+          team={higherShown.team}
+          pct={higherPct}
+          forced={isHigherForced}
+          faded={effectiveForced != null && !isHigherForced}
+          onClick={
+            !isDecided && higherIdx != null
+              ? () => onForce(slotKey, isHigherForced ? null : higherIdx)
+              : undefined
+          }
+          ariaLabel={`force ${higherShown.team} to win ${slotKey}`}
+        />
+      )}
       <div className="border-t border-border" />
-      <CompetitorRow
-        seed={lower.seed}
-        team={lower.team}
-        pct={lowerPct}
-        forced={isLowerForced}
-        faded={forced != null && !isLowerForced}
-        onClick={
-          lowerIdx != null
-            ? () => onForce(slotKey, isLowerForced ? null : lowerIdx)
-            : undefined
-        }
-        ariaLabel={`force ${lower.team} to win ${slotKey}`}
-      />
+      {lower == null && lowerUpstreamKey && results ? (
+        <TBDPicker
+          results={results}
+          upstreamKey={lowerUpstreamKey}
+          onPick={(idx) => onForce(lowerUpstreamKey, idx)}
+          placeholderHint="Click to pick"
+        />
+      ) : (
+        <CompetitorRow
+          seed={lowerShown.seed}
+          team={lowerShown.team}
+          pct={lowerPct}
+          forced={isLowerForced}
+          faded={effectiveForced != null && !isLowerForced}
+          onClick={
+            !isDecided && lowerIdx != null
+              ? () => onForce(slotKey, isLowerForced ? null : lowerIdx)
+              : undefined
+          }
+          ariaLabel={`force ${lowerShown.team} to win ${slotKey}`}
+        />
+      )}
     </div>
   );
 }
@@ -269,27 +421,39 @@ interface SeedPair {
   lower: { seed: number; team: string };
 }
 
-function pickFromForceOrSlot(
+/** Returns the team that won an upstream series — only if the user forced it
+ *  or it's already real-world decided. Otherwise null (downstream slot stays
+ *  blank until the user advances something). */
+function derivedWinner(
   results: SimResults,
-  forcedR1: SeriesKey,
-  fallbackSlot: SeriesKey,
-  excludeIdx: Set<number>,
+  upstreamKey: SeriesKey,
   forces: ForceMap,
+  decided: Partial<Record<SeriesKey, number>>,
   defaultPair: SeedPair,
-): { seed: number; team: string } {
-  const forcedTeamIdx = forces[forcedR1];
-  if (forcedTeamIdx != null) {
-    const team = results.teamNames[forcedTeamIdx] ?? "?";
-    const seed = team === defaultPair.higher.team
-      ? defaultPair.higher.seed
-      : team === defaultPair.lower.team
-        ? defaultPair.lower.seed
-        : 0;
-    return { seed, team };
-  }
-  const top = topTeamsForSlot(results, fallbackSlot, excludeIdx, TEAMS_PER_SLOT_FALLBACK)[0];
-  if (top) return { seed: 0, team: top.team };
-  return { seed: 0, team: "TBD" };
+): { seed: number; team: string } | null {
+  const idx = decided[upstreamKey] ?? forces[upstreamKey];
+  if (idx == null) return null;
+  const team = results.teamNames[idx] ?? "?";
+  const seed = team === defaultPair.higher.team
+    ? defaultPair.higher.seed
+    : team === defaultPair.lower.team
+      ? defaultPair.lower.seed
+      : 0;
+  return { seed, team };
+}
+
+/** Same shape as derivedWinner but for slots whose own winner could already
+ *  be decided/forced (used for CF→Finals derivation where defaultPair is just
+ *  the cf box content). */
+function derivedSlotWinner(
+  results: SimResults,
+  key: SeriesKey,
+  forces: ForceMap,
+  decided: Partial<Record<SeriesKey, number>>,
+): { seed: number; team: string } | null {
+  const idx = decided[key] ?? forces[key];
+  if (idx == null) return null;
+  return { seed: 0, team: results.teamNames[idx] ?? "?" };
 }
 
 function ConferenceBracket({
@@ -297,6 +461,8 @@ function ConferenceBracket({
   seeds,
   results,
   forces,
+  decided,
+  mask,
   onForce,
   flip,
 }: {
@@ -304,6 +470,8 @@ function ConferenceBracket({
   seeds: [number, string][];
   results: SimResults | null;
   forces: ForceMap;
+  decided: Partial<Record<SeriesKey, number>>;
+  mask: Uint8Array | null;
   onForce: (slot: SlotKey, teamIdx: number | null) => void;
   flip?: boolean;
 }) {
@@ -329,55 +497,30 @@ function ConferenceBracket({
     },
   ];
 
-  // R2 derived: top half = (1v8 winner) vs (4v5 winner); bot half = (3v6 winner) vs (2v7 winner)
+  // R2 derives strictly from forced/decided R1 winners — blank otherwise.
+  // Standard NBA bracket halves (matches engine: top=1v8×4v5, bot=2v7×3v6).
+  // Top half: r1.1v8 (top) vs r1.4v5 (bottom).
+  // Bot half: r1.3v6 (top) vs r1.2v7 (bottom) — keeps R1 column visually 1,4,3,2.
+  const r2TopHigherKey = r1Pairs[0].key; // r1.1v8
+  const r2TopLowerKey = r1Pairs[1].key;  // r1.4v5
+  const r2BotHigherKey = r1Pairs[2].key; // r1.3v6
+  const r2BotLowerKey = r1Pairs[3].key;  // r1.2v7
   const r2Top = results
     ? {
-        higher: pickFromForceOrSlot(
-          results,
-          r1Pairs[0].key,
-          r2Key(conf, "top"),
-          new Set(),
-          forces,
-          r1Pairs[0].pair,
-        ),
-        lower: pickFromForceOrSlot(
-          results,
-          r1Pairs[1].key,
-          r2Key(conf, "top"),
-          new Set(),
-          forces,
-          r1Pairs[1].pair,
-        ),
+        higher: derivedWinner(results, r2TopHigherKey, forces, decided, r1Pairs[0].pair),
+        lower: derivedWinner(results, r2TopLowerKey, forces, decided, r1Pairs[1].pair),
       }
-    : { higher: { seed: 0, team: "TBD" }, lower: { seed: 0, team: "TBD" } };
+    : { higher: null, lower: null };
   const r2Bot = results
     ? {
-        higher: pickFromForceOrSlot(
-          results,
-          r1Pairs[2].key,
-          r2Key(conf, "bot"),
-          new Set(),
-          forces,
-          r1Pairs[2].pair,
-        ),
-        lower: pickFromForceOrSlot(
-          results,
-          r1Pairs[3].key,
-          r2Key(conf, "bot"),
-          new Set(),
-          forces,
-          r1Pairs[3].pair,
-        ),
+        higher: derivedWinner(results, r2BotHigherKey, forces, decided, r1Pairs[2].pair),
+        lower: derivedWinner(results, r2BotLowerKey, forces, decided, r1Pairs[3].pair),
       }
-    : { higher: { seed: 0, team: "TBD" }, lower: { seed: 0, team: "TBD" } };
+    : { higher: null, lower: null };
 
-  // CF derived: r2.top winner vs r2.bot winner.
-  const cfHigher = results
-    ? pickFromForceOrSlot(results, r2Key(conf, "top"), `cf.${conf}` as SeriesKey, new Set(), forces, r2Top)
-    : { seed: 0, team: "TBD" };
-  const cfLower = results
-    ? pickFromForceOrSlot(results, r2Key(conf, "bot"), `cf.${conf}` as SeriesKey, new Set(), forces, r2Bot)
-    : { seed: 0, team: "TBD" };
+  // CF derives from R2 top/bot winners (each may be forced, decided, or blank).
+  const cfHigher = results ? derivedSlotWinner(results, r2Key(conf, "top"), forces, decided) : null;
+  const cfLower = results ? derivedSlotWinner(results, r2Key(conf, "bot"), forces, decided) : null;
 
   const totalH = r1Pairs.length * SLOT_H;
 
@@ -391,8 +534,9 @@ function ConferenceBracket({
             lower={pair.lower}
             results={results}
             forces={forces}
+            decided={decided}
+            mask={mask}
             onForce={onForce}
-            flip={flip}
           />
         </div>
       ))}
@@ -402,18 +546,21 @@ function ConferenceBracket({
   const r2Col = (
     <div className="flex flex-col justify-around" style={{ height: totalH }}>
       {[
-        { key: r2Key(conf, "top"), pair: r2Top },
-        { key: r2Key(conf, "bot"), pair: r2Bot },
-      ].map(({ key, pair }) => (
+        { key: r2Key(conf, "top"), pair: r2Top, hKey: r2TopHigherKey, lKey: r2TopLowerKey },
+        { key: r2Key(conf, "bot"), pair: r2Bot, hKey: r2BotHigherKey, lKey: r2BotLowerKey },
+      ].map(({ key, pair, hKey, lKey }) => (
         <div key={key} className="flex items-center" style={{ height: SLOT_H * 2 }}>
           <SlotBox
             slotKey={key}
             higher={pair.higher}
             lower={pair.lower}
+            higherUpstreamKey={hKey}
+            lowerUpstreamKey={lKey}
             results={results}
             forces={forces}
+            decided={decided}
+            mask={mask}
             onForce={onForce}
-            flip={flip}
           />
         </div>
       ))}
@@ -427,10 +574,13 @@ function ConferenceBracket({
           slotKey={`cf.${conf}` as SeriesKey}
           higher={cfHigher}
           lower={cfLower}
+          higherUpstreamKey={r2Key(conf, "top")}
+          lowerUpstreamKey={r2Key(conf, "bot")}
           results={results}
           forces={forces}
+          decided={decided}
+          mask={mask}
           onForce={onForce}
-          flip={flip}
         />
       </div>
     </div>
@@ -470,8 +620,8 @@ export function WhatIfTab({
   const [forces, setForces] = useState<ForceMap>({});
   const [subTab, setSubTab] = useState<WhatIfSubTab>("teams");
 
-  const slotOptions = useMemo(
-    () => (simResults ? computeSlotOptions(simResults) : null),
+  const decidedWinners = useMemo(
+    () => (simResults ? computeDecidedWinners(simResults) : {}),
     [simResults],
   );
   const mask = useMemo(
@@ -602,11 +752,15 @@ export function WhatIfTab({
                 seeds={simData.bracket.westSeeds}
                 results={simResults}
                 forces={forces}
+                decided={decidedWinners}
+                mask={mask}
                 onForce={updateForce}
               />
               <FinalsColumn
                 results={simResults}
                 forces={forces}
+                decided={decidedWinners}
+                mask={mask}
                 onForce={updateForce}
                 champion={champTeam}
               />
@@ -615,33 +769,16 @@ export function WhatIfTab({
                 seeds={simData.bracket.eastSeeds}
                 results={simResults}
                 forces={forces}
+                decided={decidedWinners}
+                mask={mask}
                 onForce={updateForce}
                 flip
               />
             </div>
           </div>
-
-          {/* Play-In selectors (kept compact since the play-in is a 4-team
-              double-elimination — clickable matchup boxes don't map cleanly). */}
-          {slotOptions ? (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {(["east7", "east8", "west7", "west8"] as const).map((k) => (
-                <PlayInSelect
-                  key={k}
-                  slotKey={k}
-                  label={
-                    k === "east7" ? "East 7 seed"
-                      : k === "east8" ? "East 8 seed"
-                        : k === "west7" ? "West 7 seed"
-                          : "West 8 seed"
-                  }
-                  options={slotOptions[k] ?? []}
-                  forced={forces[k]}
-                  onForce={updateForce}
-                />
-              ))}
-            </div>
-          ) : null}
+          {/* Play-in dropdowns intentionally omitted: by the time the user
+              opens the Simulator the play-in is finished and 7/8 seeds are
+              baked into bracket.eastSeeds/westSeeds. */}
         </CardContent>
       </Card>
 
@@ -853,24 +990,22 @@ export function WhatIfTab({
 function FinalsColumn({
   results,
   forces,
+  decided,
+  mask,
   onForce,
   champion,
 }: {
   results: SimResults;
   forces: ForceMap;
+  decided: Partial<Record<SeriesKey, number>>;
+  mask: Uint8Array | null;
   onForce: (slot: SlotKey, teamIdx: number | null) => void;
   champion: string | null;
 }) {
-  // Finals matchup: cf.east winner vs cf.west winner. Use forces if present,
-  // otherwise top-1 from each conference's CF series.
-  const eastForced = forces["cf.east" as SeriesKey];
-  const westForced = forces["cf.west" as SeriesKey];
-  const eastTeam = eastForced != null
-    ? results.teamNames[eastForced]
-    : (topTeamsForSlot(results, "cf.east" as SeriesKey, null, 1)[0]?.team ?? "TBD");
-  const westTeam = westForced != null
-    ? results.teamNames[westForced]
-    : (topTeamsForSlot(results, "cf.west" as SeriesKey, null, 1)[0]?.team ?? "TBD");
+  // Finals matchup: derived strictly from cf.east + cf.west winners.
+  // Blank until each conference final is forced or decided.
+  const westTeam = derivedSlotWinner(results, "cf.west" as SeriesKey, forces, decided);
+  const eastTeam = derivedSlotWinner(results, "cf.east" as SeriesKey, forces, decided);
 
   return (
     <div
@@ -882,10 +1017,14 @@ function FinalsColumn({
       </div>
       <SlotBox
         slotKey={"finals" as SeriesKey}
-        higher={{ seed: 0, team: westTeam }}
-        lower={{ seed: 0, team: eastTeam }}
+        higher={westTeam}
+        lower={eastTeam}
+        higherUpstreamKey={"cf.west" as SeriesKey}
+        lowerUpstreamKey={"cf.east" as SeriesKey}
         results={results}
         forces={forces}
+        decided={decided}
+        mask={mask}
         onForce={onForce}
       />
       <div className="mt-3 text-center">
@@ -899,44 +1038,6 @@ function FinalsColumn({
           {champion ?? "Click finals matchup to lock"}
         </div>
       </div>
-    </div>
-  );
-}
-
-// ── Play-In selector ──────────────────────────────────────────────────
-
-function PlayInSelect({
-  slotKey,
-  label,
-  options,
-  forced,
-  onForce,
-}: {
-  slotKey: SlotKey;
-  label: string;
-  options: Array<{ teamIdx: number; team: string; pct: number }>;
-  forced?: number;
-  onForce: (slot: SlotKey, teamIdx: number | null) => void;
-}) {
-  return (
-    <div className="rounded-lg border border-border/80 p-3">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {label}
-      </div>
-      <select
-        className="h-8 w-full appearance-none rounded-md border border-input bg-background px-2 text-xs"
-        value={forced ?? ""}
-        onChange={(e) =>
-          onForce(slotKey, e.target.value === "" ? null : Number(e.target.value))
-        }
-      >
-        <option value="">Auto (any team)</option>
-        {options.map((o) => (
-          <option key={o.teamIdx} value={o.teamIdx}>
-            {o.team} ({o.pct.toFixed(1)}%)
-          </option>
-        ))}
-      </select>
     </div>
   );
 }

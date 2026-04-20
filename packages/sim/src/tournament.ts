@@ -685,15 +685,15 @@ export async function runTournamentSim(
       w1w.push(winner);
     }
 
-    // Round 2: preserve original pairings (e1w: 0=1v8, 1=4v5, 2=3v6, 3=2v7).
-    // top = 1v8-winner vs 2v7-winner (was index 0 × 3), bot = 4v5-winner vs 3v6-winner (1 × 2).
+    // Round 2: standard NBA bracket halves (e1w: 0=1v8, 1=4v5, 2=3v6, 3=2v7).
+    // top = 1v8-winner vs 4v5-winner (Half A), bot = 2v7-winner vs 3v6-winner (Half B).
     const eastR2: Array<{ pair: [string, string]; key: string }> = [
-      { pair: orderMatchup(e1w[0], e1w[3], allSeeds, allPlayin), key: "r2.east.top" },
-      { pair: orderMatchup(e1w[1], e1w[2], allSeeds, allPlayin), key: "r2.east.bot" },
+      { pair: orderMatchup(e1w[0], e1w[1], allSeeds, allPlayin), key: "r2.east.top" },
+      { pair: orderMatchup(e1w[3], e1w[2], allSeeds, allPlayin), key: "r2.east.bot" },
     ];
     const westR2: Array<{ pair: [string, string]; key: string }> = [
-      { pair: orderMatchup(w1w[0], w1w[3], allSeeds, allPlayin), key: "r2.west.top" },
-      { pair: orderMatchup(w1w[1], w1w[2], allSeeds, allPlayin), key: "r2.west.bot" },
+      { pair: orderMatchup(w1w[0], w1w[1], allSeeds, allPlayin), key: "r2.west.top" },
+      { pair: orderMatchup(w1w[3], w1w[2], allSeeds, allPlayin), key: "r2.west.bot" },
     ];
 
     const e2w: string[] = [];

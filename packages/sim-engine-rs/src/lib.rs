@@ -1078,11 +1078,11 @@ fn run_shard(sim: &PreparedSim, sim_count: usize, seed: u64) -> ShardOutput {
             w1w.push(winner);
         }
 
-        // R2 — preserve original pairings (top: 1v8 vs 2v7, bot: 4v5 vs 3v6).
-        let (eth, etl) = order_matchup(e1w[0].clone(), e1w[3].clone(), &all_seeds, &all_playin);
-        let (ebh, ebl) = order_matchup(e1w[1].clone(), e1w[2].clone(), &all_seeds, &all_playin);
-        let (wth, wtl) = order_matchup(w1w[0].clone(), w1w[3].clone(), &all_seeds, &all_playin);
-        let (wbh, wbl) = order_matchup(w1w[1].clone(), w1w[2].clone(), &all_seeds, &all_playin);
+        // R2 — standard NBA bracket halves (top: 1v8 vs 4v5 — Half A; bot: 2v7 vs 3v6 — Half B).
+        let (eth, etl) = order_matchup(e1w[0].clone(), e1w[1].clone(), &all_seeds, &all_playin);
+        let (ebh, ebl) = order_matchup(e1w[3].clone(), e1w[2].clone(), &all_seeds, &all_playin);
+        let (wth, wtl) = order_matchup(w1w[0].clone(), w1w[1].clone(), &all_seeds, &all_playin);
+        let (wbh, wbl) = order_matchup(w1w[3].clone(), w1w[2].clone(), &all_seeds, &all_playin);
 
         let east_r2: [(String, String, &str); 2] =
             [(eth, etl, "r2.east.top"), (ebh, ebl, "r2.east.bot")];
