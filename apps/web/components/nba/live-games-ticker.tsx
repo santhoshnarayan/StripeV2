@@ -450,10 +450,18 @@ export function LiveGamesTicker({
         {sorted.map((g) => {
           const home = playersByTeam.get(g.homeTeam) ?? [];
           const away = playersByTeam.get(g.awayTeam) ?? [];
-          // Sort by points desc so the highest-scoring rostered player shows first.
-          const gamePlayers = [...home, ...away].sort(
-            (a, b) => b.livePoints - a.livePoints,
-          );
+          // Override carousel points with per-game points from the leaders
+          // feed so each card shows only what was scored in that specific
+          // game, not the career total. Projected leaders are ppg, so only
+          // apply when leaders.source is "actual".
+          const perGame = new Map<string, number>();
+          if (g.leaders?.source === "actual") {
+            for (const l of g.leaders.home) perGame.set(l.playerId, l.value);
+            for (const l of g.leaders.away) perGame.set(l.playerId, l.value);
+          }
+          const gamePlayers = [...home, ...away]
+            .map((p) => ({ ...p, livePoints: perGame.get(p.playerId) ?? 0 }))
+            .sort((a, b) => b.livePoints - a.livePoints);
           return (
             <GameCard
               key={g.id}
