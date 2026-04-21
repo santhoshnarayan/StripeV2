@@ -278,7 +278,7 @@ const ACTION_TYPE_LABELS: Record<string, string> = {
   snake_end: "Snake Draft Ended",
 };
 
-type LeagueTab = "overview" | "managers" | "players" | "draft" | "results" | "standings" | "simulator" | "chart" | "commissioner";
+type LeagueTab = "overview" | "managers" | "players" | "draft" | "reveal" | "standings" | "simulator" | "chart" | "commissioner";
 type DraftSortOption =
   | "suggested_desc"
   | "projected_desc"
@@ -308,15 +308,15 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
   draft: { label: "Draft Room", shortLabel: "Draft" },
   simulator: { label: "Simulator", shortLabel: "Sim" },
   chart: { label: "Chart", shortLabel: "Chart" },
-  results: { label: "Reveal", shortLabel: "Reveal" },
+  reveal: { label: "Reveal", shortLabel: "Reveal" },
   standings: { label: "Standings", shortLabel: "Standings" },
   commissioner: { label: "Commissioner", shortLabel: "Commish" },
 };
 
 function getLeagueTabOrder(phase: string, isCommissioner?: boolean): LeagueTab[] {
   const base: LeagueTab[] = phase === "draft" || phase === "invite"
-    ? ["draft", "simulator", "overview", "managers", "players", "results", "standings"]
-    : ["standings", "chart", "simulator", "overview", "managers", "players", "draft", "results"];
+    ? ["draft", "simulator", "overview", "managers", "players", "reveal", "standings"]
+    : ["standings", "chart", "simulator", "overview", "managers", "players", "draft", "reveal"];
   if (isCommissioner) base.push("commissioner");
   return base;
 }
@@ -2960,7 +2960,19 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         simProjectedPpg={
           leagueSimResults
             ? Object.fromEntries(
-                leagueSimResults.players.map((p) => [p.espnId, p.ppg]),
+                leagueSimResults.players.map((p) => {
+                  // Sim-derived per-game expected: total projected fantasy pts
+                  // divided by projected games the team plays. This differs from
+                  // raw input ppg because the sim conditions on team making the
+                  // main bracket — play-in losers get scaled down, eliminated
+                  // teams get excluded entirely. Falls back to input ppg if the
+                  // denominator is zero (shouldn't happen post-filter).
+                  const perGame =
+                    p.projectedGames > 0
+                      ? p.projectedPoints / p.projectedGames
+                      : p.ppg;
+                  return [p.espnId, perGame];
+                }),
               )
             : undefined
         }
@@ -4263,7 +4275,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         </>
       ) : null}
 
-      {activeTab === "results" ? (
+      {activeTab === "reveal" ? (
         <section className="space-y-4">
           <Card>
             <CardHeader>
@@ -4558,11 +4570,6 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       <span className="text-xs tabular-nums text-emerald-700 dark:text-emerald-300">
                                         {row.winningBid !== null ? `$${row.winningBid}` : "—"}
                                       </span>
-                                      {row.winnerRemainingBudget !== null && row.winnerRemainingSlots !== null ? (
-                                        <span className="text-[10px] tabular-nums text-emerald-700/70 dark:text-emerald-300/70">
-                                          ${row.winnerRemainingBudget} · {row.winnerRemainingSlots}
-                                        </span>
-                                      ) : null}
                                     </div>
                                     ) : (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-muted/40 px-3 py-1.5">
@@ -4626,27 +4633,34 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                         key={bid.userId}
                                         className={`px-2 py-3 text-right align-middle${isLastBid ? " pr-3" : ""}`}
                                       >
-                                        <span
-                                          className={[
-                                            "inline-block min-w-[3rem] text-sm tabular-nums transition-colors",
-                                            isInvalid
-                                              ? "line-through text-red-500/70 dark:text-red-400/70"
-                                              : isWin
-                                                ? "font-semibold text-emerald-700 dark:text-emerald-300"
-                                                : isRunnerUp
-                                                  ? "font-medium text-amber-700 dark:text-amber-300"
-                                                  : bid.amount === 0
-                                                    ? "italic text-muted-foreground/70"
-                                                    : bid.amount === null
-                                                      ? "text-muted-foreground/50"
-                                                      : "text-muted-foreground",
-                                          ].join(" ")}
-                                          title={isInvalid ? `Over max allowed ($${maxAllowed})` : undefined}
-                                        >
-                                          {display}
-                                          {isAuto && bid.amount != null && bid.amount > 0 ? (
-                                            <span className="ml-0.5 text-[9px] text-muted-foreground/60" title="Auto-bid">
-                                              A
+                                        <span className="inline-flex flex-col items-end">
+                                          <span
+                                            className={[
+                                              "inline-block min-w-[3rem] text-sm tabular-nums transition-colors",
+                                              isInvalid
+                                                ? "line-through text-red-500/70 dark:text-red-400/70"
+                                                : isWin
+                                                  ? "font-semibold text-emerald-700 dark:text-emerald-300"
+                                                  : isRunnerUp
+                                                    ? "font-medium text-amber-700 dark:text-amber-300"
+                                                    : bid.amount === 0
+                                                      ? "italic text-muted-foreground/70"
+                                                      : bid.amount === null
+                                                        ? "text-muted-foreground/50"
+                                                        : "text-muted-foreground",
+                                            ].join(" ")}
+                                            title={isInvalid ? `Over max allowed ($${maxAllowed})` : undefined}
+                                          >
+                                            {display}
+                                            {isAuto && bid.amount != null && bid.amount > 0 ? (
+                                              <span className="ml-0.5 text-[9px] text-muted-foreground/60" title="Auto-bid">
+                                                A
+                                              </span>
+                                            ) : null}
+                                          </span>
+                                          {isWin && row.winnerRemainingBudget !== null && row.winnerRemainingSlots !== null ? (
+                                            <span className="text-[10px] tabular-nums text-emerald-700/70 dark:text-emerald-300/70">
+                                              ${row.winnerRemainingBudget} · {row.winnerRemainingSlots}
                                             </span>
                                           ) : null}
                                         </span>
