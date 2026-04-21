@@ -157,6 +157,8 @@ type LeagueDetail = {
       winnerUserId: string | null;
       winnerName: string | null;
       winningBid: number | null;
+      winnerRemainingBudget: number | null;
+      winnerRemainingSlots: number | null;
       runnerUpName: string | null;
       runnerUpBid: number | null;
       bids: Array<{
@@ -4544,6 +4546,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       <span className="text-xs tabular-nums text-emerald-700 dark:text-emerald-300">
                                         {row.winningBid !== null ? `$${row.winningBid}` : "—"}
                                       </span>
+                                      {row.winnerRemainingBudget !== null && row.winnerRemainingSlots !== null ? (
+                                        <span className="text-[10px] tabular-nums text-emerald-700/70 dark:text-emerald-300/70">
+                                          ${row.winnerRemainingBudget} · {row.winnerRemainingSlots} slot{row.winnerRemainingSlots === 1 ? "" : "s"} left
+                                        </span>
+                                      ) : null}
                                     </div>
                                     ) : (
                                     <div className="inline-flex min-w-[8rem] flex-col rounded-lg bg-muted/40 px-3 py-1.5">
@@ -4991,11 +4998,26 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                             </td>
                             <td className="px-3 py-2 text-foreground">{details}</td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {action.amount !== null ? (
-                                <span className={action.amount < 0 ? "text-green-600" : "text-red-600"}>
-                                  {action.amount < 0 ? "+" : "-"}${Math.abs(action.amount)}
-                                </span>
-                              ) : (
+                              {action.amount !== null ? (() => {
+                                const isRefund =
+                                  action.type === "roster_remove" ||
+                                  action.type === "auction_undo_award";
+                                const isSpend =
+                                  action.type === "draft_award" ||
+                                  action.type === "roster_add" ||
+                                  action.type === "auction_award";
+                                const signedAmount = isRefund
+                                  ? Math.abs(action.amount)
+                                  : isSpend
+                                    ? -Math.abs(action.amount)
+                                    : action.amount;
+                                const isCredit = signedAmount > 0;
+                                return (
+                                  <span className={isCredit ? "text-green-600" : "text-red-600"}>
+                                    {isCredit ? "+" : "-"}${Math.abs(signedAmount)}
+                                  </span>
+                                );
+                              })() : (
                                 <span className="text-muted-foreground">-</span>
                               )}
                             </td>

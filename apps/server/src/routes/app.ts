@@ -1101,6 +1101,23 @@ async function ensureDraftPriorityOrder(
       .where(eq(leagueMember.id, member.membershipId));
   }
 
+  const seedSeq = await nextSequenceNumber(tx, leagueId);
+  await tx.insert(leagueAction).values({
+    id: randomUUID(),
+    leagueId,
+    type: "draft_priority_seed",
+    userId: null,
+    playerId: null,
+    amount: null,
+    actorUserId: null,
+    roundId: null,
+    sequenceNumber: seedSeq,
+    metadata: {
+      order: shuffledMembers.map((member) => member.userId),
+    },
+    createdAt: now,
+  });
+
   return shuffledMembers.map((member, index) => ({
     ...member,
     draftPriority: index + 1,
@@ -1498,6 +1515,11 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     members.map((m) => [m.userId, initSlots]),
   );
   const maxBidByRoundRow = new Map<string, Map<string, number>>(); // key: `${roundId}:${rowIdx}`
+  // Winner's remaining budget / slots AFTER winning this row — for UI display.
+  const winnerStateByRoundRow = new Map<
+    string,
+    { remainingBudget: number; remainingSlots: number }
+  >();
 
   let budgetActionCursor = 0;
 
@@ -1553,8 +1575,15 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       // Deduct this award — winner's budget decreases for subsequent rows
       const award = awardsForReplay[ri];
       const prevBudget = budgetReplay.get(award.userId) ?? 0;
-      budgetReplay.set(award.userId, prevBudget - award.acquisitionBid);
-      slotsReplay.set(award.userId, (slotsReplay.get(award.userId) ?? 1) - 1);
+      const prevSlots = slotsReplay.get(award.userId) ?? 1;
+      const newBudget = prevBudget - award.acquisitionBid;
+      const newSlots = prevSlots - 1;
+      budgetReplay.set(award.userId, newBudget);
+      slotsReplay.set(award.userId, newSlots);
+      winnerStateByRoundRow.set(`${round.id}:${ri}`, {
+        remainingBudget: newBudget,
+        remainingSlots: newSlots,
+      });
     }
   }
 
@@ -1614,6 +1643,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         const award = awardByPlayerId.get(player.id) ?? null;
         // Max allowed bid per user at this row position
         const rowMaxBids = maxBidByRoundRow.get(`${round.id}:${playerRowIndex}`);
+        const winnerPostState = winnerStateByRoundRow.get(`${round.id}:${playerRowIndex}`) ?? null;
         const bids = roundParticipants.map((participant) => {
           const submission = submissionByUserId.get(participant.userId);
           const bidAmount = submission
@@ -1673,6 +1703,8 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
           winnerUserId: award?.userId ?? null,
           winnerName,
           winningBid: winnerBid,
+          winnerRemainingBudget: award ? winnerPostState?.remainingBudget ?? null : null,
+          winnerRemainingSlots: award ? winnerPostState?.remainingSlots ?? null : null,
           runnerUpName: runnerUpNames.length ? runnerUpNames.join(", ") : null,
           runnerUpBid: runnerUpAmount,
           bids: bids.map((bid) => {
@@ -3150,22 +3182,19 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
           state.remainingRosterSlots,
           access.league.minBid,
         );
-        const bidAmount = effectiveBidMapByUser.get(member.userId)?.get(playerId) ?? 0;
+        const rawBid = effectiveBidMapByUser.get(member.userId)?.get(playerId) ?? 0;
 
-        // A 0 bid means the member passed on this player; exclude from contention.
-        if (
-          bidAmount <= 0 ||
-          bidAmount < access.league.minBid ||
-          bidAmount > currentMaxBid ||
-          bidAmount > state.remainingBudget
-        ) {
-          continue;
-        }
+        // A 0 bid means the member passed on this player.
+        if (rawBid <= 0) continue;
+        // If the member submitted a bid above their max allowed (budget tied
+        // up by remaining slot minimums), clamp to max instead of discarding.
+        const effectiveBid = Math.min(rawBid, currentMaxBid);
+        if (effectiveBid < access.league.minBid) continue;
 
-        if (bidAmount > topBid) {
-          topBid = bidAmount;
+        if (effectiveBid > topBid) {
+          topBid = effectiveBid;
           contenders = [member.userId];
-        } else if (bidAmount === topBid) {
+        } else if (effectiveBid === topBid) {
           contenders.push(member.userId);
         }
       }
@@ -3174,6 +3203,9 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
         continue;
       }
 
+      const bestPlayer = bestCandidate ? playerMap.get(bestCandidate.playerId) : null;
+      const bestTotalPoints = bestPlayer?.totalPoints ?? 0;
+      const playerTotalPoints = player.totalPoints ?? 0;
       if (
         !bestCandidate ||
         topBid > bestCandidate.topBid ||
@@ -3181,7 +3213,11 @@ appRouter.post("/leagues/:leagueId/draft/rounds/:roundId/close", async (c) => {
           player.suggestedValue > bestCandidate.suggestedValue) ||
         (topBid === bestCandidate.topBid &&
           player.suggestedValue === bestCandidate.suggestedValue &&
-          player.name.localeCompare(playerMap.get(bestCandidate.playerId)?.name ?? "") < 0)
+          playerTotalPoints > bestTotalPoints) ||
+        (topBid === bestCandidate.topBid &&
+          player.suggestedValue === bestCandidate.suggestedValue &&
+          playerTotalPoints === bestTotalPoints &&
+          player.name.localeCompare(bestPlayer?.name ?? "") < 0)
       ) {
         bestCandidate = {
           playerId,
