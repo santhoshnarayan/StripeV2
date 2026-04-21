@@ -103,8 +103,10 @@ startCronJobs();
 recoverAuctions().catch((err) => console.error("[auction] Recovery failed:", err));
 recoverSnakeDrafts().catch((err) => console.error("[snake] Recovery failed:", err));
 recoverProjectionJobs()
-  .then((n) => {
-    if (n > 0) console.log(`[projections] marked ${n} zombie job(s) as failed`);
+  .then(({ failed, retried }) => {
+    if (failed > 0 || retried > 0) {
+      console.log(`[projections] recovered zombies: failed=${failed} retried=${retried}`);
+    }
   })
   .catch((err) => console.error("[projections] Recovery failed:", err));
 

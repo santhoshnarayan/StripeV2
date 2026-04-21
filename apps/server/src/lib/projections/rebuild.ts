@@ -439,12 +439,16 @@ async function hasInFlightRebuild(leagueId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** On server boot, mark any queued/running rebuild jobs as failed so the
- *  auto-trigger isn't blocked by zombie rows from a previous process. The
- *  staleness guard inside hasInFlightRebuild also handles this defensively,
- *  but explicit cleanup keeps the job table tidy. */
-export async function recoverProjectionJobs(): Promise<number> {
-  const result = await db
+/** On server boot, mark any queued/running rebuild jobs as failed and
+ *  immediately re-enqueue fresh incremental rebuilds for the affected
+ *  leagues so a crash/deploy never leaves the chart data stale. The fresh
+ *  job uses cumulative playHash divergence detection, so it picks up from
+ *  the last-committed event and finishes in seconds (not minutes). */
+export async function recoverProjectionJobs(): Promise<{
+  failed: number;
+  retried: number;
+}> {
+  const killed = await db
     .update(nbaProjectionJob)
     .set({
       status: "failed",
@@ -453,8 +457,28 @@ export async function recoverProjectionJobs(): Promise<number> {
       updatedAt: new Date(),
     })
     .where(inArray(nbaProjectionJob.status, ["queued", "running"]))
-    .returning({ id: nbaProjectionJob.id });
-  return result.length;
+    .returning({ id: nbaProjectionJob.id, leagueId: nbaProjectionJob.leagueId });
+
+  const leagueIds = Array.from(new Set(killed.map((k) => k.leagueId)));
+  let retried = 0;
+  for (const leagueId of leagueIds) {
+    try {
+      await enqueueProjectionRebuild({
+        leagueId,
+        requestedByUserId: null,
+        mode: "incremental",
+      });
+      retried++;
+    } catch (err) {
+      console.error(
+        `[recover] failed to re-enqueue rebuild for league=${leagueId}: ${(err as Error).message}`,
+      );
+    }
+  }
+  if (killed.length > 0 || retried > 0) {
+    console.log(`[recover] killed=${killed.length} retried=${retried}`);
+  }
+  return { failed: killed.length, retried };
 }
 
 /** Auto-triggered from the live-ingest cron after a syncLiveGames batch.

@@ -3996,27 +3996,27 @@ appRouter.get("/leagues/:leagueId/projections-timeline", async (c) => {
   const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
   if (!access) return c.json({ error: "League not found" }, 404);
 
-  const rows = await db
-    .select()
-    .from(nbaEventProjection)
-    .where(eq(nbaEventProjection.leagueId, access.league.id))
-    .orderBy(
-      asc(nbaEventProjection.updatedAtEvent),
-      asc(nbaEventProjection.gameId),
-      asc(nbaEventProjection.sequence),
-    );
-
-  const members = await getLeagueMembers(access.league.id);
+  const [rows, members, latestJobRows] = await Promise.all([
+    db
+      .select()
+      .from(nbaEventProjection)
+      .where(eq(nbaEventProjection.leagueId, access.league.id))
+      .orderBy(
+        asc(nbaEventProjection.updatedAtEvent),
+        asc(nbaEventProjection.gameId),
+        asc(nbaEventProjection.sequence),
+      ),
+    getLeagueMembers(access.league.id),
+    db
+      .select()
+      .from(nbaProjectionJob)
+      .where(eq(nbaProjectionJob.leagueId, access.league.id))
+      .orderBy(desc(nbaProjectionJob.createdAt))
+      .limit(1),
+  ]);
   const managers = members
     .filter((m) => m.userId)
     .map((m) => ({ userId: m.userId, name: m.name }));
-
-  const latestJobRows = await db
-    .select()
-    .from(nbaProjectionJob)
-    .where(eq(nbaProjectionJob.leagueId, access.league.id))
-    .orderBy(desc(nbaProjectionJob.createdAt))
-    .limit(1);
   const latestJob = latestJobRows[0] ?? null;
 
   return c.json({

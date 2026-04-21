@@ -179,7 +179,7 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
   );
   const [simulating, setSimulating] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [subTab, setSubTab] = useState<SimSubTab>("leaderboard");
+  const [subTab, setSubTab] = useState<SimSubTab>("whatif");
   const [config, setConfig] = useState<SimConfig>(DEFAULT_SIM_CONFIG);
   const autoRanRef = useRef(false);
 
@@ -450,9 +450,9 @@ export function SimulatorTab({ leagueId, leagueName, leagueData }: SimulatorTabP
   }, [simResults, rosterInputs, leagueData, eqComputing]);
 
   const subTabs: { id: SimSubTab; label: string }[] = [
+    { id: "whatif", label: "What-If" },
     ...(leagueData ? [{ id: "leaderboard" as SimSubTab, label: "Leaderboard" }] : []),
     { id: "bracket", label: "Bracket" },
-    { id: "whatif", label: "What-If" },
     { id: "players", label: "Players" },
     { id: "teams", label: "Teams" },
     ...(leagueData ? [
