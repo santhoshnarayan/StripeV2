@@ -396,8 +396,8 @@ overwritten on each event. The per-event **DB row** is what scales:
 
 | Datum per event row | Size |
 | --- | --- |
-| `actualPoints` (Record<userId, number>) | `~20 B · M` managers |
-| `projectedPoints` (Record<userId, {5 numbers}>) | `~60 B · M` |
+| `actualPoints` (`Record<userId, number>`) | `~20 B · M` managers |
+| `projectedPoints` (`Record<userId, {5 numbers}>`) | `~60 B · M` |
 | `eventMeta` (text, team, playerIds, scores, clock) | ~200 B |
 | `gamesSnapshot` (array of `LiveGameState`) | up to `~150 B · games_in_progress` ≈ 1 KB |
 | `simCount` + misc | ~50 B |

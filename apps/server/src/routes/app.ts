@@ -238,11 +238,11 @@ async function getTopProjectedByTeam(): Promise<Map<string, TopProjected[]>> {
 
 appRouter.get("/nba/live-ticker", async (c) => {
   // Show today's + recently-ended games. Compact payload for the header ticker.
+  // Window extends 12 h back so US-evening games (≈23:00 UTC) remain visible
+  // past UTC midnight on Railway.
   const now = new Date();
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const endOfTomorrow = new Date(start);
-  endOfTomorrow.setDate(start.getDate() + 2);
+  const start = new Date(now.getTime() - 12 * 60 * 60 * 1000);
+  const endOfTomorrow = new Date(now.getTime() + 36 * 60 * 60 * 1000);
 
   const [rows, seedByTeam, topProjected, statRows] = await Promise.all([
     db
