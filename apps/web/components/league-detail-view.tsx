@@ -4548,7 +4548,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                                       </span>
                                       {row.winnerRemainingBudget !== null && row.winnerRemainingSlots !== null ? (
                                         <span className="text-[10px] tabular-nums text-emerald-700/70 dark:text-emerald-300/70">
-                                          ${row.winnerRemainingBudget} · {row.winnerRemainingSlots} slot{row.winnerRemainingSlots === 1 ? "" : "s"} left
+                                          ${row.winnerRemainingBudget} · {row.winnerRemainingSlots}
                                         </span>
                                       ) : null}
                                     </div>
