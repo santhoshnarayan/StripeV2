@@ -33,6 +33,8 @@ function shortPlayerName(displayName: string): string {
   return `${parts[0][0]}. ${parts.slice(1).join(" ")}`;
 }
 
+const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
 function formatClock(t: TickerGame): string {
   if (t.status === "in") {
     const q = t.period && t.period > 4 ? `OT${t.period - 4}` : `Q${t.period ?? 1}`;
@@ -41,11 +43,17 @@ function formatClock(t: TickerGame): string {
   if (t.status === "post") return "Final";
   if (t.startTime) {
     const d = new Date(t.startTime);
+    const now = new Date();
+    const sameDay =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
     const h = d.getHours();
     const m = d.getMinutes();
     const ampm = h >= 12 ? "p" : "a";
     const h12 = h % 12 || 12;
-    return m === 0 ? `${h12}${ampm}` : `${h12}:${m.toString().padStart(2, "0")}${ampm}`;
+    const time = m === 0 ? `${h12}${ampm}` : `${h12}:${m.toString().padStart(2, "0")}${ampm}`;
+    return sameDay ? time : `${WEEKDAY_SHORT[d.getDay()]} ${time}`;
   }
   return "";
 }
