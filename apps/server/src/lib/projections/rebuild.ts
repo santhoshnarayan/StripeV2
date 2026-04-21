@@ -14,10 +14,7 @@ import {
   user,
 } from "@repo/db";
 import {
-  DEFAULT_SIM_CONFIG,
   buildEventSnapshots,
-  computeManagerProjections,
-  runTournamentSim,
   type EventSnapshot,
   type GameMeta,
   type LiveGameState,
@@ -26,6 +23,7 @@ import {
   type SimData,
 } from "@repo/sim";
 import { loadActualsByGame } from "../sim/merge-playoff-minutes.js";
+import { simPool } from "./sim-pool.js";
 
 const SIM_COUNT_PER_EVENT = 2_000;
 
@@ -247,35 +245,9 @@ async function runSnapshotSim(
   liveGames: LiveGameState[],
   rosters: RosterInput[],
 ) {
-  const simData: SimData = {
-    ...baseSimData,
-    liveGames,
-  };
-  const results = await runTournamentSim(simData, {
-    ...DEFAULT_SIM_CONFIG,
-    sims: SIM_COUNT_PER_EVENT,
-  });
-  const projections = computeManagerProjections(results, rosters);
-  const projByUser: Record<
-    string,
-    {
-      mean: number;
-      stddev: number;
-      p10: number;
-      p90: number;
-      winProb: number;
-    }
-  > = {};
-  for (const p of projections) {
-    projByUser[p.userId] = {
-      mean: p.mean,
-      stddev: p.stddev,
-      p10: p.p10,
-      p90: p.p90,
-      winProb: p.winProbability,
-    };
-  }
-  return projByUser;
+  // Delegate to the worker-thread pool so the Monte Carlo loop doesn't pin
+  // the main event loop. See apps/server/src/workers/sim-worker.ts.
+  return simPool.run(baseSimData, liveGames, rosters, SIM_COUNT_PER_EVENT);
 }
 
 /** Walk current snapshots vs stored projections in chronological order and
