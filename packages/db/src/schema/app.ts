@@ -47,6 +47,14 @@ export const leagueMember = pgTable(
       table.leagueId,
       table.userId,
     ),
+    userStatusIdx: index("league_member_user_status_idx").on(
+      table.userId,
+      table.status,
+    ),
+    leagueStatusIdx: index("league_member_league_status_idx").on(
+      table.leagueId,
+      table.status,
+    ),
   }),
 );
 
@@ -73,6 +81,10 @@ export const leagueInvite = pgTable(
     leagueEmailUnique: uniqueIndex("league_invite_league_email_unique").on(
       table.leagueId,
       table.email,
+    ),
+    emailStatusIdx: index("league_invite_email_status_idx").on(
+      table.email,
+      table.status,
     ),
   }),
 );
@@ -101,6 +113,11 @@ export const draftRound = pgTable(
     resolvedAt: timestamp("resolved_at"),
   },
   (table) => ({
+    leagueStatusRoundIdx: index("draft_round_league_status_round_idx").on(
+      table.leagueId,
+      table.status,
+      table.roundNumber,
+    ),
     leagueRoundUnique: uniqueIndex("draft_round_league_round_unique").on(
       table.leagueId,
       table.roundNumber,
@@ -479,6 +496,11 @@ export const nbaPlay = pgTable(
       table.wallclock,
     ),
     scoringIdx: index("nba_play_scoring_idx").on(table.gameId, table.isScoringPlay),
+    gameValidSeqIdx: index("nba_play_game_valid_seq_idx").on(
+      table.gameId,
+      table.valid,
+      table.sequenceNumber,
+    ),
   }),
 );
 
@@ -565,20 +587,34 @@ export const nbaEventProjection = pgTable(
   }),
 );
 
-export const nbaProjectionJob = pgTable("nba_projection_job", {
-  id: text("id").primaryKey(),
-  leagueId: text("league_id")
-    .notNull()
-    .references(() => league.id, { onDelete: "cascade" }),
-  status: text("status").notNull().default("queued"),
-  totalEvents: integer("total_events"),
-  processedEvents: integer("processed_events").notNull().default(0),
-  startedAt: timestamp("started_at"),
-  finishedAt: timestamp("finished_at"),
-  lastError: text("last_error"),
-  requestedByUserId: text("requested_by_user_id").references(() => user.id, {
-    onDelete: "set null",
+export const nbaProjectionJob = pgTable(
+  "nba_projection_job",
+  {
+    id: text("id").primaryKey(),
+    leagueId: text("league_id")
+      .notNull()
+      .references(() => league.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("queued"),
+    totalEvents: integer("total_events"),
+    processedEvents: integer("processed_events").notNull().default(0),
+    startedAt: timestamp("started_at"),
+    finishedAt: timestamp("finished_at"),
+    lastError: text("last_error"),
+    requestedByUserId: text("requested_by_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    leagueCreatedIdx: index("nba_projection_job_league_created_idx").on(
+      table.leagueId,
+      table.createdAt,
+    ),
+    leagueStatusUpdatedIdx: index("nba_projection_job_league_status_updated_idx").on(
+      table.leagueId,
+      table.status,
+      table.updatedAt,
+    ),
   }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+);
