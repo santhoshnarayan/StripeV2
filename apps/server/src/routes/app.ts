@@ -1130,7 +1130,12 @@ async function persistPriorityOrder(
 }
 
 async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string) {
+  const t0 = Date.now();
+  const mark = (label: string) => {
+    console.log(`[league-detail:${leagueId.slice(0, 10)}] ${label}=${Date.now() - t0}ms`);
+  };
   const access = await getLeagueAccess(viewerUserId, leagueId);
+  mark("access");
 
   if (!access) {
     return null;
@@ -1229,6 +1234,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       )
       .orderBy(asc(nbaGame.startTime)),
   ]);
+  mark("mainParallel");
 
   const latestResolvedRound = resolvedRounds[0] ?? null;
   const auctionConfig = auctionConfigFromLeague(access.league, members.length);
@@ -1238,6 +1244,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     getPlayerPoolForAuction(auctionConfig),
     computeLivePointsByPlayer(rosteredPlayerIds),
   ]);
+  mark("playersAndLivePoints");
 
   const playerMap = new Map(players.map((player) => [player.id, player]));
   const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
@@ -1402,13 +1409,8 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
           .where(inArray(draftSubmission.roundId, resolvedRoundIds)),
       ])
     : [[] as Array<typeof draftRoundPlayer.$inferSelect>, [] as Array<typeof draftSubmission.$inferSelect>];
+  mark("resolvedRoundData");
   const resolvedSubmissionIds = resolvedSubmissions.map((submission) => submission.id);
-  const resolvedBidRows = resolvedSubmissionIds.length
-    ? await db
-        .select()
-        .from(draftBid)
-        .where(inArray(draftBid.submissionId, resolvedSubmissionIds))
-    : [];
   const historyUserIds = Array.from(
     new Set([
       ...resolvedSubmissions.map((submission) => submission.userId),
@@ -1417,9 +1419,18 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         .map((entry) => entry.userId),
     ]),
   ).filter((userId) => !memberNameMap.has(userId));
-  const historyUsers = historyUserIds.length
-    ? await db.select().from(user).where(inArray(user.id, historyUserIds))
-    : [];
+  const [resolvedBidRows, historyUsers] = await Promise.all([
+    resolvedSubmissionIds.length
+      ? db
+          .select()
+          .from(draftBid)
+          .where(inArray(draftBid.submissionId, resolvedSubmissionIds))
+      : Promise.resolve([] as Array<typeof draftBid.$inferSelect>),
+    historyUserIds.length
+      ? db.select().from(user).where(inArray(user.id, historyUserIds))
+      : Promise.resolve([] as Array<typeof user.$inferSelect>),
+  ]);
+  mark("bidsAndHistoryUsers");
   const historyUserEntries: Array<[string, string]> = [
     ...Array.from(memberNameMap.entries()),
     ...historyUsers.map((historyUser) => [historyUser.id, historyUser.name] as [string, string]),
@@ -1678,7 +1689,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     };
   });
 
-  return {
+  const result = {
     league: {
       ...access.league,
       commissionerName: memberNameMap.get(access.league.commissionerUserId) ?? "Unknown",
@@ -1805,6 +1816,8 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     livePoints: Object.fromEntries(livePointsEntries),
     liveGames: liveGamesRows,
   };
+  mark("total");
+  return result;
 }
 
 appRouter.get("/dashboard", async (c) => {
