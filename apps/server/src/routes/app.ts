@@ -244,7 +244,7 @@ appRouter.get("/nba/live-ticker", async (c) => {
   const endOfTomorrow = new Date(start);
   endOfTomorrow.setDate(start.getDate() + 2);
 
-  const [rows, seedByTeam, topProjected] = await Promise.all([
+  const [rows, seedByTeam, topProjected, statRows] = await Promise.all([
     db
       .select()
       .from(nbaGame)
@@ -257,19 +257,7 @@ appRouter.get("/nba/live-ticker", async (c) => {
       .orderBy(asc(nbaGame.startTime)),
     getTeamSeedMap(),
     getTopProjectedByTeam(),
-  ]);
-
-  // Pull actual per-player stats for any live/post games so hover tooltips
-  // can show real leaders instead of projections.
-  const activeIds = rows
-    .filter((g) => g.status === "in" || g.status === "post")
-    .map((g) => g.id);
-  const statsByGame = new Map<
-    string,
-    Array<{ playerId: string; playerName: string; teamAbbrev: string; points: number }>
-  >();
-  if (activeIds.length > 0) {
-    const statRows = await db
+    db
       .select({
         gameId: nbaPlayerGameStats.gameId,
         playerId: nbaPlayerGameStats.playerId,
@@ -278,17 +266,33 @@ appRouter.get("/nba/live-ticker", async (c) => {
         points: nbaPlayerGameStats.points,
       })
       .from(nbaPlayerGameStats)
-      .where(inArray(nbaPlayerGameStats.gameId, activeIds));
-    for (const s of statRows) {
-      const arr = statsByGame.get(s.gameId) ?? [];
-      arr.push({
-        playerId: s.playerId,
-        playerName: s.playerName,
-        teamAbbrev: s.teamAbbrev,
-        points: s.points ?? 0,
-      });
-      statsByGame.set(s.gameId, arr);
-    }
+      .innerJoin(nbaGame, eq(nbaPlayerGameStats.gameId, nbaGame.id))
+      .where(
+        and(
+          inArray(nbaGame.status, ["in", "post"]),
+          or(
+            eq(nbaGame.status, "in"),
+            and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)),
+          ),
+        ),
+      ),
+  ]);
+
+  // Index per-player stats for any live/post games so hover tooltips
+  // can show real leaders instead of projections.
+  const statsByGame = new Map<
+    string,
+    Array<{ playerId: string; playerName: string; teamAbbrev: string; points: number }>
+  >();
+  for (const s of statRows) {
+    const arr = statsByGame.get(s.gameId) ?? [];
+    arr.push({
+      playerId: s.playerId,
+      playerName: s.playerName,
+      teamAbbrev: s.teamAbbrev,
+      points: s.points ?? 0,
+    });
+    statsByGame.set(s.gameId, arr);
   }
 
   function buildLeaders(
@@ -426,23 +430,24 @@ appRouter.get("/nba/games/:eventId/win-probability", async (c) => {
 
 appRouter.get("/nba/sim-live-games", async (c) => {
   // Return LiveGameState-shaped payload for the web simulator.
-  const games = await db
-    .select()
-    .from(nbaGame)
-    .where(sql`${nbaGame.seriesKey} IS NOT NULL AND ${nbaGame.status} IN ('in','post')`)
-    .orderBy(asc(nbaGame.startTime));
+  const [games, playerRows] = await Promise.all([
+    db
+      .select()
+      .from(nbaGame)
+      .where(sql`${nbaGame.seriesKey} IS NOT NULL AND ${nbaGame.status} IN ('in','post')`)
+      .orderBy(asc(nbaGame.startTime)),
+    db
+      .select({
+        gameId: nbaPlayerGameStats.gameId,
+        playerId: nbaPlayerGameStats.playerId,
+        points: nbaPlayerGameStats.points,
+      })
+      .from(nbaPlayerGameStats)
+      .innerJoin(nbaGame, eq(nbaPlayerGameStats.gameId, nbaGame.id))
+      .where(sql`${nbaGame.seriesKey} IS NOT NULL AND ${nbaGame.status} IN ('in','post')`),
+  ]);
 
   if (games.length === 0) return c.json({ games: [] });
-
-  const gameIds = games.map((g) => g.id);
-  const playerRows = await db
-    .select({
-      gameId: nbaPlayerGameStats.gameId,
-      playerId: nbaPlayerGameStats.playerId,
-      points: nbaPlayerGameStats.points,
-    })
-    .from(nbaPlayerGameStats)
-    .where(inArray(nbaPlayerGameStats.gameId, gameIds));
 
   const ptsByGame = new Map<string, Record<string, number>>();
   for (const r of playerRows) {
