@@ -26,6 +26,7 @@ import { decryptBidAmount } from "../lib/bid-crypto.js";
 import {
   auctionConfigFromLeague,
   getPlayerPoolMapForAuction,
+  type PlayerPoolEntry,
 } from "../lib/player-pool.js";
 
 const LEAGUE_ID = "founders-league";
@@ -49,13 +50,10 @@ type Award = {
   isAutoAssigned: boolean;
 };
 
-type Player = {
-  id: string;
-  name: string;
-  team: string;
-  suggestedValue: number;
-  totalPoints: number | null;
-};
+type Player = Pick<
+  PlayerPoolEntry,
+  "id" | "name" | "team" | "suggestedValue" | "totalPoints"
+>;
 
 type MemberState = { remainingBudget: number; remainingRosterSlots: number };
 
@@ -312,7 +310,7 @@ async function main() {
       .where(eq(draftRoundPlayer.roundId, round.id));
     const eligible = roundPlayerRows
       .map((rp) => playerMap.get(rp.playerId))
-      .filter((p): p is Player => Boolean(p));
+      .filter((p): p is PlayerPoolEntry => Boolean(p));
 
     const submissions = await db
       .select()
