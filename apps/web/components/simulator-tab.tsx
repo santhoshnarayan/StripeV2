@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -13,7 +14,28 @@ import { BracketView } from "@/components/sim/bracket-view";
 import { BracketMobileColumnsView } from "@/components/sim/bracket-mobile-view";
 import { AdjustmentsView } from "@/components/sim/adjustments-view";
 import { setBracketConstants } from "@/components/sim/adjustments-tab-explore";
-import { WhatIfTab } from "@/components/sim/whatif-tab";
+
+// Lazy-load the What-If tab — 2500+ lines of JS + heavy sync useMemos on
+// mount. Splitting it out of the simulator bundle lets us show a skeleton
+// the instant the user clicks the sub-tab instead of blocking on compile +
+// first-render work.
+function WhatIfTabSkeleton() {
+  return (
+    <div className="space-y-4 animate-pulse">
+      <div className="h-8 w-48 bg-muted rounded" />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="h-24 bg-muted/50 rounded border border-border" />
+        ))}
+      </div>
+      <div className="h-64 bg-muted/30 rounded border border-border" />
+    </div>
+  );
+}
+const WhatIfTab = dynamic(
+  () => import("@/components/sim/whatif-tab").then((m) => ({ default: m.WhatIfTab })),
+  { ssr: false, loading: () => <WhatIfTabSkeleton /> },
+);
 import { PlayerAvatar, TeamLogo } from "@/components/sim/player-avatar";
 import { SimulatorLeaderboard } from "@/components/league/simulator-leaderboard";
 import { appApiFetch } from "@/lib/app-api";
