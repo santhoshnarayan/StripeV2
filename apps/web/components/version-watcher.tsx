@@ -18,10 +18,10 @@ async function fetchRemoteVersion(): Promise<string | null> {
   }
 }
 
-function showRefreshToast() {
+function showRefreshToast(loaded: string, available: string) {
   toast("A new version is available", {
     id: TOAST_ID,
-    description: "Refresh to load the latest updates. You'll stay logged in.",
+    description: `Loaded ${loaded} → available ${available}. Refresh to update; you'll stay logged in.`,
     duration: Number.POSITIVE_INFINITY,
     action: {
       label: "Refresh",
@@ -47,7 +47,7 @@ export function VersionWatcher() {
       if (cancelled || shownRef.current) return;
       if (remote && remote !== "dev" && remote !== BUILD_VERSION) {
         shownRef.current = true;
-        showRefreshToast();
+        showRefreshToast(BUILD_VERSION, remote);
       }
     };
 
