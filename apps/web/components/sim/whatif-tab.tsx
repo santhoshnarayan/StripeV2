@@ -1057,7 +1057,9 @@ export function WhatIfTab({
   adjustmentsDirty,
 }: WhatIfTabProps) {
   const [forces, setForces] = useState<ForceMap>({});
-  const [subTab, setSubTab] = useState<WhatIfSubTab>("teams");
+  const [subTab, setSubTab] = useState<WhatIfSubTab>(
+    rosters && rosters.length > 0 ? "fantasy" : "teams",
+  );
   const [playerView, setPlayerView] = useState<PlayerView>("simple");
   const [teamsMode, setTeamsMode] = useState<"cumulative" | "exact">("cumulative");
   const [playerMetric, setPlayerMetric] = useState<"total" | "ppg" | "pplay">("total");
@@ -1472,11 +1474,11 @@ export function WhatIfTab({
       {/* Sub-tab nav */}
       <div className="flex flex-nowrap items-center gap-1 overflow-x-auto">
         {([
-          { id: "teams" as WhatIfSubTab, label: "Teams" },
-          { id: "players" as WhatIfSubTab, label: "Players" },
           ...(rosters && rosters.length > 0
             ? [{ id: "fantasy" as WhatIfSubTab, label: "Fantasy Teams" }]
             : []),
+          { id: "teams" as WhatIfSubTab, label: "Teams" },
+          { id: "players" as WhatIfSubTab, label: "Players" },
           { id: "ratings" as WhatIfSubTab, label: "Team Ratings" },
           ...(teamPlayers
             ? [

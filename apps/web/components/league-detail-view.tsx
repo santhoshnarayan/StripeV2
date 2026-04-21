@@ -49,6 +49,8 @@ type LeagueDetail = {
     commissionerUserId: string;
     commissionerName: string;
     isCommissioner: boolean;
+    isMember: boolean;
+    isPublic: boolean;
     canEditRosterSize: boolean;
   };
   members: Array<{
@@ -313,11 +315,23 @@ const LEAGUE_TAB_DEFS: Record<LeagueTab, { label: string; shortLabel: string }> 
   commissioner: { label: "Commissioner", shortLabel: "Commish" },
 };
 
-function getLeagueTabOrder(phase: string, isCommissioner?: boolean): LeagueTab[] {
+const PUBLIC_TABS: ReadonlySet<LeagueTab> = new Set([
+  "standings",
+  "chart",
+  "simulator",
+  "reveal",
+]);
+
+function getLeagueTabOrder(
+  phase: string,
+  isCommissioner?: boolean,
+  isMember: boolean = true,
+): LeagueTab[] {
   const base: LeagueTab[] = phase === "draft" || phase === "invite"
     ? ["draft", "simulator", "overview", "managers", "players", "reveal", "standings"]
     : ["standings", "chart", "simulator", "overview", "managers", "players", "draft", "reveal"];
   if (isCommissioner) base.push("commissioner");
+  if (!isMember) return base.filter((t) => PUBLIC_TABS.has(t));
   return base;
 }
 
@@ -1884,7 +1898,13 @@ function StandingsPanel({
   );
 }
 
-export function LeagueDetailView({ leagueId }: { leagueId: string }) {
+export function LeagueDetailView({
+  leagueId,
+  initialTab,
+}: {
+  leagueId: string;
+  initialTab?: LeagueTab;
+}) {
   const router = useRouter();
   const { data: session } = useSession();
   const viewerUserId = session?.user?.id ?? null;
@@ -1901,6 +1921,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [invitePending, setInvitePending] = useState(false);
   const [leagueName, setLeagueName] = useState("");
   const [rosterSize, setRosterSize] = useState("10");
+  const [leagueIsPublic, setLeagueIsPublic] = useState(false);
   const [settingsError, setSettingsError] = useState("");
   const [settingsPending, setSettingsPending] = useState(false);
   const [roundMode, setRoundMode] = useState<"selected" | "all_remaining">("selected");
@@ -1914,7 +1935,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [memberActionId, setMemberActionId] = useState<string | null>(null);
   const [bidValues, setBidValues] = useState<Record<string, string>>({});
-  const [activeTab, setActiveTab] = useState<LeagueTab>("overview");
+  const [activeTab, setActiveTab] = useState<LeagueTab>(initialTab ?? "overview");
   const [showDraftedPlayers, setShowDraftedPlayers] = useState(false);
   const [showOnlySelected, setShowOnlySelected] = useState(false);
   const [showAddPlayers, setShowAddPlayers] = useState(false);
@@ -1985,6 +2006,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         if (!silent) {
           setLeagueName(payload.league.name);
           setRosterSize(String(payload.league.rosterSize));
+          setLeagueIsPublic(payload.league.isPublic);
           setSelectedPlayerIds([]);
           const initialBids = payload.currentRound
             ? Object.fromEntries(
@@ -2061,10 +2083,18 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
   useEffect(() => {
     if (data?.league.phase) {
-      const order = getLeagueTabOrder(data.league.phase, data.league.isCommissioner);
-      setActiveTab(order[0] ?? "overview");
+      const order = getLeagueTabOrder(
+        data.league.phase,
+        data.league.isCommissioner,
+        data.league.isMember,
+      );
+      if (initialTab && order.includes(initialTab)) {
+        setActiveTab(initialTab);
+      } else {
+        setActiveTab(order[0] ?? "overview");
+      }
     }
-  }, [leagueId, data?.league.phase]);
+  }, [leagueId, data?.league.phase, data?.league.isMember, initialTab]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -2369,8 +2399,10 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
       const payload: {
         name: string;
         rosterSize?: number;
+        isPublic?: boolean;
       } = {
         name: leagueName,
+        isPublic: leagueIsPublic,
       };
 
       if (data?.league.canEditRosterSize) {
@@ -2957,22 +2989,20 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           })),
         }))}
         livePoints={data.livePoints ?? {}}
-        simProjectedPpg={
+        simPlayerProjections={
           leagueSimResults
             ? Object.fromEntries(
-                leagueSimResults.players.map((p) => {
-                  // Sim-derived per-game expected: total projected fantasy pts
-                  // divided by projected games the team plays. This differs from
-                  // raw input ppg because the sim conditions on team making the
-                  // main bracket — play-in losers get scaled down, eliminated
-                  // teams get excluded entirely. Falls back to input ppg if the
-                  // denominator is zero (shouldn't happen post-filter).
-                  const perGame =
-                    p.projectedGames > 0
-                      ? p.projectedPoints / p.projectedGames
-                      : p.ppg;
-                  return [p.espnId, perGame];
-                }),
+                leagueSimResults.players.map((p) => [
+                  p.espnId,
+                  {
+                    byGamePts: p.projectedPointsByGame,
+                    byGameProb: p.projectedGamesByGame,
+                    avgPpg:
+                      p.projectedGames > 0
+                        ? p.projectedPoints / p.projectedGames
+                        : p.ppg,
+                  },
+                ]),
               )
             : undefined
         }
@@ -2980,7 +3010,7 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
 
       <section className="rounded-2xl border border-border/80 bg-background/90 p-2">
         <div className="flex flex-nowrap gap-1 overflow-x-auto sm:gap-2">
-          {getLeagueTabOrder(data.league.phase, data.league.isCommissioner).map((tabId) => {
+          {getLeagueTabOrder(data.league.phase, data.league.isCommissioner, data.league.isMember).map((tabId) => {
             const def = LEAGUE_TAB_DEFS[tabId];
             return (
             <button
@@ -3062,6 +3092,23 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
                       required
                       disabled={!data.league.canEditRosterSize}
                     />
+                  </div>
+                  <div className="flex items-start gap-3 rounded-lg border border-border/80 bg-muted/40 px-3 py-3">
+                    <input
+                      id="league-public-settings"
+                      type="checkbox"
+                      checked={leagueIsPublic}
+                      onChange={(event) => setLeagueIsPublic(event.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                    />
+                    <div className="space-y-1">
+                      <Label htmlFor="league-public-settings" className="cursor-pointer">
+                        Public league
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Anyone with the link can view standings, chart, simulator, and reveal. Other tabs stay private to members.
+                      </p>
+                    </div>
                   </div>
                   {settingsError ? (
                     <p className="text-sm text-destructive">{settingsError}</p>

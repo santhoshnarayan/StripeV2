@@ -22,6 +22,10 @@ export const league = pgTable("league", {
   rosterSize: integer("roster_size").notNull().default(10),
   budgetPerTeam: integer("budget_per_team").notNull().default(200),
   minBid: integer("min_bid").notNull().default(1),
+  /** When true, the standings / chart / simulator / reveal tabs are viewable
+   *  by non-members (including logged-out users). Other tabs still require
+   *  active league membership. */
+  isPublic: boolean("is_public").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -89,10 +89,17 @@ const updateLeagueSettingsSchema = z
   .object({
     name: z.string().min(2).max(120).optional(),
     rosterSize: z.number().int().min(8).max(12).optional(),
+    isPublic: z.boolean().optional(),
   })
-  .refine((value) => typeof value.name === "string" || typeof value.rosterSize === "number", {
-    message: "Provide at least one setting to update",
-  });
+  .refine(
+    (value) =>
+      typeof value.name === "string" ||
+      typeof value.rosterSize === "number" ||
+      typeof value.isPublic === "boolean",
+    {
+      message: "Provide at least one setting to update",
+    },
+  );
 
 export const appRouter = new Hono<{
   Variables: {
@@ -1004,6 +1011,46 @@ async function getLeagueAccess(userId: string, leagueId: string) {
   };
 }
 
+/** Read-only access that permits non-members on leagues where is_public=true.
+ *  Used by the league detail endpoint so public leagues are viewable by anyone
+ *  (including logged-out users). For mutation endpoints keep using
+ *  getLeagueAccess, which stays member-only. */
+async function getLeagueAccessForView(userId: string | null, leagueId: string) {
+  const leagueRows = await db
+    .select()
+    .from(league)
+    .where(eq(league.id, leagueId))
+    .limit(1);
+  const leagueRow = leagueRows[0];
+  if (!leagueRow) return null;
+
+  let membership: typeof leagueMember.$inferSelect | null = null;
+  if (userId) {
+    const membershipRows = await db
+      .select()
+      .from(leagueMember)
+      .where(
+        and(
+          eq(leagueMember.leagueId, leagueId),
+          eq(leagueMember.userId, userId),
+          eq(leagueMember.status, "active"),
+        ),
+      )
+      .limit(1);
+    membership = membershipRows[0] ?? null;
+  }
+
+  if (!membership && !leagueRow.isPublic) return null;
+
+  return {
+    league: leagueRow,
+    membership,
+    isMember: membership !== null,
+    isCommissioner:
+      membership !== null && leagueRow.commissionerUserId === userId,
+  };
+}
+
 async function getLeagueMembers(leagueId: string) {
   return db
     .select({
@@ -1151,12 +1198,15 @@ async function persistPriorityOrder(
   }
 }
 
-async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string) {
+async function buildLeagueDetailResponse(
+  leagueId: string,
+  viewerUserId: string | null,
+) {
   const t0 = Date.now();
   const mark = (label: string) => {
     console.log(`[league-detail:${leagueId.slice(0, 10)}] ${label}=${Date.now() - t0}ms`);
   };
-  const access = await getLeagueAccess(viewerUserId, leagueId);
+  const access = await getLeagueAccessForView(viewerUserId, leagueId);
   mark("access");
 
   if (!access) {
@@ -1328,7 +1378,9 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       db.select().from(draftRoundPlayer).where(eq(draftRoundPlayer.roundId, openRound.id)),
       db.select().from(draftSubmission).where(eq(draftSubmission.roundId, openRound.id)),
     ]);
-    const viewerSubmission = submissions.find((submission) => submission.userId === viewerUserId);
+    const viewerSubmission = viewerUserId
+      ? submissions.find((submission) => submission.userId === viewerUserId)
+      : undefined;
     const explicitBidRows = viewerSubmission
       ? await db
           .select()
@@ -1340,7 +1392,9 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         .filter((bid) => !bid.isAutoDefault)
         .map((bid) => [bid.playerId, decryptBidAmount(bid.encryptedAmount)]),
     );
-    const viewerState = memberStates.get(viewerUserId);
+    const viewerState = viewerUserId
+      ? memberStates.get(viewerUserId)
+      : undefined;
     const myMaxBid = viewerState
       ? computeMaxBid(
           viewerState.remainingBudget,
@@ -1720,6 +1774,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       ...access.league,
       commissionerName: memberNameMap.get(access.league.commissionerUserId) ?? "Unknown",
       isCommissioner: access.isCommissioner,
+      isMember: access.isMember,
       canEditRosterSize:
         access.isCommissioner &&
         access.league.phase !== "scoring" &&
@@ -2066,14 +2121,16 @@ appRouter.post("/invites/:inviteId/accept", async (c) => {
 
 appRouter.get("/leagues/:leagueId", async (c) => {
   const session = getRequiredSession(c);
+  const viewerUserId = session?.user.id ?? null;
 
-  if (!session) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const detail = await buildLeagueDetailResponse(c.req.param("leagueId"), session.user.id);
+  const detail = await buildLeagueDetailResponse(
+    c.req.param("leagueId"),
+    viewerUserId,
+  );
 
   if (!detail) {
+    // Either the league doesn't exist or it's private and the viewer isn't a
+    // member. Use 404 in both cases so we don't leak private-league existence.
     return c.json({ error: "League not found" }, 404);
   }
 
@@ -2166,6 +2223,10 @@ appRouter.post("/leagues/:leagueId/settings", async (c) => {
 
   if (typeof body.data.rosterSize === "number") {
     updates.rosterSize = body.data.rosterSize;
+  }
+
+  if (typeof body.data.isPublic === "boolean") {
+    updates.isPublic = body.data.isPublic;
   }
 
   await db

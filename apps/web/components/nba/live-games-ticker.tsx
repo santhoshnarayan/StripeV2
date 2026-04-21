@@ -363,38 +363,61 @@ function TeamRow({
   );
 }
 
+function roundIdxFromSeriesKey(seriesKey: string): number {
+  if (seriesKey.startsWith("r1")) return 0;
+  if (seriesKey.startsWith("r2")) return 1;
+  if (seriesKey.startsWith("cf")) return 2;
+  if (seriesKey.startsWith("finals")) return 3;
+  return -1;
+}
+
+export type SimPlayerProjection = {
+  byGamePts: number[];
+  byGameProb: number[];
+  avgPpg: number;
+};
+
 export function LiveGamesTicker({
   rosteredPlayers,
   leagueId: _leagueId,
   rosters,
   livePoints,
-  simProjectedPpg,
+  simPlayerProjections,
 }: {
   rosteredPlayers?: Map<string, RosteredPlayerInfo>;
   leagueId?: string;
   rosters?: TickerRoster[];
   livePoints?: Record<string, number>;
-  /** playerId → projected ppg from the league auto-sim. When present we override
-   *  the server's static-projection leaders for upcoming ("pre") games so Key
-   *  Scorers reflects the running simulator, not the 2026 preseason table. */
-  simProjectedPpg?: Record<string, number>;
+  /** playerId → per-game sim projection arrays. For upcoming ("pre") games we
+   *  derive the conditional expected fantasy points for that specific game
+   *  (seriesKey + gameNum → sim index = round*7 + gameNum) instead of an
+   *  average PPG across the remaining season. */
+  simPlayerProjections?: Record<string, SimPlayerProjection>;
 } = {}) {
   const { games } = useLiveGames();
 
   const gamesWithSimProjection = useMemo(() => {
-    if (!simProjectedPpg) return games;
+    if (!simPlayerProjections) return games;
     return games.map((g) => {
       if (g.status !== "pre" || !g.leaders || g.leaders.source !== "projected") {
         return g;
       }
+      if (!g.seriesKey || g.gameNum == null) return g;
+      const roundIdx = roundIdxFromSeriesKey(g.seriesKey);
+      if (roundIdx < 0) return g;
+      const gameIdx = roundIdx * 7 + g.gameNum;
       const override = (
         list: TickerLeaders["home"],
       ): TickerLeaders["home"] =>
         list
-          .map((p) => ({
-            ...p,
-            value: simProjectedPpg[p.playerId] ?? p.value,
-          }))
+          .map((p) => {
+            const proj = simPlayerProjections[p.playerId];
+            if (!proj) return p;
+            const pts = proj.byGamePts[gameIdx] ?? 0;
+            const prob = proj.byGameProb[gameIdx] ?? 0;
+            const perGame = prob > 0 ? pts / prob : proj.avgPpg;
+            return { ...p, value: perGame };
+          })
           .sort((a, b) => b.value - a.value);
       return {
         ...g,
@@ -405,7 +428,7 @@ export function LiveGamesTicker({
         },
       };
     });
-  }, [games, simProjectedPpg]);
+  }, [games, simPlayerProjections]);
 
   const sorted = useMemo(() => {
     const order = { in: 0, pre: 1, post: 2 } as const;
