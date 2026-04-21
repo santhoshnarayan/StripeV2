@@ -1827,45 +1827,68 @@ appRouter.get("/dashboard", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  const memberships = await db
-    .select({
-      leagueId: league.id,
-      leagueName: league.name,
-      phase: league.phase,
-      rosterSize: league.rosterSize,
-      commissionerUserId: league.commissionerUserId,
-      role: leagueMember.role,
-      createdAt: league.createdAt,
-      updatedAt: league.updatedAt,
-    })
-    .from(leagueMember)
-    .innerJoin(league, eq(leagueMember.leagueId, league.id))
-    .where(
-      and(
-        eq(leagueMember.userId, session.user.id),
-        eq(leagueMember.status, "active"),
+  const [memberships, invites] = await Promise.all([
+    db
+      .select({
+        leagueId: league.id,
+        leagueName: league.name,
+        phase: league.phase,
+        rosterSize: league.rosterSize,
+        commissionerUserId: league.commissionerUserId,
+        role: leagueMember.role,
+        createdAt: league.createdAt,
+        updatedAt: league.updatedAt,
+      })
+      .from(leagueMember)
+      .innerJoin(league, eq(leagueMember.leagueId, league.id))
+      .where(
+        and(
+          eq(leagueMember.userId, session.user.id),
+          eq(leagueMember.status, "active"),
+        ),
+      )
+      .orderBy(asc(league.createdAt)),
+    db
+      .select()
+      .from(leagueInvite)
+      .where(
+        and(
+          eq(leagueInvite.email, normalizeEmail(session.user.email)),
+          eq(leagueInvite.status, "pending"),
+        ),
       ),
-    )
-    .orderBy(asc(league.createdAt));
+  ]);
 
   const leagueIds = memberships.map((membership) => membership.leagueId);
   const commissionerIds = Array.from(
     new Set(memberships.map((membership) => membership.commissionerUserId)),
   );
-  const activeMembers = leagueIds.length
-    ? await db
-        .select()
-        .from(leagueMember)
-        .where(
-          and(
-            inArray(leagueMember.leagueId, leagueIds),
-            eq(leagueMember.status, "active"),
-          ),
-        )
-    : [];
-  const commissioners = commissionerIds.length
-    ? await db.select().from(user).where(inArray(user.id, commissionerIds))
-    : [];
+  const inviteLeagueIds = Array.from(new Set(invites.map((invite) => invite.leagueId)));
+  const inviteUserIds = Array.from(new Set(invites.map((invite) => invite.invitedByUserId)));
+
+  const [activeMembers, commissioners, inviteLeagues, inviteUsers] = await Promise.all([
+    leagueIds.length
+      ? db
+          .select()
+          .from(leagueMember)
+          .where(
+            and(
+              inArray(leagueMember.leagueId, leagueIds),
+              eq(leagueMember.status, "active"),
+            ),
+          )
+      : Promise.resolve([] as Array<typeof leagueMember.$inferSelect>),
+    commissionerIds.length
+      ? db.select().from(user).where(inArray(user.id, commissionerIds))
+      : Promise.resolve([] as Array<typeof user.$inferSelect>),
+    inviteLeagueIds.length
+      ? db.select().from(league).where(inArray(league.id, inviteLeagueIds))
+      : Promise.resolve([] as Array<typeof league.$inferSelect>),
+    inviteUserIds.length
+      ? db.select().from(user).where(inArray(user.id, inviteUserIds))
+      : Promise.resolve([] as Array<typeof user.$inferSelect>),
+  ]);
+
   const commissionerMap = new Map(
     commissioners.map((commissioner) => [commissioner.id, commissioner]),
   );
@@ -1875,25 +1898,7 @@ appRouter.get("/dashboard", async (c) => {
     memberCountMap.set(member.leagueId, (memberCountMap.get(member.leagueId) ?? 0) + 1);
   }
 
-  const invites = await db
-    .select()
-    .from(leagueInvite)
-    .where(
-      and(
-        eq(leagueInvite.email, normalizeEmail(session.user.email)),
-        eq(leagueInvite.status, "pending"),
-      ),
-    );
-
-  const inviteLeagueIds = Array.from(new Set(invites.map((invite) => invite.leagueId)));
-  const inviteLeagues = inviteLeagueIds.length
-    ? await db.select().from(league).where(inArray(league.id, inviteLeagueIds))
-    : [];
   const inviteLeagueMap = new Map(inviteLeagues.map((leagueRow) => [leagueRow.id, leagueRow]));
-  const inviteUserIds = Array.from(new Set(invites.map((invite) => invite.invitedByUserId)));
-  const inviteUsers = inviteUserIds.length
-    ? await db.select().from(user).where(inArray(user.id, inviteUserIds))
-    : [];
   const inviteUserMap = new Map(inviteUsers.map((inviteUser) => [inviteUser.id, inviteUser]));
 
   return c.json({
