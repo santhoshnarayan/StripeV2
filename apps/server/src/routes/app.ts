@@ -1136,18 +1136,111 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     return null;
   }
 
-  const members = await getLeagueMembers(leagueId);
+  const BUDGET_ACTION_TYPES = [
+    "roster_remove", "roster_add", "budget_adjust",
+    "auction_award", "auction_undo_award",
+  ];
+  const liveWindowStart = (() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  })();
+  const liveWindowEnd = (() => {
+    const d = new Date(liveWindowStart);
+    d.setDate(d.getDate() + 2);
+    return d;
+  })();
+
+  const [
+    members,
+    pendingInvites,
+    rosterRows,
+    budgetAdj,
+    openRound,
+    resolvedRounds,
+    budgetActions,
+    auctionStateRows,
+    snakeStateRows,
+    actionRows,
+    liveGamesRows,
+  ] = await Promise.all([
+    getLeagueMembers(leagueId),
+    getPendingLeagueInvites(leagueId),
+    db.select().from(rosterEntry).where(eq(rosterEntry.leagueId, leagueId)),
+    getBudgetAdjustments(leagueId),
+    db
+      .select()
+      .from(draftRound)
+      .where(and(eq(draftRound.leagueId, leagueId), eq(draftRound.status, "open")))
+      .orderBy(desc(draftRound.roundNumber))
+      .limit(1)
+      .then((r) => r[0] ?? null),
+    db
+      .select()
+      .from(draftRound)
+      .where(and(eq(draftRound.leagueId, leagueId), eq(draftRound.status, "resolved")))
+      .orderBy(desc(draftRound.roundNumber)),
+    db
+      .select()
+      .from(leagueAction)
+      .where(
+        and(
+          eq(leagueAction.leagueId, leagueId),
+          inArray(leagueAction.type, [...BUDGET_ACTION_TYPES, "round_closed"]),
+        ),
+      )
+      .orderBy(asc(leagueAction.sequenceNumber)),
+    db
+      .select()
+      .from(auctionState)
+      .where(
+        and(
+          eq(auctionState.leagueId, leagueId),
+          inArray(auctionState.status, ["nominating", "bidding", "paused"]),
+        ),
+      )
+      .limit(1),
+    db
+      .select()
+      .from(snakeState)
+      .where(
+        and(
+          eq(snakeState.leagueId, leagueId),
+          inArray(snakeState.status, ["picking", "paused"]),
+        ),
+      )
+      .limit(1),
+    access.isCommissioner
+      ? db
+          .select()
+          .from(leagueAction)
+          .where(eq(leagueAction.leagueId, leagueId))
+          .orderBy(desc(leagueAction.sequenceNumber))
+          .limit(100)
+      : Promise.resolve([] as Array<typeof leagueAction.$inferSelect>),
+    db
+      .select()
+      .from(nbaGame)
+      .where(
+        or(
+          eq(nbaGame.status, "in"),
+          and(gte(nbaGame.date, liveWindowStart), lt(nbaGame.date, liveWindowEnd)),
+        ),
+      )
+      .orderBy(asc(nbaGame.startTime)),
+  ]);
+
+  const latestResolvedRound = resolvedRounds[0] ?? null;
   const auctionConfig = auctionConfigFromLeague(access.league, members.length);
-  const players = await getPlayerPoolForAuction(auctionConfig);
-  const playerMap = new Map(players.map((player) => [player.id, player]));
-  const pendingInvites = await getPendingLeagueInvites(leagueId);
-  const rosterRows = await db
-    .select()
-    .from(rosterEntry)
-    .where(eq(rosterEntry.leagueId, leagueId));
-  const budgetAdj = await getBudgetAdjustments(leagueId);
-  const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
   const rosteredPlayerIds = new Set(rosterRows.map((entry) => entry.playerId));
+
+  const [players, livePointsEntries] = await Promise.all([
+    getPlayerPoolForAuction(auctionConfig),
+    computeLivePointsByPlayer(rosteredPlayerIds),
+  ]);
+
+  const playerMap = new Map(players.map((player) => [player.id, player]));
+  const memberStates = buildMemberStates(access.league, members, rosterRows, playerMap, budgetAdj);
   const rosterByPlayerId = new Map(rosterRows.map((entry) => [entry.playerId, entry]));
   const memberByUserId = new Map(members.map((member) => [member.userId, member]));
   const availablePlayers = players.filter((player) => !rosteredPlayerIds.has(player.id));
@@ -1169,30 +1262,6 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
             : null,
       };
     });
-
-  const openRound = (
-    await db
-      .select()
-      .from(draftRound)
-      .where(and(eq(draftRound.leagueId, leagueId), eq(draftRound.status, "open")))
-      .orderBy(desc(draftRound.roundNumber))
-      .limit(1)
-  )[0] ?? null;
-
-  const resolvedRounds = await db
-    .select()
-    .from(draftRound)
-    .where(and(eq(draftRound.leagueId, leagueId), eq(draftRound.status, "resolved")))
-    .orderBy(desc(draftRound.roundNumber));
-
-  const latestResolvedRound = (
-    await db
-      .select()
-      .from(draftRound)
-      .where(and(eq(draftRound.leagueId, leagueId), eq(draftRound.status, "resolved")))
-      .orderBy(desc(draftRound.roundNumber))
-      .limit(1)
-  )[0] ?? null;
 
   let currentRound: null | {
     id: string;
@@ -1226,14 +1295,10 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
   } = null;
 
   if (openRound) {
-    const roundPlayers = await db
-      .select()
-      .from(draftRoundPlayer)
-      .where(eq(draftRoundPlayer.roundId, openRound.id));
-    const submissions = await db
-      .select()
-      .from(draftSubmission)
-      .where(eq(draftSubmission.roundId, openRound.id));
+    const [roundPlayers, submissions] = await Promise.all([
+      db.select().from(draftRoundPlayer).where(eq(draftRoundPlayer.roundId, openRound.id)),
+      db.select().from(draftSubmission).where(eq(draftSubmission.roundId, openRound.id)),
+    ]);
     const viewerSubmission = submissions.find((submission) => submission.userId === viewerUserId);
     const explicitBidRows = viewerSubmission
       ? await db
@@ -1325,18 +1390,18 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
   );
 
   const resolvedRoundIds = resolvedRounds.map((round) => round.id);
-  const resolvedRoundPlayers = resolvedRoundIds.length
-    ? await db
-        .select()
-        .from(draftRoundPlayer)
-        .where(inArray(draftRoundPlayer.roundId, resolvedRoundIds))
-    : [];
-  const resolvedSubmissions = resolvedRoundIds.length
-    ? await db
-        .select()
-        .from(draftSubmission)
-        .where(inArray(draftSubmission.roundId, resolvedRoundIds))
-    : [];
+  const [resolvedRoundPlayers, resolvedSubmissions] = resolvedRoundIds.length
+    ? await Promise.all([
+        db
+          .select()
+          .from(draftRoundPlayer)
+          .where(inArray(draftRoundPlayer.roundId, resolvedRoundIds)),
+        db
+          .select()
+          .from(draftSubmission)
+          .where(inArray(draftSubmission.roundId, resolvedRoundIds)),
+      ])
+    : [[] as Array<typeof draftRoundPlayer.$inferSelect>, [] as Array<typeof draftSubmission.$inferSelect>];
   const resolvedSubmissionIds = resolvedSubmissions.map((submission) => submission.id);
   const resolvedBidRows = resolvedSubmissionIds.length
     ? await db
@@ -1395,24 +1460,6 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
 
     awardsByRoundId.set(roundId, [...(awardsByRoundId.get(roundId) ?? []), rosterEntryRow]);
   }
-
-  // Replay budget state across resolved rounds to compute max allowed bids.
-  // Includes commissioner actions (roster_remove, roster_add, budget_adjust)
-  // and auction results that happen between sealed-bid rounds.
-  const BUDGET_ACTION_TYPES = [
-    "roster_remove", "roster_add", "budget_adjust",
-    "auction_award", "auction_undo_award",
-  ];
-  const budgetActions = await db
-    .select()
-    .from(leagueAction)
-    .where(
-      and(
-        eq(leagueAction.leagueId, leagueId),
-        inArray(leagueAction.type, [...BUDGET_ACTION_TYPES, "round_closed"]),
-      ),
-    )
-    .orderBy(asc(leagueAction.sequenceNumber));
 
   // Map roundId → sequence number of its round_closed action
   const roundClosedSeq = new Map<string, number>();
@@ -1719,18 +1766,8 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         };
       })
       .sort((left, right) => right.totalPoints - left.totalPoints || left.name.localeCompare(right.name)),
-    auctionState: await (async () => {
-      const rows = await db
-        .select()
-        .from(auctionState)
-        .where(
-          and(
-            eq(auctionState.leagueId, leagueId),
-            inArray(auctionState.status, ["nominating", "bidding", "paused"]),
-          ),
-        )
-        .limit(1);
-      const row = rows[0];
+    auctionState: (() => {
+      const row = auctionStateRows[0];
       if (!row) return null;
       return {
         status: row.status,
@@ -1748,18 +1785,8 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         totalAwards: row.totalAwards,
       };
     })(),
-    snakeState: await (async () => {
-      const rows = await db
-        .select()
-        .from(snakeState)
-        .where(
-          and(
-            eq(snakeState.leagueId, leagueId),
-            inArray(snakeState.status, ["picking", "paused"]),
-          ),
-        )
-        .limit(1);
-      const row = rows[0];
+    snakeState: (() => {
+      const row = snakeStateRows[0];
       if (!row) return null;
       return {
         status: row.status,
@@ -1774,33 +1801,9 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
         expiresAt: row.expiresAt?.toISOString() ?? null,
       };
     })(),
-    actions: access.isCommissioner
-      ? await db
-          .select()
-          .from(leagueAction)
-          .where(eq(leagueAction.leagueId, leagueId))
-          .orderBy(desc(leagueAction.sequenceNumber))
-          .limit(100)
-      : [],
-    livePoints: Object.fromEntries(await computeLivePointsByPlayer(rosteredPlayerIds)),
-    liveGames: await (async () => {
-      const now = new Date();
-      const start = new Date(now);
-      start.setHours(0, 0, 0, 0);
-      const endOfTomorrow = new Date(start);
-      endOfTomorrow.setDate(start.getDate() + 2);
-      const rows = await db
-        .select()
-        .from(nbaGame)
-        .where(
-          or(
-            eq(nbaGame.status, "in"),
-            and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)),
-          ),
-        )
-        .orderBy(asc(nbaGame.startTime));
-      return rows;
-    })(),
+    actions: actionRows,
+    livePoints: Object.fromEntries(livePointsEntries),
+    liveGames: liveGamesRows,
   };
 }
 
