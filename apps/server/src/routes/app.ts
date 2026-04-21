@@ -2,7 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Hono } from "hono";
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
@@ -1787,7 +1787,12 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       const rows = await db
         .select()
         .from(nbaGame)
-        .where(and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)))
+        .where(
+          or(
+            eq(nbaGame.status, "in"),
+            and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)),
+          ),
+        )
         .orderBy(asc(nbaGame.startTime));
       return rows;
     })(),

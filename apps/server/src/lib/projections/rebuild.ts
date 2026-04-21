@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, sql } from "drizzle-orm";
 import {
   db,
   league,
@@ -432,7 +432,7 @@ async function hasInFlightRebuild(leagueId: string): Promise<boolean> {
       and(
         eq(nbaProjectionJob.leagueId, leagueId),
         inArray(nbaProjectionJob.status, ["queued", "running"]),
-        sql`${nbaProjectionJob.updatedAt} >= ${cutoff}`,
+        gte(nbaProjectionJob.updatedAt, cutoff),
       ),
     )
     .limit(1);
