@@ -697,8 +697,10 @@ appRouter.get("/leagues/:leagueId/scoring-timeline", async (c) => {
 const R1_FLOOR_DATE = new Date("2026-04-19T00:00:00Z");
 appRouter.get("/leagues/:leagueId/timeseries", async (c) => {
   const session = getRequiredSession(c);
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
-  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  const access = await getLeagueAccessForView(
+    session?.user?.id ?? null,
+    c.req.param("leagueId"),
+  );
   if (!access) return c.json({ error: "League not found" }, 404);
 
   const rosterRows = await db
@@ -4083,8 +4085,10 @@ appRouter.post("/leagues/:leagueId/snake/end", async (c) => {
 
 appRouter.get("/leagues/:leagueId/projections-timeline", async (c) => {
   const session = getRequiredSession(c);
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
-  const access = await getLeagueAccess(session.user.id, c.req.param("leagueId"));
+  const access = await getLeagueAccessForView(
+    session?.user?.id ?? null,
+    c.req.param("leagueId"),
+  );
   if (!access) return c.json({ error: "League not found" }, 404);
 
   const [rows, members, latestJobRows] = await Promise.all([
