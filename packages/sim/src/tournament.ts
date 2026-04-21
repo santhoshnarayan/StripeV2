@@ -780,6 +780,14 @@ export async function runTournamentSim(
   for (let sim = 0; sim < config.sims; sim++) {
     if (onProgress && sim > 0 && sim % 250 === 0) {
       onProgress(sim / config.sims);
+    }
+    // Yield to the event loop so HTTP handlers on the same Node thread don't
+    // stall while a tournament is crunching. Without this, a single 2k-sim
+    // run pegs the CPU for ~2s and every in-flight request waits on it.
+    // 50 sims ≈ 50ms of CPU, so requests get a window at least that often.
+    // Also needed on the browser side to keep the UI from freezing during
+    // the What-If sim — supersedes the old onProgress-gated yield.
+    if (sim > 0 && sim % 50 === 0) {
       await new Promise((r) => setTimeout(r, 0));
     }
 
