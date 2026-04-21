@@ -1213,7 +1213,7 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
       .where(
         and(
           eq(leagueAction.leagueId, leagueId),
-          inArray(leagueAction.type, [...BUDGET_ACTION_TYPES, "round_closed"]),
+          inArray(leagueAction.type, [...BUDGET_ACTION_TYPES, "round_closed", "draft_award"]),
         ),
       )
       .orderBy(asc(leagueAction.sequenceNumber)),
@@ -1494,16 +1494,6 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     awardsByRoundId.set(roundId, [...(awardsByRoundId.get(roundId) ?? []), rosterEntryRow]);
   }
 
-  // Map roundId → sequence number of its round_closed action
-  const roundClosedSeq = new Map<string, number>();
-  for (const action of budgetActions) {
-    if (action.type === "round_closed" && action.roundId) {
-      roundClosedSeq.set(action.roundId, action.sequenceNumber);
-    }
-  }
-  // Only budget-affecting actions (not round_closed)
-  const onlyBudgetActions = budgetActions.filter((a) => BUDGET_ACTION_TYPES.includes(a.type));
-
   const initBudget = access.league.budgetPerTeam;
   const initSlots = access.league.rosterSize;
   const minBidVal = access.league.minBid;
@@ -1521,69 +1511,68 @@ async function buildLeagueDetailResponse(leagueId: string, viewerUserId: string)
     { remainingBudget: number; remainingSlots: number }
   >();
 
-  let budgetActionCursor = 0;
-
-  function applyBudgetActionsUpTo(maxSeq: number) {
-    while (budgetActionCursor < onlyBudgetActions.length) {
-      const action = onlyBudgetActions[budgetActionCursor];
-      if (action.sequenceNumber >= maxSeq) break;
-      budgetActionCursor++;
-      if (!action.userId || action.amount == null) continue;
-
-      const prevBudget = budgetReplay.get(action.userId) ?? initBudget;
-      const prevSlots = slotsReplay.get(action.userId) ?? initSlots;
-
-      switch (action.type) {
-        case "roster_remove":
-        case "auction_undo_award":
-          // Refund: add amount back, free a slot
-          budgetReplay.set(action.userId, prevBudget + action.amount);
-          slotsReplay.set(action.userId, prevSlots + 1);
-          break;
-        case "roster_add":
-        case "auction_award":
-          // Spend: deduct amount, fill a slot
-          budgetReplay.set(action.userId, prevBudget - action.amount);
-          slotsReplay.set(action.userId, prevSlots - 1);
-          break;
-        case "budget_adjust":
-          // Pure budget change, no slot change
-          budgetReplay.set(action.userId, prevBudget + action.amount);
-          break;
-      }
-    }
+  // Map (roundId, playerId) → UI rowIndex by sorting surviving rosterEntry picks
+  // by acquisitionOrder. Removed picks (no rosterEntry) map to undefined and
+  // won't emit a winner-state snapshot — but their draft_award still mutates
+  // budget/slots so the matching refund action nets out correctly.
+  const rowIndexByRoundPlayer = new Map<string, Map<string, number>>();
+  for (const [roundId, awards] of awardsByRoundId) {
+    const sorted = [...awards].sort((a, b) => a.acquisitionOrder - b.acquisitionOrder);
+    const map = new Map<string, number>();
+    for (let i = 0; i < sorted.length; i++) map.set(sorted[i].playerId, i);
+    rowIndexByRoundPlayer.set(roundId, map);
   }
 
-  // resolvedRounds is desc by roundNumber — replay in ascending order
-  const roundsAsc = [...resolvedRounds].sort((a, b) => a.roundNumber - b.roundNumber);
-  for (const round of roundsAsc) {
-    // Apply all budget-affecting actions that happened BEFORE this round closed
-    const closedSeq = roundClosedSeq.get(round.id) ?? Infinity;
-    applyBudgetActionsUpTo(closedSeq);
+  // Walk the action log in sequence order. Budget / slot state is derived
+  // entirely from actions so refunds and removes net correctly even when the
+  // corresponding rosterEntry row no longer exists.
+  for (const action of budgetActions) {
+    if (action.type === "round_closed") continue;
+    if (!action.userId || action.amount == null) continue;
 
-    const awardsForReplay = [...(awardsByRoundId.get(round.id) ?? [])].sort(
-      (a, b) => a.acquisitionOrder - b.acquisitionOrder,
-    );
+    const prevBudget = budgetReplay.get(action.userId) ?? initBudget;
+    const prevSlots = slotsReplay.get(action.userId) ?? initSlots;
 
-    for (let ri = 0; ri < awardsForReplay.length; ri++) {
-      const snapshot = new Map<string, number>();
-      for (const [uid, budget] of budgetReplay) {
-        const slots = slotsReplay.get(uid) ?? 0;
-        snapshot.set(uid, slots > 0 ? Math.max(0, budget - (slots - 1) * minBidVal) : 0);
+    if (action.type === "draft_award") {
+      const rowIndex =
+        action.roundId && action.playerId
+          ? rowIndexByRoundPlayer.get(action.roundId)?.get(action.playerId)
+          : undefined;
+      if (rowIndex !== undefined && action.roundId) {
+        const snapshot = new Map<string, number>();
+        for (const [uid, budget] of budgetReplay) {
+          const slots = slotsReplay.get(uid) ?? 0;
+          snapshot.set(uid, slots > 0 ? Math.max(0, budget - (slots - 1) * minBidVal) : 0);
+        }
+        maxBidByRoundRow.set(`${action.roundId}:${rowIndex}`, snapshot);
       }
-      maxBidByRoundRow.set(`${round.id}:${ri}`, snapshot);
-      // Deduct this award — winner's budget decreases for subsequent rows
-      const award = awardsForReplay[ri];
-      const prevBudget = budgetReplay.get(award.userId) ?? 0;
-      const prevSlots = slotsReplay.get(award.userId) ?? 1;
-      const newBudget = prevBudget - award.acquisitionBid;
+      const newBudget = prevBudget - action.amount;
       const newSlots = prevSlots - 1;
-      budgetReplay.set(award.userId, newBudget);
-      slotsReplay.set(award.userId, newSlots);
-      winnerStateByRoundRow.set(`${round.id}:${ri}`, {
-        remainingBudget: newBudget,
-        remainingSlots: newSlots,
-      });
+      budgetReplay.set(action.userId, newBudget);
+      slotsReplay.set(action.userId, newSlots);
+      if (rowIndex !== undefined && action.roundId) {
+        winnerStateByRoundRow.set(`${action.roundId}:${rowIndex}`, {
+          remainingBudget: newBudget,
+          remainingSlots: newSlots,
+        });
+      }
+      continue;
+    }
+
+    switch (action.type) {
+      case "roster_remove":
+      case "auction_undo_award":
+        budgetReplay.set(action.userId, prevBudget + action.amount);
+        slotsReplay.set(action.userId, prevSlots + 1);
+        break;
+      case "roster_add":
+      case "auction_award":
+        budgetReplay.set(action.userId, prevBudget - action.amount);
+        slotsReplay.set(action.userId, prevSlots - 1);
+        break;
+      case "budget_adjust":
+        budgetReplay.set(action.userId, prevBudget + action.amount);
+        break;
     }
   }
 
