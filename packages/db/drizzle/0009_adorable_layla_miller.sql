@@ -1,0 +1,1 @@
+ALTER TABLE "nba_event_projection" ADD COLUMN IF NOT EXISTS "play_hash" text;

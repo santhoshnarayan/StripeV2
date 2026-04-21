@@ -136,11 +136,27 @@ async function loadGames(): Promise<GameMeta[]> {
 
 async function loadPlays(gameIds: string[]): Promise<PlayEvent[]> {
   if (gameIds.length === 0) return [];
+  // Exclude plays ESPN has explicitly marked invalid (voided/correction
+  // entries). `valid IS NULL` is included — older rows predate the ingest
+  // wiring that populates this column, and ESPN only sets false when the
+  // play is actually retracted.
+  //
+  // Ordering note: stable chronological sort happens inside
+  // buildEventSnapshots (by wallclock, with gameId+sequence as tiebreakers).
+  // We previously ordered by updatedAt here, which shifted on every sync
+  // because PBP upsert bumps updatedAt — that caused the snapshot pipeline
+  // to see a different play stream each tick. Now we order by the stable
+  // (gameId, sequence) pair; the builder re-sorts by wallclock anyway.
   const rows = await db
     .select()
     .from(nbaPlay)
-    .where(inArray(nbaPlay.gameId, gameIds))
-    .orderBy(asc(nbaPlay.updatedAt), asc(nbaPlay.gameId), asc(nbaPlay.sequenceNumber));
+    .where(
+      and(
+        inArray(nbaPlay.gameId, gameIds),
+        sql`${nbaPlay.valid} is not false`,
+      ),
+    )
+    .orderBy(asc(nbaPlay.gameId), asc(nbaPlay.sequenceNumber));
   return rows.map((r) => ({
     gameId: r.gameId,
     sequence: r.sequenceNumber ?? 0,
@@ -262,58 +278,26 @@ async function runSnapshotSim(
   return projByUser;
 }
 
-/** Cheap signature of a snapshot's *upstream* state: if anything before this
- *  point in the play stream changed (insert / delete / edit), `liveGames`
- *  shifts. So `(eventMeta, liveGames)` is a sufficient identity check.
- *  Used by reconciliation to find the first divergence. */
-function snapshotSignature(snap: EventSnapshot): string {
-  const meta = snapshotEventMeta(snap);
-  const games = snap.liveGames.map((g) => [
-    g.seriesKey,
-    g.gameNum,
-    g.status,
-    g.homeScore,
-    g.awayScore,
-    Math.round(g.remainingFraction * 1000) / 1000,
-  ]);
-  return JSON.stringify([meta, games]);
-}
-
-/** Mirror of snapshotSignature, computed from a stored row. */
-function rowSignature(row: {
-  eventMeta: unknown;
-  gamesSnapshot: unknown;
-}): string {
-  const games = (row.gamesSnapshot as Array<{
-    seriesKey: string;
-    gameNum: number;
-    status: string;
-    homeScore: number;
-    awayScore: number;
-    remainingFraction: number;
-  }> | null) ?? [];
-  return JSON.stringify([
-    row.eventMeta ?? null,
-    games.map((g) => [
-      g.seriesKey,
-      g.gameNum,
-      g.status,
-      g.homeScore,
-      g.awayScore,
-      Math.round(g.remainingFraction * 1000) / 1000,
-    ]),
-  ]);
-}
-
 /** Walk current snapshots vs stored projections in chronological order and
  *  return the index of the first divergence (or snapshots.length if all match
  *  through the existing tail). Divergence triggers truncate-and-rebuild from
  *  that point forward.
  *
- *  Algorithm covers all three reconciliation cases:
- *    - play inserted upstream: stored row's liveGames signature mismatches
- *    - play deleted upstream: stored (gameId, sequence) no longer present
- *    - play edited: eventMeta differs
+ *  Identity check per snapshot: `(gameId, sequence)` as the lookup key, plus
+ *  the snapshot's cumulativeHash — a running FNV-1a of every valid play in
+ *  chronological order up to and including the triggering play. That single
+ *  string fingerprints the entire upstream play stream; if any play was
+ *  inserted, deleted, or edited, the hash shifts from that point forward.
+ *
+ *  Covers all three reconciliation cases:
+ *    - inserted play: new snapshot has no stored row → miss
+ *    - deleted play: stored row exists at (gameId, sequence) but its
+ *      cumulativeHash reflects a play stream with the deleted play in it
+ *    - edited play: same (gameId, sequence), different contentKey → hash
+ *      diverges at that position
+ *
+ *  Rows predating the play_hash column (playHash IS NULL) are treated as
+ *  stale on first match — backfill happens naturally on next rebuild.
  */
 async function findFirstDivergence(
   leagueId: string,
@@ -323,8 +307,7 @@ async function findFirstDivergence(
     .select({
       gameId: nbaEventProjection.gameId,
       sequence: nbaEventProjection.sequence,
-      eventMeta: nbaEventProjection.eventMeta,
-      gamesSnapshot: nbaEventProjection.gamesSnapshot,
+      playHash: nbaEventProjection.playHash,
     })
     .from(nbaEventProjection)
     .where(eq(nbaEventProjection.leagueId, leagueId));
@@ -338,12 +321,13 @@ async function findFirstDivergence(
     const row = byKey.get(key);
     if (!row) {
       // New snapshot — divergence from this point. (Even though *this* row
-      // is just missing, an earlier insert/edit may have shifted `liveGames`
-      // for later rows that DO exist, so we still rebuild forward.)
+      // is just missing, an earlier insert/edit may have shifted the
+      // cumulative hash for later rows that DO exist, so we still rebuild
+      // forward.)
       firstStaleIndex = i;
       break;
     }
-    if (rowSignature(row) !== snapshotSignature(snap)) {
+    if (row.playHash == null || row.playHash !== snap.cumulativeHash) {
       firstStaleIndex = i;
       break;
     }
@@ -551,6 +535,7 @@ async function runProjectionRebuild(
           actualPoints,
           eventMeta: snapshotEventMeta(snap),
           gamesSnapshot: snap.liveGames,
+          playHash: snap.cumulativeHash,
           computedAt: new Date(),
         })
         .where(
@@ -693,6 +678,7 @@ async function buildSnapshotRow(
     projectedPoints,
     eventMeta: snapshotEventMeta(snap),
     gamesSnapshot: snap.liveGames,
+    playHash: snap.cumulativeHash,
     simCount: SIM_COUNT_PER_EVENT,
   };
 }
@@ -720,6 +706,7 @@ async function processSnapshot(
         projectedPoints: row.projectedPoints,
         eventMeta: row.eventMeta,
         gamesSnapshot: row.gamesSnapshot,
+        playHash: row.playHash,
         simCount: row.simCount,
         computedAt: new Date(),
       },

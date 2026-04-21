@@ -1,6 +1,6 @@
 {
-  "id": "5f527064-3010-46dc-a74b-21cc4789c523",
-  "prevId": "ec75eb65-f7bd-48b7-9038-e4ef7d2c7101",
+  "id": "792b6cbe-8d4c-4291-a811-7a72974a937c",
+  "prevId": "5f527064-3010-46dc-a74b-21cc4789c523",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1651,6 +1651,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "play_hash": {
+          "name": "play_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "sim_count": {
           "name": "sim_count",

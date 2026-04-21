@@ -472,9 +472,16 @@ export async function syncGameDetail(eventId: string): Promise<void> {
         tieProbability:
           typeof item.tieWinPercentage === "number" ? item.tieWinPercentage : null,
         wallclock,
-        valid: null,
-        priority: null,
-        modified: null,
+        // ESPN flags voided/correction plays with valid: false. We persist
+        // the raw value so loadPlays() can filter them out before snapshot
+        // build — including invalid plays would advance the score/time line
+        // through events ESPN later retracted.
+        valid: typeof item.valid === "boolean" ? item.valid : null,
+        priority: typeof item.priority === "boolean" ? item.priority : null,
+        modified:
+          typeof item.modified === "string" && item.modified.length > 0
+            ? item.modified
+            : null,
         teamAbbrev,
         playerIds,
         updatedAt: new Date(),

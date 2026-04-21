@@ -64,6 +64,13 @@ export interface EventSnapshot {
   /** espnPlayerId → cumulative points across all games so far.
    *  Fantasy scoring is points-only, so this is also the fantasy total. */
   cumulativePointsByPlayer: Record<string, number>;
+  /** Running FNV-1a hash of every valid play seen so far in chronological
+   *  order (including this snapshot's triggering play). Used by
+   *  findFirstDivergence as the identity check: if any upstream play was
+   *  inserted/deleted/edited, this hash shifts from that point forward.
+   *  Cheap to compute, pure structural — no jsonb, no floats, no object-key
+   *  ordering quirks. */
+  cumulativeHash: string;
 }
 
 // ─── Builder ───────────────────────────────────────────────────────
@@ -76,6 +83,40 @@ interface RunningGameState {
   status: "pre" | "in" | "post";
   playerPoints: Record<string, number>;
   playCount: number;
+}
+
+/** FNV-1a 32-bit running hash. Pure JS so it works in node + browser.
+ *  Collision rate is ~1/2^32 per snapshot — fine for divergence detection
+ *  against O(10k) plays. Uses `Math.imul` to stay in 32-bit integer space. */
+const FNV_OFFSET = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+function fnv1aStep(hash: number, s: string): number {
+  let h = hash;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, FNV_PRIME);
+  }
+  return h >>> 0;
+}
+
+/** Serialize exactly the fields of a play that — if changed by ESPN —
+ *  should invalidate cached projections. Score, scorer, clock/period, and
+ *  play text are meaningful; `updatedAt` (ingest batch time) is not. */
+function playContentKey(p: PlayEvent): string {
+  return [
+    p.gameId,
+    p.sequence,
+    p.period ?? "",
+    p.clock ?? "",
+    p.scoringPlay ? "1" : "0",
+    p.scoreValue ?? "",
+    p.homeScore ?? "",
+    p.awayScore ?? "",
+    p.teamAbbrev ?? "",
+    p.playerIds.join(","),
+    p.wallclock ? p.wallclock.getTime() : "",
+    p.text ?? "",
+  ].join("\x1f");
 }
 
 /** Walks plays in chronological order and emits a snapshot at each
@@ -114,12 +155,19 @@ export function buildEventSnapshots(params: {
 
   const cumulativePoints: Record<string, number> = {};
   const snapshots: EventSnapshot[] = [];
+  let runningHash = FNV_OFFSET;
 
   for (const play of sorted) {
     const meta = gameById.get(play.gameId);
     if (!meta) continue;
     const gs = gameState.get(play.gameId);
     if (!gs) continue;
+
+    // Fold this play into the cumulative hash BEFORE the snapshot-emit
+    // check, so the emitted snapshot's hash covers this triggering play.
+    // Every play (scoring or not) contributes — the hash is a fingerprint
+    // of the full play stream, not just the snapshot-emitting subset.
+    runningHash = fnv1aStep(runningHash, playContentKey(play));
 
     if (play.homeScore != null) gs.homeScore = play.homeScore;
     if (play.awayScore != null) gs.awayScore = play.awayScore;
@@ -196,6 +244,7 @@ export function buildEventSnapshots(params: {
       },
       liveGames,
       cumulativePointsByPlayer: { ...cumulativePoints },
+      cumulativeHash: runningHash.toString(16).padStart(8, "0"),
     });
   }
 

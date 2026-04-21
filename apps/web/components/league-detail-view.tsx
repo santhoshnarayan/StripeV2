@@ -30,7 +30,11 @@ import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
 import { usePolling } from "@/lib/use-polling";
 import { markUserActive } from "@/lib/use-activity";
 
-const POLL_INTERVAL_MS = 8_000;
+// usePolling already pauses when tab is hidden or the user is idle past
+// POLL_INACTIVE_TIMEOUT_MS, so this is the cadence for an active foregrounded
+// session. League-detail data (rosters, members, leagueAction) doesn't need
+// 8s freshness — sim/live ticker poll separately on their own hooks.
+const POLL_INTERVAL_MS = 30_000;
 const POLL_INACTIVE_TIMEOUT_MS = 3 * 60_000;
 
 type LeagueDetail = {

@@ -547,6 +547,12 @@ export const nbaEventProjection = pgTable(
     projectedPoints: jsonb("projected_points").notNull(),
     eventMeta: jsonb("event_meta").notNull(),
     gamesSnapshot: jsonb("games_snapshot").notNull(),
+    /** Cumulative content hash of all valid plays in chronological order up
+     *  to and including the play that triggered this snapshot. Identity check
+     *  for findFirstDivergence — replaces the earlier (eventMeta, liveGames)
+     *  signature comparison which broke on jsonb key normalization. NULL on
+     *  rows written before this column existed; treated as "force rebuild". */
+    playHash: text("play_hash"),
     simCount: integer("sim_count").notNull().default(2000),
     computedAt: timestamp("computed_at").notNull().defaultNow(),
   },
