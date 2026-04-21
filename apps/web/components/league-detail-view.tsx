@@ -1888,6 +1888,11 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   const router = useRouter();
   const { data: session } = useSession();
   const viewerUserId = session?.user?.id ?? null;
+  // Kick off the auto-sim as soon as the league loads so upcoming-game
+  // projections (e.g. the live-ticker Key Scorers panel) can read simulator
+  // output without waiting for the user to open the Simulator tab. Result is
+  // cached in-module, so tabs that also call useAutoSim reuse it.
+  const { simResults: leagueSimResults } = useAutoSim(leagueId);
   const [data, setData] = useState<LeagueDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -2952,6 +2957,13 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
           })),
         }))}
         livePoints={data.livePoints ?? {}}
+        simProjectedPpg={
+          leagueSimResults
+            ? Object.fromEntries(
+                leagueSimResults.players.map((p) => [p.espnId, p.ppg]),
+              )
+            : undefined
+        }
       />
 
       <section className="rounded-2xl border border-border/80 bg-background/90 p-2">

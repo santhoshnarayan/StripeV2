@@ -127,12 +127,12 @@ function LeadersPanel({
 
   return createPortal(
     <div
-      className="fixed z-50 rounded-lg border border-border bg-background shadow-lg p-3 text-xs"
+      className="fixed z-50 rounded-lg border border-border bg-background shadow-lg p-3 text-sm"
       style={style}
     >
       <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-border/50">
         <span className="font-semibold text-foreground">Key scorers</span>
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+        <span className="text-[11px] text-muted-foreground uppercase tracking-wider">
           {isActual ? "actual" : "projected"}
         </span>
       </div>
@@ -189,8 +189,8 @@ function LeadersTeamSection({
   return (
     <div className="flex flex-col gap-0.5 min-w-0">
       <div className="flex items-center gap-1.5 pb-1 border-b border-border/30">
-        <TeamLogo team={team} size={14} />
-        <span className="text-[11px] font-semibold truncate">
+        <TeamLogo team={team} size={16} />
+        <span className="text-xs font-semibold truncate">
           {seed != null ? (
             <span className="text-muted-foreground/70 font-normal mr-0.5">({seed})</span>
           ) : null}
@@ -198,7 +198,7 @@ function LeadersTeamSection({
         </span>
       </div>
       {rows.length === 0 ? (
-        <span className="text-[10px] text-muted-foreground italic py-0.5">—</span>
+        <span className="text-[11px] text-muted-foreground italic py-0.5">—</span>
       ) : (
         rows.map((p) => {
           const mgr = playerToManager.get(p.playerId);
@@ -206,16 +206,16 @@ function LeadersTeamSection({
             <div
               key={p.playerId}
               className={cn(
-                "grid grid-cols-[16px_1fr_auto_64px] items-center gap-1.5 min-w-0 py-0.5",
+                "grid grid-cols-[18px_1fr_auto_72px] items-center gap-1.5 min-w-0 py-0.5",
                 mgr && "font-medium",
               )}
             >
-              <PlayerHeadshot espnId={p.playerId} size={16} />
-              <span className="text-[10px] truncate">{shortPlayerName(p.playerName)}</span>
-              <span className="text-[10px] tabular-nums shrink-0 text-right">
+              <PlayerHeadshot espnId={p.playerId} size={18} />
+              <span className="text-[11px] truncate">{shortPlayerName(p.playerName)}</span>
+              <span className="text-[11px] tabular-nums shrink-0 text-right">
                 {valueLabel === "ppg" ? p.value.toFixed(1) : Math.round(p.value)}
               </span>
-              <span className="text-[10px] truncate text-right text-muted-foreground">
+              <span className="text-[11px] truncate text-right text-muted-foreground">
                 {mgr?.name ?? ""}
               </span>
             </div>
@@ -368,17 +368,48 @@ export function LiveGamesTicker({
   leagueId: _leagueId,
   rosters,
   livePoints,
+  simProjectedPpg,
 }: {
   rosteredPlayers?: Map<string, RosteredPlayerInfo>;
   leagueId?: string;
   rosters?: TickerRoster[];
   livePoints?: Record<string, number>;
+  /** playerId → projected ppg from the league auto-sim. When present we override
+   *  the server's static-projection leaders for upcoming ("pre") games so Key
+   *  Scorers reflects the running simulator, not the 2026 preseason table. */
+  simProjectedPpg?: Record<string, number>;
 } = {}) {
   const { games } = useLiveGames();
 
+  const gamesWithSimProjection = useMemo(() => {
+    if (!simProjectedPpg) return games;
+    return games.map((g) => {
+      if (g.status !== "pre" || !g.leaders || g.leaders.source !== "projected") {
+        return g;
+      }
+      const override = (
+        list: TickerLeaders["home"],
+      ): TickerLeaders["home"] =>
+        list
+          .map((p) => ({
+            ...p,
+            value: simProjectedPpg[p.playerId] ?? p.value,
+          }))
+          .sort((a, b) => b.value - a.value);
+      return {
+        ...g,
+        leaders: {
+          ...g.leaders,
+          home: override(g.leaders.home),
+          away: override(g.leaders.away),
+        },
+      };
+    });
+  }, [games, simProjectedPpg]);
+
   const sorted = useMemo(() => {
     const order = { in: 0, pre: 1, post: 2 } as const;
-    return [...games].sort((a, b) => {
+    return [...gamesWithSimProjection].sort((a, b) => {
       const sa = order[a.status];
       const sb = order[b.status];
       if (sa !== sb) return sa - sb;
@@ -386,7 +417,7 @@ export function LiveGamesTicker({
       const tb = b.startTime ? new Date(b.startTime).getTime() : 0;
       return ta - tb;
     });
-  }, [games]);
+  }, [gamesWithSimProjection]);
 
   // Index rostered players by NBA team abbrev so we can quickly find the set
   // of rostered players involved in a given game.
