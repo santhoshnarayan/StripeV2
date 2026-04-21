@@ -248,7 +248,12 @@ appRouter.get("/nba/live-ticker", async (c) => {
     db
       .select()
       .from(nbaGame)
-      .where(and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)))
+      .where(
+        or(
+          eq(nbaGame.status, "in"),
+          and(gte(nbaGame.date, start), lt(nbaGame.date, endOfTomorrow)),
+        ),
+      )
       .orderBy(asc(nbaGame.startTime)),
     getTeamSeedMap(),
     getTopProjectedByTeam(),
