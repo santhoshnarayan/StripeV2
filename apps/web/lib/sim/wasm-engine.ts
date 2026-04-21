@@ -62,16 +62,32 @@ export function runWasmSim(data: SimData, sims?: number): Promise<SimResults> {
   });
 }
 
+/** The WASM entry point (`runSim`) only takes `sims_override` — it builds the
+ *  rest of the config from `SimConfig::default()` on the Rust side. That means
+ *  anything the user tweaks beyond `sims` (model, stdev, hca, blendWeight) gets
+ *  silently ignored. Until the Rust entry point accepts a full config blob,
+ *  route non-default configs through the TS engine so the UI's model dropdown
+ *  and other knobs actually take effect. */
+function wasmConfigCompatible(config: SimConfig): boolean {
+  return (
+    config.model === "lebron" &&
+    config.stdev === 10 &&
+    config.hca === 3 &&
+    config.blendWeight === 0.5
+  );
+}
+
 /** Runs a tournament sim using the WASM engine when available, falling back to
- *  the TS engine if the worker is unavailable or fails. Progress callbacks only
- *  fire on the TS path; for WASM we emit a synthetic 0 and 1 so UIs that drive
- *  spinners off progress still transition cleanly. */
+ *  the TS engine if the worker is unavailable, the config can't round-trip
+ *  through WASM's limited entry point, or the worker throws. Progress
+ *  callbacks only fire on the TS path; for WASM we emit a synthetic 0 and 1
+ *  so UIs that drive spinners off progress still transition cleanly. */
 export async function runSimAuto(
   data: SimData,
   config: SimConfig,
   onProgress?: (p: number) => void,
 ): Promise<SimResults> {
-  if (wasmAvailable()) {
+  if (wasmAvailable() && wasmConfigCompatible(config)) {
     try {
       onProgress?.(0);
       const results = await runWasmSim(data, config.sims);
