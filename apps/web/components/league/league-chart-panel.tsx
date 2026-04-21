@@ -18,6 +18,11 @@ import { appApiFetch } from "@/lib/app-api";
 import { DEFAULT_CHART_POINT_BUDGET, lttbDownsample } from "@/lib/charts/lttb";
 import { useAutoSim } from "@/lib/use-auto-sim";
 import { usePolling } from "@/lib/use-polling";
+import type {
+  ProjectionEvent as SharedProjectionEvent,
+  ProjectionJobSummary as SharedProjectionJobSummary,
+  ProjectionsResponse as SharedProjectionsResponse,
+} from "@/lib/use-league-projections";
 import { computeManagerProjections } from "@/lib/sim";
 import { cn } from "@/lib/utils";
 
@@ -66,56 +71,9 @@ type LeagueRoster = {
   players: Array<{ playerId: string; playerName: string; playerTeam: string }>;
 };
 
-type ProjectionEvent = {
-  gameId: string;
-  sequence: number;
-  updatedAtEvent: string;
-  kind: "scoring" | "end_of_period" | "end_of_game";
-  actualPoints: Record<string, number>;
-  projectedPoints: Record<
-    string,
-    { mean: number; stddev: number; p10: number; p90: number; winProb: number }
-  >;
-  eventMeta: {
-    text: string | null;
-    teamAbbrev: string | null;
-    playerIds: string[];
-    scoreValue: number | null;
-    period: number | null;
-    clock: string | null;
-    homeScore: number | null;
-    awayScore: number | null;
-    wallclock: string | null;
-  };
-  gamesSnapshot: Array<{
-    seriesKey: string;
-    gameNum: number;
-    status: "pre" | "in" | "post";
-    homeTeam: string;
-    awayTeam: string;
-    homeScore: number;
-    awayScore: number;
-  }> | null;
-  simCount: number;
-  computedAt: string;
-};
-
-type ProjectionJobSummary = {
-  id: string;
-  status: string;
-  totalEvents: number | null;
-  processedEvents: number;
-  startedAt: string | null;
-  finishedAt: string | null;
-  lastError: string | null;
-  createdAt: string;
-};
-
-type ProjectionsResponse = {
-  managers: Array<{ userId: string; name: string }>;
-  events: ProjectionEvent[];
-  latestJob: ProjectionJobSummary | null;
-};
+type ProjectionEvent = SharedProjectionEvent;
+type ProjectionJobSummary = SharedProjectionJobSummary;
+type ProjectionsResponse = SharedProjectionsResponse;
 
 type ChartMode = "prob" | "pts" | "proj";
 type Resolution = "game" | "half" | "scoring";
@@ -213,15 +171,18 @@ export function LeagueChartPanel({
   leagueId,
   rosters,
   viewerEmail,
+  projections,
+  refetchProjections,
 }: {
   leagueId: string;
   rosters: LeagueRoster[];
   viewerEmail?: string | null;
+  projections: ProjectionsResponse | null;
+  refetchProjections: () => Promise<void>;
 }) {
   const { simResults, status: simStatus, pendingEvents } = useAutoSim(leagueId);
   const [timeseries, setTimeseries] = useState<TimeseriesResponse | null>(null);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
-  const [projections, setProjections] = useState<ProjectionsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [mode, setMode] = useState<ChartMode>(() => {
@@ -254,18 +215,14 @@ export function LeagueChartPanel({
 
   const refetchData = useCallback(async () => {
     try {
-      const [t, s, p] = await Promise.all([
+      const [t, s] = await Promise.all([
         appApiFetch<TimeseriesResponse>(
           `/leagues/${encodeURIComponent(leagueId)}/timeseries`,
         ),
         appApiFetch<ScheduleResponse>(`/nba/schedule`),
-        appApiFetch<ProjectionsResponse>(
-          `/leagues/${encodeURIComponent(leagueId)}/projections-timeline`,
-        ).catch(() => null),
       ]);
       setTimeseries(t);
       setSchedule(s);
-      setProjections(p);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -281,37 +238,36 @@ export function LeagueChartPanel({
           method: "POST",
           body: JSON.stringify({ mode }),
         });
-        await refetchData();
+        await Promise.all([refetchData(), refetchProjections()]);
       } catch (e) {
         setError((e as Error).message);
       } finally {
         setRebuildBusy(false);
       }
     },
-    [leagueId, rebuildBusy, refetchData],
+    [leagueId, rebuildBusy, refetchData, refetchProjections],
   );
 
   useEffect(() => {
     void refetchData();
   }, [refetchData]);
 
-  // Re-pull timeseries whenever the sim just finished a live rerun — that's
-  // when new game-end checkpoints exist on the server that the chart hasn't
-  // yet rendered. Also poll every 60s as a fallback.
+  // Re-pull timeseries + projections whenever the sim just finished a live
+  // rerun — that's when new game-end checkpoints + event projections exist on
+  // the server that the chart hasn't yet rendered.
   const prevSimStatusRef = useRef(simStatus);
   useEffect(() => {
     if (prevSimStatusRef.current === "rerunning" && simStatus === "ready") {
       void refetchData();
+      void refetchProjections();
     }
     prevSimStatusRef.current = simStatus;
-  }, [simStatus, refetchData]);
+  }, [simStatus, refetchData, refetchProjections]);
 
-  // Visibility-aware polling for projections-timeline. The server now auto-
-  // triggers an incremental rebuild after every live-ingest tick (~30s), so a
-  // tighter cadence here surfaces new event projections within ~15s while the
-  // user is actively watching. usePolling pauses when the tab is hidden or the
-  // user has been idle (>3 min default), and re-fetches on visibilitychange.
-  usePolling(refetchData, { activeMs: 15_000 });
+  // Visibility-aware polling for timeseries + schedule. Projections timeline
+  // is polled by the parent's useLeagueProjections hook, so we don't double-
+  // fetch it here.
+  usePolling(refetchData, { activeMs: 30_000 });
 
   // Per-manager projection totals (mean + win prob) from the sim.
   const managerProjections = useMemo(() => {

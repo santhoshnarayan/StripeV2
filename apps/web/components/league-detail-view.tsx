@@ -29,6 +29,7 @@ import { LeagueChartPanel } from "@/components/league/league-chart-panel";
 import type { RosteredPlayerInfo } from "@/components/nba/game-detail";
 import { usePolling } from "@/lib/use-polling";
 import { markUserActive } from "@/lib/use-activity";
+import { useLeagueProjections } from "@/lib/use-league-projections";
 
 // usePolling already pauses when tab is hidden or the user is idle past
 // POLL_INACTIVE_TIMEOUT_MS, so this is the cadence for an active foregrounded
@@ -1953,6 +1954,13 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
   // the most recent snapshot is tied to; a new snapshot gets pushed when the
   // source changes (different field, or a discrete action like reset/0/bulk).
   const lastContinuousBidField = useRef<string | null>(null);
+
+  // Pre-fetch the projections timeline the moment the league page mounts so
+  // it's already in memory if/when the user switches to the Chart tab.
+  // Cache is keyed by leagueId inside the hook, so members of multiple
+  // leagues don't stomp on each other.
+  const { projections: leagueProjections, refetch: refetchLeagueProjections } =
+    useLeagueProjections(leagueId);
 
   const loadLeague = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -4676,6 +4684,8 @@ export function LeagueDetailView({ leagueId }: { leagueId: string }) {
         <LeagueChartPanel
           leagueId={leagueId}
           viewerEmail={session?.user?.email ?? null}
+          projections={leagueProjections}
+          refetchProjections={refetchLeagueProjections}
           rosters={data.rosters.map((r) => ({
             userId: r.userId,
             name: r.name,
