@@ -101,11 +101,13 @@ function LeadersPanel({
   anchor,
   playerToManager,
   rosteredByTeam,
+  simPlayerProjections,
 }: {
   game: TickerGame;
   anchor: DOMRect;
   playerToManager: Map<string, { name: string; playerName: string }>;
   rosteredByTeam: Map<string, Array<{ playerId: string; playerName: string; managerShortName: string }>>;
+  simPlayerProjections?: Record<string, SimPlayerProjection>;
 }) {
   if (!game.leaders) return null;
   const isActual = game.leaders.source === "actual";
@@ -144,6 +146,8 @@ function LeadersPanel({
           valueLabel={valueLabel}
           playerToManager={playerToManager}
           rostered={rosteredByTeam.get(game.awayTeam) ?? []}
+          game={game}
+          simPlayerProjections={simPlayerProjections}
         />
         <LeadersTeamSection
           team={game.homeTeam}
@@ -152,6 +156,8 @@ function LeadersPanel({
           valueLabel={valueLabel}
           playerToManager={playerToManager}
           rostered={rosteredByTeam.get(game.homeTeam) ?? []}
+          game={game}
+          simPlayerProjections={simPlayerProjections}
         />
       </div>
     </div>,
@@ -166,6 +172,8 @@ function LeadersTeamSection({
   valueLabel,
   playerToManager,
   rostered,
+  game,
+  simPlayerProjections,
 }: {
   team: string;
   seed: number | null;
@@ -173,15 +181,53 @@ function LeadersTeamSection({
   valueLabel: string;
   playerToManager: Map<string, { name: string; playerName: string }>;
   rostered: Array<{ playerId: string; playerName: string; managerShortName: string }>;
+  game: TickerGame;
+  simPlayerProjections?: Record<string, SimPlayerProjection>;
 }) {
-  const rosteredIds = new Set(rostered.map((r) => r.playerId));
-  const byId = new Map<string, { playerId: string; playerName: string; value: number }>();
-  for (const p of leaders) {
-    if (rosteredIds.has(p.playerId)) byId.set(p.playerId, p);
-  }
+  // For pre-game (projected) views, drive every rostered player's value from
+  // the simulator's per-game projection. `seriesKey + gameNum` → sim index =
+  // round*7 + gameNum. While the sim hasn't returned yet we skeleton the
+  // numbers rather than showing the server's static ppg (which is
+  // season-average and ignores bracket/round context). For actual/live games
+  // we trust the server entirely.
+  const simGameIdx = (() => {
+    if (!game.seriesKey || game.gameNum == null) return -1;
+    const roundIdx = roundIdxFromSeriesKey(game.seriesKey);
+    if (roundIdx < 0) return -1;
+    return roundIdx * 7 + game.gameNum;
+  })();
+  const isPre = game.status === "pre";
+  const leaderById = new Map(leaders.map((p) => [p.playerId, p]));
+  type Row = {
+    playerId: string;
+    playerName: string;
+    value: number;
+    pending: boolean;
+  };
+  const byId = new Map<string, Row>();
   for (const r of rostered) {
-    if (!byId.has(r.playerId)) {
-      byId.set(r.playerId, { playerId: r.playerId, playerName: r.playerName, value: 0 });
+    const leader = leaderById.get(r.playerId);
+    const playerName = leader?.playerName ?? r.playerName;
+    if (isPre) {
+      const proj = simPlayerProjections?.[r.playerId];
+      if (!simPlayerProjections || !proj) {
+        byId.set(r.playerId, { playerId: r.playerId, playerName, value: 0, pending: true });
+        continue;
+      }
+      let value = proj.avgPpg;
+      if (simGameIdx >= 0) {
+        const pts = proj.byGamePts[simGameIdx] ?? 0;
+        const prob = proj.byGameProb[simGameIdx] ?? 0;
+        value = prob > 0 ? pts / prob : proj.avgPpg;
+      }
+      byId.set(r.playerId, { playerId: r.playerId, playerName, value, pending: false });
+    } else {
+      byId.set(r.playerId, {
+        playerId: r.playerId,
+        playerName,
+        value: leader?.value ?? 0,
+        pending: false,
+      });
     }
   }
   const rows = Array.from(byId.values()).sort((a, b) => b.value - a.value);
@@ -213,7 +259,13 @@ function LeadersTeamSection({
               <PlayerHeadshot espnId={p.playerId} size={18} />
               <span className="text-[11px] truncate">{shortPlayerName(p.playerName)}</span>
               <span className="text-[11px] tabular-nums shrink-0 text-right">
-                {valueLabel === "ppg" ? p.value.toFixed(1) : Math.round(p.value)}
+                {p.pending ? (
+                  <span className="inline-block h-3 w-8 rounded bg-muted animate-pulse" />
+                ) : valueLabel === "ppg" ? (
+                  p.value.toFixed(1)
+                ) : (
+                  Math.round(p.value)
+                )}
               </span>
               <span className="text-[11px] truncate text-right text-muted-foreground">
                 {mgr?.name ?? ""}
@@ -231,11 +283,13 @@ function GameCard({
   rosteredGamePlayers,
   playerToManager,
   rosteredByTeam,
+  simPlayerProjections,
 }: {
   game: TickerGame;
   rosteredGamePlayers?: RosteredGamePlayer[];
   playerToManager: Map<string, { name: string; playerName: string }>;
   rosteredByTeam: Map<string, Array<{ playerId: string; playerName: string; managerShortName: string }>>;
+  simPlayerProjections?: Record<string, SimPlayerProjection>;
 }) {
   const isLive = game.status === "in";
   const isFinal = game.status === "post";
@@ -312,6 +366,7 @@ function GameCard({
           anchor={hoverRect}
           playerToManager={playerToManager}
           rosteredByTeam={rosteredByTeam}
+          simPlayerProjections={simPlayerProjections}
         />
       ) : null}
     </>
@@ -396,43 +451,9 @@ export function LiveGamesTicker({
 } = {}) {
   const { games } = useLiveGames();
 
-  const gamesWithSimProjection = useMemo(() => {
-    if (!simPlayerProjections) return games;
-    return games.map((g) => {
-      if (g.status !== "pre" || !g.leaders || g.leaders.source !== "projected") {
-        return g;
-      }
-      if (!g.seriesKey || g.gameNum == null) return g;
-      const roundIdx = roundIdxFromSeriesKey(g.seriesKey);
-      if (roundIdx < 0) return g;
-      const gameIdx = roundIdx * 7 + g.gameNum;
-      const override = (
-        list: TickerLeaders["home"],
-      ): TickerLeaders["home"] =>
-        list
-          .map((p) => {
-            const proj = simPlayerProjections[p.playerId];
-            if (!proj) return p;
-            const pts = proj.byGamePts[gameIdx] ?? 0;
-            const prob = proj.byGameProb[gameIdx] ?? 0;
-            const perGame = prob > 0 ? pts / prob : proj.avgPpg;
-            return { ...p, value: perGame };
-          })
-          .sort((a, b) => b.value - a.value);
-      return {
-        ...g,
-        leaders: {
-          ...g.leaders,
-          home: override(g.leaders.home),
-          away: override(g.leaders.away),
-        },
-      };
-    });
-  }, [games, simPlayerProjections]);
-
   const sorted = useMemo(() => {
     const order = { in: 0, pre: 1, post: 2 } as const;
-    return [...gamesWithSimProjection].sort((a, b) => {
+    return [...games].sort((a, b) => {
       const sa = order[a.status];
       const sb = order[b.status];
       if (sa !== sb) return sa - sb;
@@ -440,7 +461,7 @@ export function LiveGamesTicker({
       const tb = b.startTime ? new Date(b.startTime).getTime() : 0;
       return ta - tb;
     });
-  }, [gamesWithSimProjection]);
+  }, [games]);
 
   // Index rostered players by NBA team abbrev so we can quickly find the set
   // of rostered players involved in a given game.
@@ -531,6 +552,7 @@ export function LiveGamesTicker({
               rosteredGamePlayers={gamePlayers}
               playerToManager={playerToManager}
               rosteredByTeam={rosteredByTeam}
+              simPlayerProjections={simPlayerProjections}
             />
           );
         })}
