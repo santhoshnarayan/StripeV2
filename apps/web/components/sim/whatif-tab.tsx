@@ -757,16 +757,15 @@ function Connectors({
     const botY = (i * 2 + 1.5) * slotH;
     const midY = (topY + botY) / 2;
     const hw = CONN_W / 2;
-    if (flip) {
-      paths.push(`M ${CONN_W} ${topY} H ${hw} V ${midY} H 0`);
-      paths.push(`M ${CONN_W} ${botY} H ${hw} V ${midY}`);
-    } else {
-      paths.push(`M 0 ${topY} H ${hw} V ${midY} H ${CONN_W}`);
-      paths.push(`M 0 ${botY} H ${hw} V ${midY}`);
-    }
+    paths.push(`M 0 ${topY} H ${hw} V ${midY} H ${CONN_W}`);
+    paths.push(`M 0 ${botY} H ${hw} V ${midY}`);
   }
   return (
-    <svg width={CONN_W} height={h} className="shrink-0">
+    <svg
+      width={CONN_W}
+      height={h}
+      className={`shrink-0 ${flip ? "md:-scale-x-100" : ""}`}
+    >
       {paths.map((d, i) => (
         <path
           key={i}
@@ -976,10 +975,12 @@ function ConferenceBracket({
 
   return (
     <div>
-      <div className="mb-2 text-sm font-semibold text-foreground">
+      <div
+        className={`mb-2 text-sm font-semibold text-foreground ${flip ? "md:text-right" : ""}`}
+      >
         {conf === "east" ? "Eastern" : "Western"} Conference
       </div>
-      <div className={`flex items-stretch ${flip ? "flex-row-reverse" : ""}`}>{cols}</div>
+      <div className={`flex items-stretch ${flip ? "md:flex-row-reverse" : ""}`}>{cols}</div>
     </div>
   );
 }
