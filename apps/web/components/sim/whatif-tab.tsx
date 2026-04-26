@@ -757,16 +757,15 @@ function Connectors({
     const botY = (i * 2 + 1.5) * slotH;
     const midY = (topY + botY) / 2;
     const hw = CONN_W / 2;
-    if (flip) {
-      paths.push(`M ${CONN_W} ${topY} H ${hw} V ${midY} H 0`);
-      paths.push(`M ${CONN_W} ${botY} H ${hw} V ${midY}`);
-    } else {
-      paths.push(`M 0 ${topY} H ${hw} V ${midY} H ${CONN_W}`);
-      paths.push(`M 0 ${botY} H ${hw} V ${midY}`);
-    }
+    paths.push(`M 0 ${topY} H ${hw} V ${midY} H ${CONN_W}`);
+    paths.push(`M 0 ${botY} H ${hw} V ${midY}`);
   }
   return (
-    <svg width={CONN_W} height={h} className="shrink-0">
+    <svg
+      width={CONN_W}
+      height={h}
+      className={`shrink-0 ${flip ? "md:-scale-x-100" : ""}`}
+    >
       {paths.map((d, i) => (
         <path
           key={i}
@@ -834,6 +833,7 @@ function ConferenceBracket({
   mask,
   onForce,
   flip,
+  omitCF,
 }: {
   conf: "east" | "west";
   seeds: [number, string][];
@@ -845,6 +845,9 @@ function ConferenceBracket({
   mask: Uint8Array | null;
   onForce: (slot: SlotKey, teamIdx: number | null) => void;
   flip?: boolean;
+  /** When true, render only R1 + R2 (no CF column). Used by the mobile layout
+   *  where CF is shown in a separate combined section with the Finals. */
+  omitCF?: boolean;
 }) {
   const seed7: [number, string] = [7, seeds.find(([s]) => s === 7)?.[1] ?? "Play-In"];
   const seed8: [number, string] = [8, seeds.find(([s]) => s === 8)?.[1] ?? "Play-In"];
@@ -969,17 +972,21 @@ function ConferenceBracket({
     <Connectors key="c1" count={4} slotH={SLOT_H} flip={flip} />,
   );
   cols.push(<div key="r2">{r2Col}</div>);
-  cols.push(
-    <Connectors key="c2" count={2} slotH={SLOT_H * 2} flip={flip} />,
-  );
-  cols.push(<div key="cf">{cfCol}</div>);
+  if (!omitCF) {
+    cols.push(
+      <Connectors key="c2" count={2} slotH={SLOT_H * 2} flip={flip} />,
+    );
+    cols.push(<div key="cf">{cfCol}</div>);
+  }
 
   return (
     <div>
-      <div className="mb-2 text-sm font-semibold text-foreground">
+      <div
+        className={`mb-2 text-sm font-semibold text-foreground ${flip ? "md:text-right" : ""}`}
+      >
         {conf === "east" ? "Eastern" : "Western"} Conference
       </div>
-      <div className={`flex items-stretch ${flip ? "flex-row-reverse" : ""}`}>{cols}</div>
+      <div className={`flex items-stretch ${flip ? "md:flex-row-reverse" : ""}`}>{cols}</div>
     </div>
   );
 }
@@ -1420,49 +1427,89 @@ export function WhatIfTab({
             </div>
           ) : null}
 
-          {/* Bracket — desktop: 3 columns side-by-side with one outer scroll;
-              mobile: stack vertically with each conference scrolling on its own. */}
-          <div className="md:overflow-x-auto md:pb-2">
-            <div className="flex flex-col items-stretch gap-4 md:min-w-[1000px] md:flex-row md:items-start md:justify-center md:gap-6">
-              <div className="w-full overflow-x-auto pb-2 md:w-auto md:overflow-visible md:pb-0">
-                <ConferenceBracket
-                  conf="west"
-                  seeds={simData.bracket.westSeeds}
-                  results={simResults}
-                  simData={simData}
-                  forces={forces}
-                  decided={decidedWinners}
-                  decidedMask={decidedMask}
-                  mask={mask}
-                  onForce={updateForce}
-                />
-              </div>
-              <div className="flex justify-center md:block">
-                <FinalsColumn
-                  results={simResults}
-                  simData={simData}
-                  forces={forces}
-                  decided={decidedWinners}
-                  decidedMask={decidedMask}
-                  mask={mask}
-                  onForce={updateForce}
-                  champion={champTeam}
-                />
-              </div>
-              <div className="w-full overflow-x-auto pb-2 md:w-auto md:overflow-visible md:pb-0">
-                <ConferenceBracket
-                  conf="east"
-                  seeds={simData.bracket.eastSeeds}
-                  results={simResults}
-                  simData={simData}
-                  forces={forces}
-                  decided={decidedWinners}
-                  decidedMask={decidedMask}
-                  mask={mask}
-                  onForce={updateForce}
-                  flip
-                />
-              </div>
+          {/* Desktop bracket — 3 columns side-by-side (West | Finals | East). */}
+          <div className="hidden overflow-x-auto pb-2 md:block">
+            <div className="flex min-w-[1000px] flex-row items-start justify-center gap-6">
+              <ConferenceBracket
+                conf="west"
+                seeds={simData.bracket.westSeeds}
+                results={simResults}
+                simData={simData}
+                forces={forces}
+                decided={decidedWinners}
+                decidedMask={decidedMask}
+                mask={mask}
+                onForce={updateForce}
+              />
+              <FinalsColumn
+                results={simResults}
+                simData={simData}
+                forces={forces}
+                decided={decidedWinners}
+                decidedMask={decidedMask}
+                mask={mask}
+                onForce={updateForce}
+                champion={champTeam}
+              />
+              <ConferenceBracket
+                conf="east"
+                seeds={simData.bracket.eastSeeds}
+                results={simResults}
+                simData={simData}
+                forces={forces}
+                decided={decidedWinners}
+                decidedMask={decidedMask}
+                mask={mask}
+                onForce={updateForce}
+                flip
+              />
+            </div>
+          </div>
+
+          {/* Mobile bracket — Western R1+R2, then Eastern R1+R2, then a
+              combined Conference Finals + Finals mini-bracket flowing left to
+              right (winner on the right). Each section scrolls horizontally
+              on its own. */}
+          <div className="flex flex-col gap-4 md:hidden">
+            <div className="w-full overflow-x-auto pb-2">
+              <ConferenceBracket
+                conf="west"
+                seeds={simData.bracket.westSeeds}
+                results={simResults}
+                simData={simData}
+                forces={forces}
+                decided={decidedWinners}
+                decidedMask={decidedMask}
+                mask={mask}
+                onForce={updateForce}
+                omitCF
+              />
+            </div>
+            <div className="w-full overflow-x-auto pb-2">
+              <ConferenceBracket
+                conf="east"
+                seeds={simData.bracket.eastSeeds}
+                results={simResults}
+                simData={simData}
+                forces={forces}
+                decided={decidedWinners}
+                decidedMask={decidedMask}
+                mask={mask}
+                onForce={updateForce}
+                omitCF
+              />
+            </div>
+            <div className="w-full overflow-x-auto pb-2">
+              <MobileFinalsBracket
+                results={simResults}
+                simData={simData}
+                forces={forces}
+                decided={decidedWinners}
+                decidedMask={decidedMask}
+                mask={mask}
+                onForce={updateForce}
+                champion={champTeam}
+              />
             </div>
           </div>
           {/* Play-in dropdowns intentionally omitted: by the time the user
@@ -1971,6 +2018,135 @@ function FinalsColumn({
           onClear={() => onForce("finals" as SeriesKey, null)}
         />
       </div>
+    </div>
+  );
+}
+
+// ── Mobile Conference Finals + Finals mini-bracket ────────────────────
+// Shows West CF (top) and East CF (bottom) merging into the Finals on the
+// right, with the Champion picker below. Used on mobile only — desktop keeps
+// the canonical 3-column layout (West | Finals | East).
+
+function MobileFinalsBracket({
+  results,
+  simData,
+  forces,
+  decided,
+  decidedMask,
+  mask,
+  onForce,
+  champion,
+}: {
+  results: SimResults | null;
+  simData: SimData;
+  forces: ForceMap;
+  decided: Partial<Record<SeriesKey, number>>;
+  decidedMask: Uint8Array | null;
+  mask: Uint8Array | null;
+  onForce: (slot: SlotKey, teamIdx: number | null) => void;
+  champion: string | null;
+}) {
+  const westCFTop = results
+    ? derivedSlotWinner(results, r2Key("west", "top"), forces, decided)
+    : null;
+  const westCFBot = results
+    ? derivedSlotWinner(results, r2Key("west", "bot"), forces, decided)
+    : null;
+  const eastCFTop = results
+    ? derivedSlotWinner(results, r2Key("east", "top"), forces, decided)
+    : null;
+  const eastCFBot = results
+    ? derivedSlotWinner(results, r2Key("east", "bot"), forces, decided)
+    : null;
+  const westCFWinner = results
+    ? derivedSlotWinner(results, "cf.west" as SeriesKey, forces, decided)
+    : null;
+  const eastCFWinner = results
+    ? derivedSlotWinner(results, "cf.east" as SeriesKey, forces, decided)
+    : null;
+
+  const totalH = SLOT_H * 2;
+
+  const cfCol = (
+    <div className="flex flex-col justify-around" style={{ height: totalH }}>
+      <div className="flex items-center" style={{ height: SLOT_H }}>
+        <SlotBox
+          slotKey={"cf.west" as SeriesKey}
+          higher={westCFTop}
+          lower={westCFBot}
+          higherUpstreamKey={r2Key("west", "top")}
+          lowerUpstreamKey={r2Key("west", "bot")}
+          results={results}
+          simData={simData}
+          forces={forces}
+          decided={decided}
+          decidedMask={decidedMask}
+          mask={mask}
+          onForce={onForce}
+        />
+      </div>
+      <div className="flex items-center" style={{ height: SLOT_H }}>
+        <SlotBox
+          slotKey={"cf.east" as SeriesKey}
+          higher={eastCFTop}
+          lower={eastCFBot}
+          higherUpstreamKey={r2Key("east", "top")}
+          lowerUpstreamKey={r2Key("east", "bot")}
+          results={results}
+          simData={simData}
+          forces={forces}
+          decided={decided}
+          decidedMask={decidedMask}
+          mask={mask}
+          onForce={onForce}
+        />
+      </div>
+    </div>
+  );
+
+  const finalsCol = (
+    <div className="flex items-center" style={{ height: totalH }}>
+      <SlotBox
+        slotKey={"finals" as SeriesKey}
+        higher={westCFWinner}
+        lower={eastCFWinner}
+        higherUpstreamKey={"cf.west" as SeriesKey}
+        lowerUpstreamKey={"cf.east" as SeriesKey}
+        results={results}
+        simData={simData}
+        forces={forces}
+        decided={decided}
+        decidedMask={decidedMask}
+        mask={mask}
+        onForce={onForce}
+      />
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="mb-2 text-sm font-semibold text-foreground">
+        Conference Finals & Finals
+      </div>
+      <div className="flex items-stretch">
+        {cfCol}
+        <Connectors count={2} slotH={SLOT_H} />
+        {finalsCol}
+      </div>
+      {results ? (
+        <div className="mt-3">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Champion
+          </div>
+          <ChampionPicker
+            results={results}
+            champion={champion}
+            hasForce={forces["finals"] != null}
+            onPick={(idx) => onForce("finals" as SeriesKey, idx)}
+            onClear={() => onForce("finals" as SeriesKey, null)}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
