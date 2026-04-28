@@ -259,15 +259,41 @@ async function runSnapshotSim(
   );
 }
 
-/** Loader stub for pending injury-probability updates. The admin tool that
- *  emits these doesn't exist yet; returning [] keeps the pipeline a no-op
- *  while the model + plumbing is in place to consume them.
+/** Loads pending injury-probability updates from
+ *  `apps/server/src/data/nba-injury-updates-2026.json`. File format is an
+ *  array of `{ id, wallclock (ISO string), gameId, updates, note? }` — one
+ *  per injury revision. Missing/empty file → no updates (pipeline no-op).
  *
- *  When wired up, this should return the timeline of updates (sorted by
- *  wallclock ascending) — `buildEventSnapshots` and `injuryUpdatesAsOf`
- *  expect that ordering. */
+ *  Updates are returned sorted by wallclock ascending — `buildEventSnapshots`
+ *  and `injuryUpdatesAsOf` both rely on that ordering. */
 async function loadInjuryUpdates(_leagueId: string): Promise<InjuryUpdate[]> {
-  return [];
+  const dataDir = path.resolve(process.cwd(), "src/data");
+  let raw: string;
+  try {
+    raw = await readFile(
+      path.join(dataDir, "nba-injury-updates-2026.json"),
+      "utf8",
+    );
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const parsed = JSON.parse(raw) as Array<{
+    id: string;
+    wallclock: string;
+    gameId: string | null;
+    updates: Record<string, InjuryUpdate["updates"][string]>;
+    note?: string | null;
+  }>;
+  return parsed
+    .map((u) => ({
+      id: u.id,
+      wallclock: new Date(u.wallclock),
+      gameId: u.gameId,
+      updates: u.updates,
+      note: u.note ?? null,
+    }))
+    .sort((a, b) => a.wallclock.getTime() - b.wallclock.getTime());
 }
 
 /** Pick the subset of updates whose wallclock is `<= asOf`, then convert to

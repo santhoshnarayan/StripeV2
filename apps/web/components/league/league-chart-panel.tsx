@@ -451,20 +451,22 @@ export function LeagueChartPanel({
     if (hasCachedProjections && projections) {
       const managerIds = projections.managers.map((m) => m.userId);
       // Filter by resolution: per-game = end_of_game only, per-half = halves +
-      // end_of_game, scoring = scoring/half/game (everything except
-      // injury_update).
-      // injury_update events are non-play events — they're sent to the FE so
-      // the play-by-play log can show them, but they're not scoring or
-      // halftime events, so they never become a chart point.
-      let filtered = projections.events.filter(
-        (ev) => ev.kind !== "injury_update",
-      );
+      // end_of_game, scoring = scoring/half/game.
+      // injury_update events are non-play events — included as chart points so
+      // the user can visually verify the projection inflection at the moment
+      // an injury vector changes (mean line jumps for the affected players).
+      let filtered = projections.events;
       if (resolution === "half") {
         filtered = filtered.filter(
-          (ev) => ev.kind === "end_of_period" || ev.kind === "end_of_game",
+          (ev) =>
+            ev.kind === "end_of_period" ||
+            ev.kind === "end_of_game" ||
+            ev.kind === "injury_update",
         );
       } else if (resolution === "game") {
-        filtered = filtered.filter((ev) => ev.kind === "end_of_game");
+        filtered = filtered.filter(
+          (ev) => ev.kind === "end_of_game" || ev.kind === "injury_update",
+        );
       }
       type Row = {
         t: string;
