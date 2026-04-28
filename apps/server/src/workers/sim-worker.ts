@@ -15,6 +15,7 @@ import {
   DEFAULT_SIM_CONFIG,
   computeManagerProjections,
   runTournamentSim,
+  type InjuryUpdateEntry,
   type LiveGameState,
   type RosterInput,
   type SimData,
@@ -24,7 +25,7 @@ if (!parentPort) {
   throw new Error("sim-worker must be spawned as a worker_thread");
 }
 
-type StaticSimData = Omit<SimData, "liveGames">;
+type StaticSimData = Omit<SimData, "liveGames" | "injuryUpdates">;
 
 type InitMessage = { type: "init"; baseSimData: StaticSimData };
 type RunMessage = {
@@ -33,6 +34,7 @@ type RunMessage = {
   liveGames: LiveGameState[];
   rosters: RosterInput[];
   simCount: number;
+  injuryUpdates: InjuryUpdateEntry[];
 };
 type InboundMessage = InitMessage | RunMessage;
 
@@ -54,7 +56,11 @@ parentPort.on("message", async (msg: InboundMessage) => {
       return;
     }
     try {
-      const simData: SimData = { ...baseSimData, liveGames: msg.liveGames };
+      const simData: SimData = {
+        ...baseSimData,
+        liveGames: msg.liveGames,
+        injuryUpdates: msg.injuryUpdates,
+      };
       const results = await runTournamentSim(simData, {
         ...DEFAULT_SIM_CONFIG,
         sims: msg.simCount,

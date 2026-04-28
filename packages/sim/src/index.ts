@@ -9,6 +9,7 @@ export type {
   MarginalValue,
   PlayerAdjustment,
   InjuryEntry,
+  InjuryUpdateEntry,
   LiveGameState,
   SeriesKey,
   PlayinKey,
@@ -30,6 +31,7 @@ export {
   type EventKind,
   type EventDescriptor,
   type EventSnapshot,
+  type InjuryUpdate,
 } from "./event-snapshot";
 export {
   computeManagerProjections,

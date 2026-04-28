@@ -17,6 +17,8 @@ import {
   buildEventSnapshots,
   type EventSnapshot,
   type GameMeta,
+  type InjuryUpdate,
+  type InjuryUpdateEntry,
   type LiveGameState,
   type PlayEvent,
   type RosterInput,
@@ -244,10 +246,73 @@ async function runSnapshotSim(
   baseSimData: StaticSimData,
   liveGames: LiveGameState[],
   rosters: RosterInput[],
+  injuryUpdates: InjuryUpdateEntry[],
 ) {
   // Delegate to the worker-thread pool so the Monte Carlo loop doesn't pin
   // the main event loop. See apps/server/src/workers/sim-worker.ts.
-  return simPool.run(baseSimData, liveGames, rosters, SIM_COUNT_PER_EVENT);
+  return simPool.run(
+    baseSimData,
+    liveGames,
+    rosters,
+    SIM_COUNT_PER_EVENT,
+    injuryUpdates,
+  );
+}
+
+/** Loads pending injury-probability updates from
+ *  `apps/server/src/data/nba-injury-updates-2026.json`. File format is an
+ *  array of `{ id, wallclock (ISO string), gameId, updates, note? }` — one
+ *  per injury revision. Missing/empty file → no updates (pipeline no-op).
+ *
+ *  Updates are returned sorted by wallclock ascending — `buildEventSnapshots`
+ *  and `injuryUpdatesAsOf` both rely on that ordering. */
+async function loadInjuryUpdates(_leagueId: string): Promise<InjuryUpdate[]> {
+  const dataDir = path.resolve(process.cwd(), "src/data");
+  let raw: string;
+  try {
+    raw = await readFile(
+      path.join(dataDir, "nba-injury-updates-2026.json"),
+      "utf8",
+    );
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const parsed = JSON.parse(raw) as Array<{
+    id: string;
+    wallclock: string;
+    gameId: string | null;
+    updates: Record<string, InjuryUpdate["updates"][string]>;
+    note?: string | null;
+  }>;
+  return parsed
+    .map((u) => ({
+      id: u.id,
+      wallclock: new Date(u.wallclock),
+      gameId: u.gameId,
+      updates: u.updates,
+      note: u.note ?? null,
+    }))
+    .sort((a, b) => a.wallclock.getTime() - b.wallclock.getTime());
+}
+
+/** Pick the subset of updates whose wallclock is `<= asOf`, then convert to
+ *  the wire-friendly `InjuryUpdateEntry` shape that crosses the worker
+ *  boundary as plain JSON. */
+function injuryUpdatesAsOf(
+  updates: InjuryUpdate[],
+  asOf: Date,
+): InjuryUpdateEntry[] {
+  const cutoff = asOf.getTime();
+  return updates
+    .filter((u) => u.wallclock.getTime() <= cutoff)
+    .map((u) => ({
+      id: u.id,
+      wallclock: u.wallclock.toISOString(),
+      gameId: u.gameId,
+      updates: u.updates,
+      note: u.note ?? null,
+    }));
 }
 
 /** Walk current snapshots vs stored projections in chronological order and
@@ -507,7 +572,8 @@ async function runProjectionRebuild(
   const baseSimData = await loadStaticSimData();
   const games = await loadGames();
   const plays = await loadPlays(games.map((g) => g.id));
-  const snapshots = buildEventSnapshots({ games, plays });
+  const injuryUpdates = await loadInjuryUpdates(params.leagueId);
+  const snapshots = buildEventSnapshots({ games, plays, injuryUpdates });
   const { rosters } = await loadRosters(params.leagueId);
 
   const mode = params.mode ?? "incremental";
@@ -569,7 +635,15 @@ async function runProjectionRebuild(
     const computed: Array<Awaited<ReturnType<typeof buildSnapshotRow>>> = [];
     let processed = 0;
     for (const snap of snapshots) {
-      computed.push(await buildSnapshotRow(params.leagueId, snap, rosters, baseSimData));
+      computed.push(
+        await buildSnapshotRow(
+          params.leagueId,
+          snap,
+          rosters,
+          baseSimData,
+          injuryUpdates,
+        ),
+      );
       processed++;
       if (processed % 10 === 0) {
         await db
@@ -621,7 +695,13 @@ async function runProjectionRebuild(
     .where(eq(nbaProjectionJob.id, jobId));
 
   for (let i = firstStaleIndex; i < snapshots.length; i++) {
-    await processSnapshot(params.leagueId, snapshots[i], rosters, baseSimData);
+    await processSnapshot(
+      params.leagueId,
+      snapshots[i],
+      rosters,
+      baseSimData,
+      injuryUpdates,
+    );
     processed++;
     if (processed % 10 === 0) {
       await db
@@ -643,6 +723,15 @@ async function runProjectionRebuild(
 }
 
 function snapshotEventMeta(snap: EventSnapshot) {
+  const injuryUpdate = snap.event.injuryUpdate
+    ? {
+        id: snap.event.injuryUpdate.id,
+        wallclock: snap.event.injuryUpdate.wallclock.toISOString(),
+        gameId: snap.event.injuryUpdate.gameId,
+        updates: snap.event.injuryUpdate.updates,
+        note: snap.event.injuryUpdate.note ?? null,
+      }
+    : null;
   return {
     text: snap.event.text,
     teamAbbrev: snap.event.teamAbbrev,
@@ -653,6 +742,7 @@ function snapshotEventMeta(snap: EventSnapshot) {
     homeScore: snap.event.homeScore,
     awayScore: snap.event.awayScore,
     wallclock: snap.event.wallclock ? snap.event.wallclock.toISOString() : null,
+    injuryUpdate,
   };
 }
 
@@ -661,9 +751,22 @@ async function buildSnapshotRow(
   snap: EventSnapshot,
   rosters: RosterInput[],
   baseSimData: StaticSimData,
+  injuryUpdates: InjuryUpdate[],
 ) {
   const actualPoints = rosterActualPoints(rosters, snap.cumulativePointsByPlayer);
-  const projectedPoints = await runSnapshotSim(baseSimData, snap.liveGames, rosters);
+  // Only updates whose wallclock is at-or-before this event take effect for
+  // its projection. Mid-game updates (gameId set) flow through the same
+  // mechanism: by the time this snapshot fires, already-completed stats are
+  // already in `snap.liveGames[].playerPoints`, so swapping the availability
+  // vector only impacts the remaining minutes.
+  const asOf = snap.event.wallclock ?? snap.event.updatedAt;
+  const updatesAsOf = injuryUpdatesAsOf(injuryUpdates, asOf);
+  const projectedPoints = await runSnapshotSim(
+    baseSimData,
+    snap.liveGames,
+    rosters,
+    updatesAsOf,
+  );
   return {
     leagueId,
     gameId: snap.event.gameId,
@@ -684,8 +787,15 @@ async function processSnapshot(
   snap: EventSnapshot,
   rosters: RosterInput[],
   baseSimData: StaticSimData,
+  injuryUpdates: InjuryUpdate[],
 ): Promise<void> {
-  const row = await buildSnapshotRow(leagueId, snap, rosters, baseSimData);
+  const row = await buildSnapshotRow(
+    leagueId,
+    snap,
+    rosters,
+    baseSimData,
+    injuryUpdates,
+  );
   await db
     .insert(nbaEventProjection)
     .values(row)

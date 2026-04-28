@@ -451,14 +451,22 @@ export function LeagueChartPanel({
     if (hasCachedProjections && projections) {
       const managerIds = projections.managers.map((m) => m.userId);
       // Filter by resolution: per-game = end_of_game only, per-half = halves +
-      // end_of_game, scoring = everything.
+      // end_of_game, scoring = scoring/half/game.
+      // injury_update events are non-play events — included as chart points so
+      // the user can visually verify the projection inflection at the moment
+      // an injury vector changes (mean line jumps for the affected players).
       let filtered = projections.events;
       if (resolution === "half") {
         filtered = filtered.filter(
-          (ev) => ev.kind === "end_of_period" || ev.kind === "end_of_game",
+          (ev) =>
+            ev.kind === "end_of_period" ||
+            ev.kind === "end_of_game" ||
+            ev.kind === "injury_update",
         );
       } else if (resolution === "game") {
-        filtered = filtered.filter((ev) => ev.kind === "end_of_game");
+        filtered = filtered.filter(
+          (ev) => ev.kind === "end_of_game" || ev.kind === "injury_update",
+        );
       }
       type Row = {
         t: string;
@@ -1303,6 +1311,15 @@ function playByPlayText(
     if (p === 2) return "End Q2 (half)";
     if (p >= 5) return `End OT${p - 4}`;
     return `End Q${p}`;
+  }
+  if (ev.kind === "injury_update") {
+    const update = ev.eventMeta.injuryUpdate;
+    const note = ev.eventMeta.text?.trim() || update?.note?.trim() || null;
+    const names = update ? Object.keys(update.updates) : [];
+    if (note) return `Injury update · ${note}`;
+    if (names.length === 1) return `Injury update · ${names[0]}`;
+    if (names.length > 1) return `Injury update · ${names.length} players`;
+    return "Injury update";
   }
   // scoring play — prefer the actual ESPN play text when available.
   const text = ev.eventMeta.text?.trim();

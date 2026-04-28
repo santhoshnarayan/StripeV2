@@ -36,6 +36,22 @@ export interface InjuryEntry {
   availability: number[];
 }
 
+/** A time-stamped change to one or more players' injury entries. The simulator
+ *  reads `SimData.injuryUpdates` (when present) and applies them in order over
+ *  `SimData.injuries` — so an update with `wallclock <= now` mutates the base
+ *  map before precomputed team distributions are built. Mid-game updates
+ *  don't rewind `LiveGameState.playerPoints`: those stats are already locked
+ *  in by the time the update fires.
+ *
+ *  An entry value of `null` clears any prior injury for that player name. */
+export interface InjuryUpdateEntry {
+  id: string;
+  wallclock: string;
+  gameId: string | null;
+  updates: Record<string, InjuryEntry | null>;
+  note?: string | null;
+}
+
 export interface LiveGameState {
   seriesKey: string;
   gameNum: number;
@@ -79,6 +95,12 @@ export interface SimData {
   playoffMinutes: Record<string, Record<string, number>>;
   adjustments: PlayerAdjustment[];
   injuries: Record<string, InjuryEntry>;
+  /** Optional list of pending injury-probability updates. The engine applies
+   *  them over `injuries` (last write wins per player name) before building
+   *  the per-team availability mask cache, so subsequent sims use the updated
+   *  vectors. Filtering by wallclock (e.g. "only updates with wallclock <=
+   *  this event's time") is the caller's responsibility. */
+  injuryUpdates?: InjuryUpdateEntry[];
   liveGames?: LiveGameState[];
   /** Per-game actual minutes from completed playoff games.
    *  Shape: team → nba_id → availIdx → minutes. availIdx uses the same 0..29
