@@ -132,6 +132,29 @@ pub struct InjuryEntry {
     pub availability: Vec<f64>,
 }
 
+/// Time-stamped revision of one or more players' injury entries. Mirrors
+/// `InjuryUpdate` on the TypeScript side. The engine applies a list of these
+/// over `SimData.injuries` (last write wins per player name) before building
+/// the per-team availability mask cache. A `None` value in `updates` clears
+/// any prior injury for that player (player returns to default 1.0
+/// availability across all 30 slots).
+///
+/// Filtering by wallclock (e.g. "only updates with wallclock <= this event's
+/// time") is the caller's responsibility — the engine just folds in whatever
+/// it's given.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InjuryUpdate {
+    pub id: String,
+    /// ISO-8601 timestamp string (kept opaque to the engine).
+    pub wallclock: String,
+    #[serde(rename = "gameId", default)]
+    pub game_id: Option<String>,
+    /// Player name → new injury entry (or null to clear).
+    pub updates: HashMap<String, Option<InjuryEntry>>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LiveGameState {
     #[serde(rename = "seriesKey")]
@@ -207,6 +230,11 @@ pub struct SimData {
     pub adjustments: Vec<PlayerAdjustment>,
     #[serde(default)]
     pub injuries: HashMap<String, serde_json::Value>,
+    /// Optional list of pending injury-probability updates. Applied over
+    /// `injuries` (last write wins per player name) before building the
+    /// per-team availability mask cache. See `InjuryUpdate`.
+    #[serde(rename = "injuryUpdates", default)]
+    pub injury_updates: Vec<InjuryUpdate>,
     #[serde(rename = "liveGames", default)]
     pub live_games: Vec<LiveGameState>,
     /// Per-game actual minutes from completed playoff games.
@@ -515,6 +543,23 @@ pub fn prepare(data: SimData, config: SimConfig) -> PreparedSim {
         }
         if let Ok(entry) = serde_json::from_value::<InjuryEntry>(value) {
             injuries_by_name.insert(name, entry);
+        }
+    }
+    // Fold in pending injury-probability updates. Order is significant:
+    // multiple updates for the same player resolve last-write-wins, and a
+    // None entry clears the prior injury so the player returns to default
+    // 1.0 availability across all 30 slots. Mirrors the TS tournament
+    // engine's behaviour in `tournament.ts`.
+    for u in data.injury_updates {
+        for (name, entry) in u.updates {
+            match entry {
+                Some(e) => {
+                    injuries_by_name.insert(name, e);
+                }
+                None => {
+                    injuries_by_name.remove(&name);
+                }
+            }
         }
     }
 

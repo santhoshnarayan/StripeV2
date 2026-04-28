@@ -1,4 +1,4 @@
-import type { LiveGameState } from "./types";
+import type { InjuryEntry, LiveGameState } from "./types";
 import { computeRemainingFraction } from "./live-game-utils";
 
 // ─── Inputs ────────────────────────────────────────────────────────
@@ -34,9 +34,46 @@ export interface GameMeta {
   lastPlaySequence: number | null;
 }
 
+/** External event that mutates the injury-probability vector for one or more
+ *  players. May fire mid-game: stats accrued before `wallclock` stay locked
+ *  (they're already folded into the cumulative state), but the simulator uses
+ *  the new availability vectors when projecting the remainder of that game and
+ *  every subsequent game.
+ *
+ *  The update map's keys are player names (matching `InjuryEntry`'s own keying
+ *  in `SimData.injuries`). A name → `null` entry clears any prior injury for
+ *  that player (player goes back to default 1.0 availability across all 30
+ *  slots). */
+export interface InjuryUpdate {
+  /** Stable identifier — used as the snapshot's `sequence` so the projection
+   *  cache can key (gameId, sequence) deduplication consistently across
+   *  rebuilds. Must be unique across all injury updates in a single rebuild. */
+  id: string;
+  /** When the update takes effect. Required — sets the snapshot's chart-axis
+   *  position and chronological merge order. */
+  wallclock: Date;
+  /** Optional game the update lands in. When non-null and that game is `in`,
+   *  the snapshot represents a mid-game injury revision (already-completed
+   *  stats count, remaining minutes use the new vector). When null, the
+   *  update applies between games. */
+  gameId: string | null;
+  /** Player name → new injury entry (or null to clear). Replaces any prior
+   *  entry for that name. */
+  updates: Record<string, InjuryEntry | null>;
+  /** Optional human-readable note for the FE event log. */
+  note?: string | null;
+}
+
 // ─── Outputs ───────────────────────────────────────────────────────
 
-export type EventKind = "scoring" | "end_of_period" | "end_of_game";
+/** "injury_update" is a non-play event: included in the event stream sent to
+ *  the FE but excluded from chart point rendering (it's not a scoring event
+ *  or a halftime event). */
+export type EventKind =
+  | "scoring"
+  | "end_of_period"
+  | "end_of_game"
+  | "injury_update";
 
 export interface EventDescriptor {
   kind: EventKind;
@@ -54,6 +91,9 @@ export interface EventDescriptor {
   clock: string | null;
   homeScore: number | null;
   awayScore: number | null;
+  /** Populated only when `kind === "injury_update"`. Carries the per-player
+   *  availability vectors that take effect from this point forward. */
+  injuryUpdate?: InjuryUpdate | null;
 }
 
 export interface EventSnapshot {
@@ -119,25 +159,77 @@ function playContentKey(p: PlayEvent): string {
   ].join("\x1f");
 }
 
-/** Walks plays in chronological order and emits a snapshot at each
- *  chart-worthy event (scoring play, end of half, end of game). */
+/** Cumulative-hash key for an injury update. Mirrors `playContentKey`'s role:
+ *  if any field of the update changes, the hash diverges from that point
+ *  forward and the projection cache rebuilds. */
+function injuryUpdateContentKey(u: InjuryUpdate): string {
+  const updates = Object.keys(u.updates)
+    .sort()
+    .map((name) => {
+      const e = u.updates[name];
+      if (e == null) return `${name}:null`;
+      return `${name}:${e.team}|${e.status}|${e.injury}|${e.availability.join(",")}`;
+    })
+    .join("\x1e");
+  return [
+    "injury_update",
+    u.id,
+    u.wallclock.getTime(),
+    u.gameId ?? "",
+    updates,
+    u.note ?? "",
+  ].join("\x1f");
+}
+
+type TimelineEntry =
+  | { type: "play"; t: number; play: PlayEvent }
+  | { type: "injury"; t: number; update: InjuryUpdate };
+
+/** Walks plays + injury updates in chronological order and emits a snapshot
+ *  at each chart-worthy event (scoring play, end of half, end of game) and
+ *  at each injury update. Injury-update snapshots carry the new availability
+ *  vectors in `event.injuryUpdate`; downstream sims read that to swap in the
+ *  new vectors for the remainder of the game (when `gameId` is non-null) and
+ *  for every subsequent game. */
 export function buildEventSnapshots(params: {
   games: GameMeta[];
   plays: PlayEvent[];
+  injuryUpdates?: InjuryUpdate[];
 }): EventSnapshot[] {
-  const { games, plays } = params;
+  const { games, plays, injuryUpdates = [] } = params;
   const gameById = new Map(games.map((g) => [g.id, g]));
 
-  // Sort by wallclock (true play time) when available so the cumulative
-  // counter advances in the same order the chart renders. Using updatedAt
-  // (ingest batch time) caused old rows synced later to flip wallclock order,
-  // which made on-chart cumulative values appear to drop mid-timeline.
-  const sorted = [...plays].sort((a, b) => {
-    const ta = (a.wallclock ?? a.updatedAt).getTime();
-    const tb = (b.wallclock ?? b.updatedAt).getTime();
-    if (ta !== tb) return ta - tb;
-    if (a.gameId !== b.gameId) return a.gameId < b.gameId ? -1 : 1;
-    return a.sequence - b.sequence;
+  // Merged chronological timeline of plays + injury updates. Sort key is the
+  // wallclock (or `updatedAt` fallback for plays). Stable secondary keys keep
+  // the run deterministic across rebuilds:
+  //   - injury updates sort BEFORE plays at the same instant — so an update
+  //     timestamped to a play's wallclock takes effect before that play's
+  //     stats are folded in (matches the user-facing semantics: "stats from
+  //     this point forward are impacted by the new injury probability").
+  //   - within plays at the same instant, gameId then sequence breaks ties.
+  //   - within injury updates at the same instant, id breaks ties.
+  const timeline: TimelineEntry[] = [];
+  for (const p of plays) {
+    timeline.push({
+      type: "play",
+      t: (p.wallclock ?? p.updatedAt).getTime(),
+      play: p,
+    });
+  }
+  for (const u of injuryUpdates) {
+    timeline.push({ type: "injury", t: u.wallclock.getTime(), update: u });
+  }
+  timeline.sort((a, b) => {
+    if (a.t !== b.t) return a.t - b.t;
+    if (a.type !== b.type) return a.type === "injury" ? -1 : 1;
+    if (a.type === "play" && b.type === "play") {
+      if (a.play.gameId !== b.play.gameId) return a.play.gameId < b.play.gameId ? -1 : 1;
+      return a.play.sequence - b.play.sequence;
+    }
+    if (a.type === "injury" && b.type === "injury") {
+      return a.update.id < b.update.id ? -1 : a.update.id > b.update.id ? 1 : 0;
+    }
+    return 0;
   });
 
   const gameState = new Map<string, RunningGameState>();
@@ -157,7 +249,83 @@ export function buildEventSnapshots(params: {
   const snapshots: EventSnapshot[] = [];
   let runningHash = FNV_OFFSET;
 
-  for (const play of sorted) {
+  // Builds the `liveGames` snapshot reflecting all running game state. Shared
+  // between play-emission and injury-update-emission so the two carry the
+  // same view of the world for the consumer.
+  const buildLiveGames = (): LiveGameState[] => {
+    const out: LiveGameState[] = [];
+    for (const [gid, state] of gameState.entries()) {
+      if (state.playCount === 0) continue;
+      const gMeta = gameById.get(gid);
+      if (!gMeta || !gMeta.seriesKey || gMeta.gameNum == null) continue;
+
+      const remaining =
+        state.status === "post"
+          ? 0
+          : computeRemainingFraction("in", state.period, state.clock);
+
+      out.push({
+        seriesKey: gMeta.seriesKey,
+        gameNum: gMeta.gameNum,
+        status: state.status,
+        homeTeam: gMeta.homeTeamAbbrev,
+        awayTeam: gMeta.awayTeamAbbrev,
+        homeScore: state.homeScore,
+        awayScore: state.awayScore,
+        remainingFraction: remaining,
+        playerPoints: { ...state.playerPoints },
+      });
+    }
+    return out;
+  };
+
+  for (const entry of timeline) {
+    if (entry.type === "injury") {
+      const u = entry.update;
+      // Injury updates contribute to the running hash so that adding,
+      // removing, or editing one invalidates every downstream projection.
+      runningHash = fnv1aStep(runningHash, injuryUpdateContentKey(u));
+
+      // synthetic gameId/sequence: a game-bound update reuses that gameId so
+      // the (gameId, sequence) cache key stays scoped; otherwise we use a
+      // sentinel that will never collide with a real ESPN play sequence.
+      const gameId = u.gameId ?? "__injury__";
+      // Hash the id into a non-negative 31-bit int so it fits in
+      // nbaEventProjection.sequence (Postgres `integer`). Negative space is
+      // reserved for future use; collisions are caller's responsibility (the
+      // `id` is required to be unique within a single rebuild anyway).
+      let h = FNV_OFFSET;
+      for (let i = 0; i < u.id.length; i++) {
+        h ^= u.id.charCodeAt(i);
+        h = Math.imul(h, FNV_PRIME);
+      }
+      const sequence = (h >>> 0) & 0x7fffffff;
+
+      snapshots.push({
+        event: {
+          kind: "injury_update",
+          gameId,
+          sequence,
+          updatedAt: u.wallclock,
+          wallclock: u.wallclock,
+          text: u.note ?? null,
+          teamAbbrev: null,
+          playerIds: [],
+          scoreValue: null,
+          period: null,
+          clock: null,
+          homeScore: null,
+          awayScore: null,
+          injuryUpdate: u,
+        },
+        liveGames: buildLiveGames(),
+        cumulativePointsByPlayer: { ...cumulativePoints },
+        cumulativeHash: runningHash.toString(16).padStart(8, "0"),
+      });
+      continue;
+    }
+
+    const play = entry.play;
     const meta = gameById.get(play.gameId);
     if (!meta) continue;
     const gs = gameState.get(play.gameId);
@@ -202,30 +370,6 @@ export function buildEventSnapshots(params: {
     }
     if (kind == null) continue;
 
-    const liveGames: LiveGameState[] = [];
-    for (const [gid, state] of gameState.entries()) {
-      if (state.playCount === 0) continue;
-      const gMeta = gameById.get(gid);
-      if (!gMeta || !gMeta.seriesKey || gMeta.gameNum == null) continue;
-
-      const remaining =
-        state.status === "post"
-          ? 0
-          : computeRemainingFraction("in", state.period, state.clock);
-
-      liveGames.push({
-        seriesKey: gMeta.seriesKey,
-        gameNum: gMeta.gameNum,
-        status: state.status,
-        homeTeam: gMeta.homeTeamAbbrev,
-        awayTeam: gMeta.awayTeamAbbrev,
-        homeScore: state.homeScore,
-        awayScore: state.awayScore,
-        remainingFraction: remaining,
-        playerPoints: { ...state.playerPoints },
-      });
-    }
-
     snapshots.push({
       event: {
         kind,
@@ -242,7 +386,7 @@ export function buildEventSnapshots(params: {
         homeScore: play.homeScore,
         awayScore: play.awayScore,
       },
-      liveGames,
+      liveGames: buildLiveGames(),
       cumulativePointsByPlayer: { ...cumulativePoints },
       cumulativeHash: runningHash.toString(16).padStart(8, "0"),
     });

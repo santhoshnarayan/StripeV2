@@ -451,8 +451,14 @@ export function LeagueChartPanel({
     if (hasCachedProjections && projections) {
       const managerIds = projections.managers.map((m) => m.userId);
       // Filter by resolution: per-game = end_of_game only, per-half = halves +
-      // end_of_game, scoring = everything.
-      let filtered = projections.events;
+      // end_of_game, scoring = scoring/half/game (everything except
+      // injury_update).
+      // injury_update events are non-play events — they're sent to the FE so
+      // the play-by-play log can show them, but they're not scoring or
+      // halftime events, so they never become a chart point.
+      let filtered = projections.events.filter(
+        (ev) => ev.kind !== "injury_update",
+      );
       if (resolution === "half") {
         filtered = filtered.filter(
           (ev) => ev.kind === "end_of_period" || ev.kind === "end_of_game",
@@ -1303,6 +1309,15 @@ function playByPlayText(
     if (p === 2) return "End Q2 (half)";
     if (p >= 5) return `End OT${p - 4}`;
     return `End Q${p}`;
+  }
+  if (ev.kind === "injury_update") {
+    const update = ev.eventMeta.injuryUpdate;
+    const note = ev.eventMeta.text?.trim() || update?.note?.trim() || null;
+    const names = update ? Object.keys(update.updates) : [];
+    if (note) return `Injury update · ${note}`;
+    if (names.length === 1) return `Injury update · ${names[0]}`;
+    if (names.length > 1) return `Injury update · ${names.length} players`;
+    return "Injury update";
   }
   // scoring play — prefer the actual ESPN play text when available.
   const text = ev.eventMeta.text?.trim();

@@ -4,11 +4,27 @@ import { useCallback, useEffect, useState } from "react";
 import { appApiFetch } from "@/lib/app-api";
 import { usePolling } from "@/lib/use-polling";
 
+export type InjuryUpdatePayload = {
+  id: string;
+  wallclock: string;
+  gameId: string | null;
+  updates: Record<
+    string,
+    {
+      team: string;
+      status: string;
+      injury: string;
+      availability: number[];
+    } | null
+  >;
+  note: string | null;
+};
+
 export type ProjectionEvent = {
   gameId: string;
   sequence: number;
   updatedAtEvent: string;
-  kind: "scoring" | "end_of_period" | "end_of_game";
+  kind: "scoring" | "end_of_period" | "end_of_game" | "injury_update";
   actualPoints: Record<string, number>;
   projectedPoints: Record<
     string,
@@ -24,6 +40,7 @@ export type ProjectionEvent = {
     homeScore: number | null;
     awayScore: number | null;
     wallclock: string | null;
+    injuryUpdate?: InjuryUpdatePayload | null;
   };
   gamesSnapshot: Array<{
     seriesKey: string;

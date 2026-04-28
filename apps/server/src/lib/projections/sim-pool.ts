@@ -3,9 +3,14 @@
 // requests. The worker runs the Monte Carlo tournament sim off the main
 // Node thread so HTTP handlers stay responsive during projection rebuilds.
 import { Worker } from "node:worker_threads";
-import type { LiveGameState, RosterInput, SimData } from "@repo/sim";
+import type {
+  InjuryUpdateEntry,
+  LiveGameState,
+  RosterInput,
+  SimData,
+} from "@repo/sim";
 
-type StaticSimData = Omit<SimData, "liveGames">;
+type StaticSimData = Omit<SimData, "liveGames" | "injuryUpdates">;
 
 type ProjByUser = Record<
   string,
@@ -94,6 +99,7 @@ class SimPool {
     liveGames: LiveGameState[],
     rosters: RosterInput[],
     simCount: number,
+    injuryUpdates: InjuryUpdateEntry[] = [],
   ): Promise<ProjByUser> {
     await this.ensureInit(baseSimData);
     if (!this.worker) throw new Error("sim-worker not available");
@@ -106,6 +112,7 @@ class SimPool {
         liveGames,
         rosters,
         simCount,
+        injuryUpdates,
       });
     });
   }

@@ -473,6 +473,17 @@ export async function runTournamentSim(
     if (name === "_meta") continue;
     injuriesByName.set(name, entry as InjuryEntry);
   }
+  // Fold in any pending injury-probability updates. Order is significant —
+  // multiple updates for the same player resolve last-write-wins, and a null
+  // entry clears the prior injury (player returns to default 1.0 availability).
+  // Caller is responsible for filtering by wallclock if only a subset should
+  // apply at this moment in the timeline.
+  for (const u of data.injuryUpdates ?? []) {
+    for (const [name, entry] of Object.entries(u.updates)) {
+      if (entry == null) injuriesByName.delete(name);
+      else injuriesByName.set(name, entry);
+    }
+  }
 
   // Build player index for the sim matrix
   const allPlayerIds = simPlayers.map((p) => p.espn_id);
